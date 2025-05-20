@@ -8,13 +8,6 @@ use std::env;
 use diesel::prelude::*;
 use spyder::models::*;
 
-pub fn establish_connection() -> SqliteConnection {
-    dotenv().ok();
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    SqliteConnection::establish(&database_url)
-        .unwrap_or_else(|_| panic!("Error connecting to {}", database_url))
-}
-
 fn parse_page(body: &str, mut page: Page) -> anyhow::Result<HashSet<std::string::String>> {
     // Define regular expressions for email and cryptocurrency addresses
     let email_regex = Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap();
@@ -62,7 +55,9 @@ fn fetch_page(url: &str) -> anyhow::Result<HashSet<std::string::String>> {
 }
 
 fn main() {
+    let connection = &mut establish_connection();
     let mut workqueue = fetch_page("https://slashdot.org");
+
     for work in workqueue { 
         for url in work {
             println!("# Working on {:?}", url);
