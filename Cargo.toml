@@ -1,0 +1,22 @@
+[package]
+name = "spyder"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+reqwest = {version = "0.11", features = ["blocking"]}
+select = "0.5"
+regex = "1.4"
+anyhow = "1.0.98"
+diesel = { version = "2.2.0", features = ["sqlite", "returning_clauses_for_sqlite_3_35"] }
+# build libsqlite3 as part of the build process
+# uncomment this line if you run into setup issues
+# libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+dotenvy = "0.15"
+
+
+[[bin]]
+name = "spyder"
+path = "src/bin/spyder.rs"
