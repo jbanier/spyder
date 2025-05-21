@@ -1,13 +1,8 @@
-use anyhow::Result;
 use regex::Regex;
-use reqwest::blocking;
-use std::error::Error;
 use std::collections::HashSet;
-use dotenvy::dotenv;
-use std::env;
-use diesel::prelude::*;
 use spyder::models::*;
 use spyder::{create_work_unit, establish_connection};
+use std::env;
 
 fn parse_page(body: &str, mut page: Page) -> anyhow::Result<HashSet<std::string::String>> {
     // Define regular expressions for email and cryptocurrency addresses
@@ -41,10 +36,10 @@ fn parse_page(body: &str, mut page: Page) -> anyhow::Result<HashSet<std::string:
     return Ok(url_work);
 }
 
-fn fetch_page(url: &str) -> anyhow::Result<HashSet<std::string::String>> {
-    let mut page = Page {
+fn fetch_page(url: String) -> anyhow::Result<HashSet<std::string::String>> {
+    let page = Page {
         title: String::from("title"),
-        url: String::from(url),
+        url: String::from(url.clone()),
         emails: String::new(),
         coins: String::new(),
         links: String::new(),
@@ -55,14 +50,39 @@ fn fetch_page(url: &str) -> anyhow::Result<HashSet<std::string::String>> {
     Ok(workqueue)
 }
 
-fn main() {
-    let connection = &mut establish_connection();
-    let mut workqueue = fetch_page("https://slashdot.org");
+fn usage(program: &str) {
+    eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
+    eprintln!("Subcommands:");
+    eprintln!("    add <url>      start crawling the page and adding links to the work queue.");
+}
 
-    for work in workqueue { 
-        for url in work {
-            println!("# Adding {:?} to queue", url);
-            create_work_unit(connection, &url);
+fn main() {
+    let mut args = env::args();
+    let program = args.next().expect("path to program is provided");
+
+    let subcommand = args.next().ok_or_else(|| {
+        usage(&program);
+        eprintln!("ERROR: no subcommand is provided");
+    });
+
+    match subcommand.expect("subcommand missing?").as_str() {
+        "add" => {
+            let url_to_add = args.next().ok_or_else(|| {
+                usage(&program);
+                eprintln!("ERROR: no url is provided subcommand");
+            }).unwrap();
+            let connection = &mut establish_connection();
+            let workqueue = fetch_page(url_to_add);
+
+            for work in workqueue { 
+                for url in work {
+                    println!("# Adding {:?} to queue", url);
+                    create_work_unit(connection, &url);
+                }
+            } 
+        },
+        &_ => {
+            usage(&program);
         }
-    } 
+    }
 }
