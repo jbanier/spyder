@@ -1,10 +1,11 @@
 use regex::Regex;
-use spyder::models::*;
 use spyder::{create_work_unit, establish_connection};
 use std::collections::HashSet;
 use std::env;
 
-fn extract_links(body: &str, page: Page) -> anyhow::Result<HashSet<std::string::String>> {
+use spyder::models::*;
+
+fn extract_links(body: &str, _page: Page) -> anyhow::Result<HashSet<std::string::String>> {
     // Define regular expressions for email and cryptocurrency addresses
     let link_address_regex = Regex::new(r"https://[\w+\.-/]+").unwrap();
     let mut url_work = HashSet::new();
@@ -115,7 +116,26 @@ fn main() {
             }
         }
         "work" => {
-            let _ = extract_data_from_page("https://slashdot.org".to_string());
+            use diesel::query_dsl::QueryDsl;
+            use diesel::ExpressionMethods;
+            use diesel::RunQueryDsl;
+            use diesel::SelectableHelper;
+            use spyder::schema::work_unit;
+            use spyder::schema::work_unit::dsl::*;
+
+            let connection = &mut establish_connection();
+            let results = work_unit::table
+                .filter(processed.eq(false))
+                .select(WorkUnit::as_select())
+                .load(connection)
+                .expect("Error querying for work");
+
+            println!("Working with {} WorkUnits", results.len());
+            for wu in results {
+                println!("-----------\n");
+                let _ = extract_data_from_page(wu.url);
+                println!("-----------\n");
+            }
         }
         &_ => {
             usage(&program);
