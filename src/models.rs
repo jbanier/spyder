@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 
 #[derive(Selectable, Insertable)]
-#[diesel(table_name = crate::schema::Page)]
+#[diesel(table_name = crate::schema::page)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Page {
     pub title: String,
@@ -12,14 +12,15 @@ pub struct Page {
 }
 
 #[derive(Selectable, Queryable)]
-#[diesel(table_name = crate::schema::WorkUnit)]
+#[diesel(table_name = crate::schema::work_unit)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct WorkUnit {
     pub url: String,
+    pub processed: bool,
 }
 
 #[derive(Insertable)]
-#[diesel(table_name = crate::schema::WorkUnit)]
+#[diesel(table_name = crate::schema::work_unit)]
 pub struct NewUnit<'a> {
     pub url: &'a String,
 }

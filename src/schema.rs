@@ -1,7 +1,7 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
-    Page (id) {
+    page (id) {
         id -> Integer,
         title -> Text,
         url -> Text,
@@ -12,10 +12,11 @@ diesel::table! {
 }
 
 diesel::table! {
-    WorkUnit (id) {
+    work_unit (id) {
         id -> Integer,
         url -> Text,
+        processed -> Bool,
     }
 }
 
-diesel::allow_tables_to_appear_in_same_query!(Page, WorkUnit,);
+diesel::allow_tables_to_appear_in_same_query!(page, work_unit,);

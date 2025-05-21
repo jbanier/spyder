@@ -17,7 +17,7 @@ pub fn establish_connection() -> SqliteConnection {
 pub fn create_work_unit(conn: &mut SqliteConnection, url: &String) -> WorkUnit {
     let work_unit = NewUnit { url };
 
-    diesel::insert_into(crate::schema::WorkUnit::table)
+    diesel::insert_into(crate::schema::work_unit::table)
         .values(work_unit)
         .returning(WorkUnit::as_returning())
         .get_result(conn)
