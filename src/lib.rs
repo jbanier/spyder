@@ -14,7 +14,7 @@ pub fn establish_connection() -> SqliteConnection {
         .unwrap_or_else(|_| panic!("Error connecting to {}", database_url))
 }
 
-pub fn create_work_unit(conn: &mut SqliteConnection, url: &String) -> WorkUnit{
+pub fn create_work_unit(conn: &mut SqliteConnection, url: &String) -> WorkUnit {
     let work_unit = NewUnit { url };
 
     diesel::insert_into(crate::schema::WorkUnit::table)

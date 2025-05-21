@@ -23,4 +23,3 @@ pub struct WorkUnit {
 pub struct NewUnit<'a> {
     pub url: &'a String,
 }
-

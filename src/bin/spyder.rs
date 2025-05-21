@@ -1,7 +1,7 @@
 use regex::Regex;
-use std::collections::HashSet;
 use spyder::models::*;
 use spyder::{create_work_unit, establish_connection};
+use std::collections::HashSet;
 use std::env;
 
 fn extract_links(body: &str, page: Page) -> anyhow::Result<HashSet<std::string::String>> {
@@ -60,7 +60,7 @@ fn extract_data_from_page(url: String) -> anyhow::Result<Page> {
         url: String::from(url.clone()),
         emails: emails.join(","),
         coins: coins.join(","),
-        links: links.join(",")
+        links: links.join(","),
     };
     Ok(page)
 }
@@ -97,20 +97,23 @@ fn main() {
 
     match subcommand.expect("subcommand missing?").as_str() {
         "add" => {
-            let url_to_add = args.next().ok_or_else(|| {
-                usage(&program);
-                eprintln!("ERROR: no url is provided subcommand");
-            }).unwrap();
+            let url_to_add = args
+                .next()
+                .ok_or_else(|| {
+                    usage(&program);
+                    eprintln!("ERROR: no url is provided subcommand");
+                })
+                .unwrap();
             let connection = &mut establish_connection();
             let workqueue = fetch_page(url_to_add);
 
-            for work in workqueue { 
+            for work in workqueue {
                 for url in work {
                     println!("# Adding {:?} to queue", url);
                     create_work_unit(connection, &url);
                 }
-            } 
-        },
+            }
+        }
         "work" => {
             let _ = extract_data_from_page("https://slashdot.org".to_string());
         }
