@@ -7,6 +7,7 @@ use dotenvy::dotenv;
 use std::env;
 use diesel::prelude::*;
 use spyder::models::*;
+use spyder::{create_work_unit, establish_connection};
 
 fn parse_page(body: &str, mut page: Page) -> anyhow::Result<HashSet<std::string::String>> {
     // Define regular expressions for email and cryptocurrency addresses
@@ -60,8 +61,8 @@ fn main() {
 
     for work in workqueue { 
         for url in work {
-            println!("# Working on {:?}", url);
-            let _new_work = fetch_page(&url);
+            println!("# Adding {:?} to queue", url);
+            create_work_unit(connection, &url);
         }
     } 
 }
