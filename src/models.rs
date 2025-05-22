@@ -1,6 +1,6 @@
 use diesel::prelude::*;
 
-#[derive(Selectable, Insertable)]
+#[derive(Selectable, Queryable, Insertable)]
 #[diesel(table_name = crate::schema::page)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Page {

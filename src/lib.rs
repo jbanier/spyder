@@ -23,3 +23,11 @@ pub fn create_work_unit(conn: &mut SqliteConnection, url: &String) -> WorkUnit {
         .get_result(conn)
         .expect("Error saving new post")
 }
+
+pub fn save_page_info(conn: &mut SqliteConnection, p: &Page) -> Page {
+    diesel::insert_into(crate::schema::page::table)
+        .values(p)
+        .returning(Page::as_returning())
+        .get_result(conn)
+        .expect("Error saving page")
+}

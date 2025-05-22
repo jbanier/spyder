@@ -19,7 +19,7 @@ fn extract_links(body: &str, _page: Page) -> anyhow::Result<HashSet<std::string:
     return Ok(url_work);
 }
 
-fn extract_data_from_page(url: String) -> anyhow::Result<Page> {
+fn extract_page_from_url(url: String) -> anyhow::Result<Page> {
     use scraper::{Html, Selector};
 
     let body = reqwest::blocking::get(url.clone())?.text()?;
@@ -27,8 +27,14 @@ fn extract_data_from_page(url: String) -> anyhow::Result<Page> {
     let document = Html::parse_document(body.as_str());
     let selector = Selector::parse("title").unwrap();
 
-    let title_element = document.select(&selector).next().unwrap();
-    let title_text = title_element.text().collect::<Vec<_>>();
+    let title_element_result = document.select(&selector).next().ok_or("no title.");
+    let mut title_text = vec!["no title"];
+    match title_element_result {
+        Ok(title_element) => {
+            title_text = title_element.text().collect::<Vec<_>>();
+        }
+        Err(_e) => {}
+    }
 
     // Define regular expressions for email and cryptocurrency addresses
     let email_regex = Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap();
@@ -132,9 +138,18 @@ fn main() {
 
             println!("Working with {} WorkUnits", results.len());
             for wu in results {
-                println!("-----------\n");
-                let _ = extract_data_from_page(wu.url);
-                println!("-----------\n");
+                use spyder::save_page_info;
+
+                println!("-----------");
+                let r = extract_page_from_url(wu.url);
+                match r {
+                    Ok(p) => {
+                        let _ = save_page_info(connection, &p);
+                    }
+                    Err(e) => {
+                        eprintln!("ERROR: Couldn't extract page information: {:?}", e);
+                    }
+                }
             }
         }
         &_ => {
