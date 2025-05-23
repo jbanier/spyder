@@ -114,11 +114,13 @@ fn main() {
             let connection = &mut establish_connection();
             let workqueue = fetch_page(url_to_add);
 
-            for work in workqueue {
+            if let Ok(work) = workqueue {
                 for url in work {
                     println!("# Adding {:?} to queue", url);
                     create_work_unit(connection, &url);
                 }
+            } else {
+                eprintln!("ERROR: Failed to fetch page and extract links.");
             }
         }
         "work" => {
@@ -138,13 +140,14 @@ fn main() {
 
             println!("Working with {} WorkUnits", results.len());
             for wu in results {
-                use spyder::save_page_info;
+                use spyder::{save_page_info, mark_work_unit_as_processed};
 
                 println!("-----------");
-                let r = extract_page_from_url(wu.url);
+                let r = extract_page_from_url(wu.url.clone());
                 match r {
                     Ok(p) => {
                         let _ = save_page_info(connection, &p);
+                        let _ = mark_work_unit_as_processed(connection, &wu);
                     }
                     Err(e) => {
                         eprintln!("ERROR: Couldn't extract page information: {:?}", e);

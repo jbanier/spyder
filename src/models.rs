@@ -15,6 +15,7 @@ pub struct Page {
 #[diesel(table_name = crate::schema::work_unit)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct WorkUnit {
+    pub id: i32,
     pub url: String,
     pub processed: bool,
 }

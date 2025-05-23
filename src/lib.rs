@@ -31,3 +31,15 @@ pub fn save_page_info(conn: &mut SqliteConnection, p: &Page) -> Page {
         .get_result(conn)
         .expect("Error saving page")
 }
+
+pub fn mark_work_unit_as_processed(conn: &mut SqliteConnection, wu: &WorkUnit) -> WorkUnit {
+    use crate::schema::work_unit::dsl::*;
+    use diesel::query_dsl::QueryDsl;
+    use diesel::ExpressionMethods;
+    use diesel::RunQueryDsl;
+
+    diesel::update(crate::schema::work_unit::table.filter(id.eq(wu.id)))
+        .set(processed.eq(true))
+        .get_result(conn)
+        .expect("Error updating work unit")
+}
