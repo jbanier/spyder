@@ -11,12 +11,12 @@ fn extract_links(body: &str, _page: Page) -> anyhow::Result<HashSet<std::string:
     let mut url_work = HashSet::new();
     let mut links = Vec::new();
 
-    for caps in link_address_regex.captures_iter(&body) {
+    for caps in link_address_regex.captures_iter(body) {
         links.push(String::from(&caps[0]));
         url_work.insert(String::from(&caps[0]));
     }
     println!("[*] Links count {:?}", links.len());
-    return Ok(url_work);
+    Ok(url_work)
 }
 
 fn extract_page_from_url(url: String) -> anyhow::Result<Page> {
@@ -64,7 +64,7 @@ fn extract_page_from_url(url: String) -> anyhow::Result<Page> {
 
     let page = Page {
         title: title_text.join(" "),
-        url: String::from(url.clone()),
+        url: url.clone(),
         emails: emails.join(","),
         coins: coins.join(","),
         links: links.join(","),
@@ -75,7 +75,7 @@ fn extract_page_from_url(url: String) -> anyhow::Result<Page> {
 fn fetch_page(url: String) -> anyhow::Result<HashSet<std::string::String>> {
     let page = Page {
         title: String::from("title"),
-        url: String::from(url.clone()),
+        url: url.clone(),
         emails: String::new(),
         coins: String::new(),
         links: String::new(),
