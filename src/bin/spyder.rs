@@ -140,7 +140,7 @@ fn main() {
 
             println!("Working with {} WorkUnits", results.len());
             for wu in results {
-                use spyder::{save_page_info, mark_work_unit_as_processed};
+                use spyder::{mark_work_unit_as_processed, save_page_info};
 
                 println!("-----------");
                 let r = extract_page_from_url(wu.url.clone());
