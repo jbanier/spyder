@@ -1,0 +1,40 @@
+{{#*inline "body"}}
+<div class="hero">
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+    
+    <div class="actions">
+        <a href="/work" class="btn btn-primary">Voir les données</a>
+        <a href="/search" class="btn btn-secondary">Rechercher</a>
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <div class="card">
+        <h3>📊 Statistiques</h3>
+        <p>Consultez les métriques de scraping</p>
+        <button onclick="loadStats()" class="btn">Charger Stats</button>
+        <div id="stats-container"></div>
+    </div>
+    
+    <div class="card">
+        <h3>🔍 Recherche Rapide</h3>
+        <form onsubmit="quickSearch(event)">
+            <input type="text" id="search-input" placeholder="Rechercher...">
+            <button type="submit" class="btn">Chercher</button>
+        </form>
+        <div id="search-results"></div>
+    </div>
+    
+    <div class="card">
+        <h3>📝 Actions Récentes</h3>
+        <ul>
+            <li>Scraping de example.com - il y a 2h</li>
+            <li>Analyse de 150 pages - il y a 5h</li>
+            <li>Export CSV généré - hier</li>
+        </ul>
+    </div>
+</div>
+{{/inline}}
+
+{{> base}}

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{title}} - Spyder Dashboard</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <h1><a href="/">🕷️ Spyder</a></h1>
+            <ul class="nav-links">
+                <li><a href="/">Accueil</a></li>
+                <li><a href="/work">Liens visite</a></li>
+                <li><a href="/data">Données</a></li>
+                <li><a href="/api/stats">Stats API</a></li>
+            </ul>
+        </div>
+    </nav>
+    
+    <main class="container">
+        {{{body}}}
+    </main>
+    
+    <footer>
+        <p>&copy; 2024 Spyder Dashboard</p>
+    </footer>
+    
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
