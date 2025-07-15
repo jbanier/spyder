@@ -21,6 +21,9 @@
     
     <main class="container">
         {{{body}}}
+{{#each workunits}}
+<p>{{url}} - {{#if processed}}✅{{else}}❌{{/if}} </p>
+{{/each}}
     </main>
     
     <footer>

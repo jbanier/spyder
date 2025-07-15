@@ -1,11 +1,10 @@
-use spyder::{establish_connection};
+use spyder::establish_connection;
 
-use rocket::{get, routes, launch};
-use rocket_dyn_templates::{Template, context};
-use rocket::fs::{FileServer, relative};
+use rocket::fs::{relative, FileServer};
+use rocket::{get, launch, routes};
+use rocket_dyn_templates::{context, Template};
 
 use spyder::models::*;
-
 
 #[get("/work")]
 fn list_work() -> Template {
@@ -14,22 +13,25 @@ fn list_work() -> Template {
     use diesel::SelectableHelper;
     use spyder::schema::work_unit;
 
-    let mut html_table = Vec::new();
-
     let connection = &mut establish_connection();
     let work_units = work_unit::table
         .select(WorkUnit::as_select())
         .load(connection)
         .expect("Error querying for work");
-    for w in work_units {
-        html_table.push(w.url.clone());
-    }
-    return Template::render("index", context! { title: "Liste des work units", description: "liste des liens a visiter et leur etat."})
+    return Template::render(
+        "index",
+        context! { title: "Liste des work units",
+        description: "liste des liens a visiter et leur etat.",
+        workunits: work_units},
+    );
 }
 
 #[get("/")]
 fn index() -> Template {
-    Template::render("index", context! { title: "page principale", description: "Ici la page principale" })
+    Template::render(
+        "index",
+        context! { title: "page principale", description: "Ici la page principale" },
+    )
 }
 
 #[launch]

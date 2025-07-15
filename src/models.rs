@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use rocket::serde::Serialize;
 
 #[derive(Selectable, Queryable, Insertable)]
 #[diesel(table_name = crate::schema::page)]
@@ -11,7 +12,8 @@ pub struct Page {
     pub coins: String,
 }
 
-#[derive(Selectable, Queryable)]
+#[derive(Selectable, Queryable, Serialize)]
+#[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::work_unit)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct WorkUnit {
