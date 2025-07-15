@@ -1,7 +1,8 @@
 use diesel::prelude::*;
 use rocket::serde::Serialize;
 
-#[derive(Selectable, Queryable, Insertable)]
+#[derive(Selectable, Queryable, Insertable, Serialize)]
+#[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::page)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Page {

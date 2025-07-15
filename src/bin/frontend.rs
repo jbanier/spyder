@@ -26,11 +26,25 @@ fn list_work() -> Template {
     );
 }
 
+fn list_pages() -> Vec<Page> {
+    use diesel::query_dsl::QueryDsl;
+    use diesel::RunQueryDsl;
+    use diesel::SelectableHelper;
+    use spyder::schema::page;
+
+    let connection = &mut establish_connection();
+    page::table
+        .select(Page::as_select())
+        .load(connection)
+        .expect("Error querying for pages")
+}
+
 #[get("/")]
 fn index() -> Template {
+    let pages = list_pages();
     Template::render(
         "index",
-        context! { title: "page principale", description: "Ici la page principale" },
+        context! { title: "page principale", description: "Ici la page principale",  pages: pages },
     )
 }
 

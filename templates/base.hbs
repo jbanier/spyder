@@ -20,10 +20,20 @@
     </nav>
     
     <main class="container">
-        {{{body}}}
+{{{body}}}
 {{#each workunits}}
 <p>{{url}} - {{#if processed}}✅{{else}}❌{{/if}} </p>
 {{/each}}
+<ul>
+{{#each pages}}
+<li>
+    <a href={{url}}>{{title}}</a>
+    <p>{{links}} liens</p>
+    <p>{{coins}} coins</p>
+    <p>{{emails }} emails</p>
+</li>
+{{/each}}
+</ul>
     </main>
     
     <footer>
