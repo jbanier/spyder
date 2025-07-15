@@ -20,20 +20,97 @@
     </nav>
     
     <main class="container">
-{{{body}}}
-{{#each workunits}}
-<p>{{url}} - {{#if processed}}✅{{else}}❌{{/if}} </p>
-{{/each}}
-<ul>
-{{#each pages}}
-<li>
-    <a href={{url}}>{{title}}</a>
-    <p>{{links}} liens</p>
-    <p>{{coins}} coins</p>
-    <p>{{emails }} emails</p>
-</li>
-{{/each}}
-</ul>
+        {{{body}}}
+        
+        <!-- Section Workunits -->
+        {{#if workunits}}
+        <div class="card">
+            <h3>🔄 URLs en cours de traitement</h3>
+            <div class="data-table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>URL</th>
+                            <th>Statut</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{#each workunits}}
+                        <tr>
+                            <td class="content-cell">
+                                <a href="{{url}}" target="_blank" title="{{url}}">{{url}}</a>
+                            </td>
+                            <td>
+                                {{#if processed}}
+                                    <span style="color: #27ae60; font-weight: bold;">✅ Traité</span>
+                                {{else}}
+                                    <span style="color: #e74c3c; font-weight: bold;">⏳ En cours</span>
+                                {{/if}}
+                            </td>
+                        </tr>
+                        {{/each}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {{/if}}
+        
+        <!-- Section Pages analysées -->
+        {{#if pages}}
+        <div class="card">
+            <h3>📊 Pages analysées</h3>
+            <div class="data-table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Titre</th>
+                            <th>URL</th>
+                            <th>Liens</th>
+                            <th>Coins</th>
+                            <th>Emails</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{#each pages}}
+                        <tr>
+                            <td class="content-cell">
+                                <strong>{{title}}</strong>
+                            </td>
+                            <td class="content-cell">
+                                <a href="{{url}}" target="_blank" title="{{url}}">{{url}}</a>
+                            </td>
+                            <td style="text-align: center;">
+                                <span style="background: #3498db; color: white; padding: 0.25rem 0.5rem; border-radius: 3px; font-size: 0.875rem;">
+                                    {{links}}
+                                </span>
+                            </td>
+                            <td style="text-align: center;">
+                                <span style="background: #f39c12; color: white; padding: 0.25rem 0.5rem; border-radius: 3px; font-size: 0.875rem;">
+                                    {{coins}}
+                                </span>
+                            </td>
+                            <td style="text-align: center;">
+                                <span style="background: #e74c3c; color: white; padding: 0.25rem 0.5rem; border-radius: 3px; font-size: 0.875rem;">
+                                    {{emails}}
+                                </span>
+                            </td>
+                        </tr>
+                        {{/each}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {{/if}}
+        
+        <!-- État vide -->
+        {{#unless workunits}}
+        {{#unless pages}}
+        <div class="empty-state">
+            <h2>🕷️ Aucune donnée disponible</h2>
+            <p>Le crawler n'a pas encore traité d'URLs ou les données ne sont pas encore disponibles.</p>
+        </div>
+        {{/unless}}
+        {{/unless}}
     </main>
     
     <footer>
