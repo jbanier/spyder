@@ -1,0 +1,56 @@
+{{#*inline "body"}}
+<div class="hero">
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</div>
+
+<div class="card search-card">
+    <form class="search-form" action="/search" method="get">
+        <input
+            class="search-field"
+            type="text"
+            name="query"
+            value="{{query}}"
+            placeholder="Titre, URL ou email"
+        >
+        <input
+            class="search-limit"
+            type="number"
+            name="limit"
+            min="1"
+            max="50"
+            value="20"
+        >
+        <button type="submit" class="btn">Rechercher</button>
+    </form>
+</div>
+
+{{#if has_query}}
+    {{#if has_results}}
+    <div class="card">
+        <h3>Résultats</h3>
+        <div class="search-results-grid">
+            {{#each results}}
+            <article class="search-result-card">
+                <h4>{{title}}</h4>
+                <p><a href="{{url}}" target="_blank" rel="noopener noreferrer">{{url}}</a></p>
+                <p class="muted">Indexée le {{scraped_at}}</p>
+            </article>
+            {{/each}}
+        </div>
+    </div>
+    {{else}}
+    <div class="empty-state">
+        <h2>Aucun résultat</h2>
+        <p>Aucune page ne correspond à la recherche <strong>{{query}}</strong>.</p>
+    </div>
+    {{/if}}
+{{else}}
+<div class="empty-state">
+    <h2>Recherche plein texte</h2>
+    <p>Saisissez un terme pour chercher dans les titres, URLs et emails stockés en base.</p>
+</div>
+{{/if}}
+{{/inline}}
+
+{{> base}}
