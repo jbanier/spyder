@@ -8,6 +8,7 @@ diesel::table! {
         links -> Text,
         emails -> Text,
         coins -> Text,
+        created_at -> Text,
     }
 }
 
@@ -15,7 +16,10 @@ diesel::table! {
     work_unit (id) {
         id -> Integer,
         url -> Text,
-        processed -> Bool,
+        status -> Text,
+        retry_count -> Integer,
+        last_error -> Nullable<Text>,
+        created_at -> Text,
     }
 }
 

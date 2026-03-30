@@ -16,7 +16,7 @@ diesel = { version = "2.2.0", features = ["sqlite", "returning_clauses_for_sqlit
 # libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 dotenvy = "0.15"
 scraper = "0.23.1"
-rocket = "0.5.1"
+rocket = { version = "0.5.1", features = ["json"] }
 rocket_dyn_templates = { version = "0.2.0", features = ["handlebars"] }
 
 

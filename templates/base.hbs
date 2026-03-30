@@ -14,6 +14,7 @@
                 <li><a href="/">Accueil</a></li>
                 <li><a href="/work">Liens visite</a></li>
                 <li><a href="/data">Données</a></li>
+                <li><a href="/search">Recherche</a></li>
                 <li><a href="/api/stats">Stats API</a></li>
             </ul>
         </div>
@@ -32,21 +33,21 @@
                         <tr>
                             <th>URL</th>
                             <th>Statut</th>
+                            <th>Essais</th>
+                            <th>Erreur</th>
                         </tr>
                     </thead>
                     <tbody>
                         {{#each workunits}}
                         <tr>
                             <td class="content-cell">
-                                <a href="{{url}}" target="_blank" title="{{url}}">{{url}}</a>
+                                <a href="{{url}}" target="_blank" rel="noopener noreferrer" title="{{url}}">{{url}}</a>
                             </td>
                             <td>
-                                {{#if processed}}
-                                    <span style="color: #27ae60; font-weight: bold;">✅ Traité</span>
-                                {{else}}
-                                    <span style="color: #e74c3c; font-weight: bold;">⏳ En cours</span>
-                                {{/if}}
+                                <span class="status-pill status-{{status}}">{{status}}</span>
                             </td>
+                            <td>{{retry_count}}</td>
+                            <td class="content-cell">{{last_error}}</td>
                         </tr>
                         {{/each}}
                     </tbody>
@@ -65,6 +66,7 @@
                         <tr>
                             <th>Titre</th>
                             <th>URL</th>
+                            <th>Scrapée le</th>
                             <th>Liens</th>
                             <th>Coins</th>
                             <th>Emails</th>
@@ -77,8 +79,9 @@
                                 <strong>{{title}}</strong>
                             </td>
                             <td class="content-cell">
-                                <a href="{{url}}" target="_blank" title="{{url}}">{{url}}</a>
+                                <a href="{{url}}" target="_blank" rel="noopener noreferrer" title="{{url}}">{{url}}</a>
                             </td>
+                            <td>{{created_at}}</td>
                             <td style="text-align: center;">
                                 <span style="background: #3498db; color: white; padding: 0.25rem 0.5rem; border-radius: 3px; font-size: 0.875rem;">
                                     {{links}}

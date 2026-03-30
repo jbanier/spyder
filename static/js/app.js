@@ -1,10 +1,14 @@
 // Chargement des statistiques
 async function loadStats() {
+    const container = document.getElementById('stats-container');
+
     try {
         const response = await fetch('/api/stats');
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
         const result = await response.json();
-        
-        const container = document.getElementById('stats-container');
+
         if (result.success) {
             container.innerHTML = `
                 <div class="stats-grid">
@@ -15,6 +19,14 @@ async function loadStats() {
                     <div class="stat-item">
                         <strong>${result.data.total_domains}</strong>
                         <span>Domaines</span>
+                    </div>
+                    <div class="stat-item">
+                        <strong>${result.data.pending_work_units}</strong>
+                        <span>En attente</span>
+                    </div>
+                    <div class="stat-item">
+                        <strong>${result.data.failed_work_units}</strong>
+                        <span>En échec</span>
                     </div>
                     <div class="stat-item">
                         <strong>${result.data.last_scrape}</strong>
@@ -35,34 +47,26 @@ async function loadStats() {
 // Recherche rapide
 async function quickSearch(event) {
     event.preventDefault();
-    
+
     const query = document.getElementById('search-input').value;
     const resultsContainer = document.getElementById('search-results');
-    
+
     if (!query.trim()) {
         resultsContainer.innerHTML = '<p>Veuillez entrer un terme de recherche</p>';
         return;
     }
-    
+
     try {
         resultsContainer.innerHTML = '<p>Recherche en cours...</p>';
-        
-        const response = await fetch(`/search?query=${encodeURIComponent(query)}&limit=5`);
+
+        const response = await fetch(`/api/search?query=${encodeURIComponent(query)}&limit=5`);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
         const result = await response.json();
-        
+
         if (result.success && result.data.length > 0) {
-            resultsContainer.innerHTML = `
-                <h4>Résultats (${result.data.length}):</h4>
-                <ul class="search-list">
-                    ${result.data.map(item => `
-                        <li class="search-item">
-                            <strong>${item.title}</strong><br>
-                            <small><a href="${item.url}" target="_blank">${item.url}</a></small><br>
-                            <em>${item.scraped_at}</em>
-                        </li>
-                    `).join('')}
-                </ul>
-            `;
+            renderSearchResults(resultsContainer, result.data);
         } else {
             resultsContainer.innerHTML = '<p>Aucun résultat trouvé</p>';
         }
@@ -70,6 +74,45 @@ async function quickSearch(event) {
         console.error('Erreur de recherche:', error);
         resultsContainer.innerHTML = '<p class="error">Erreur lors de la recherche</p>';
     }
+}
+
+function renderSearchResults(container, results) {
+    container.innerHTML = '';
+
+    const title = document.createElement('h4');
+    title.textContent = `Résultats (${results.length})`;
+    container.appendChild(title);
+
+    const list = document.createElement('ul');
+    list.className = 'search-list';
+
+    for (const item of results) {
+        const listItem = document.createElement('li');
+        listItem.className = 'search-item';
+
+        const heading = document.createElement('strong');
+        heading.textContent = item.title;
+        listItem.appendChild(heading);
+        listItem.appendChild(document.createElement('br'));
+
+        const small = document.createElement('small');
+        const link = document.createElement('a');
+        link.href = item.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = item.url;
+        small.appendChild(link);
+        listItem.appendChild(small);
+        listItem.appendChild(document.createElement('br'));
+
+        const scrapedAt = document.createElement('em');
+        scrapedAt.textContent = item.scraped_at;
+        listItem.appendChild(scrapedAt);
+
+        list.appendChild(listItem);
+    }
+
+    container.appendChild(list);
 }
 
 // Styles CSS additionnels via JavaScript
