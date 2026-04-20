@@ -131,6 +131,12 @@ cargo test
 diesel print-schema > src/schema.rs
 ```
 
+### Add a web site to be scraped with:
+
+```
+all_proxy=socks5h://localhost:9050 target/debug/spyder add http://somesite.onion
+```
+
 ## Troubleshooting
 
 `DATABASE_URL must be set`
