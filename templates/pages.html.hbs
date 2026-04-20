@@ -31,7 +31,16 @@
                         <a class="row-link" href="/pages/{{id}}">{{title}}</a>
                         <div class="cell-subtitle">{{url}}</div>
                     </td>
-                    <td>{{host}}</td>
+                    <td>
+                        <div class="table-cell-stack">
+                            <span>{{host}}</span>
+                            {{#if site_category}}
+                            <div class="inline-badges">
+                                <span class="site-category-badge site-confidence-{{site_category.confidence}}">{{site_category.label}} · {{site_category.confidence}}</span>
+                            </div>
+                            {{/if}}
+                        </div>
+                    </td>
                     <td>{{language}}</td>
                     <td>{{last_scanned_at}}</td>
                     <td><span class="count-pill">{{outbound_link_count}}</span></td>

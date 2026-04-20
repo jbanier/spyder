@@ -178,6 +178,13 @@ a:hover {
     font-size: 1.15rem;
 }
 
+.section-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.7rem;
+}
+
 .muted,
 .muted-link,
 .cell-subtitle,
@@ -195,6 +202,35 @@ a:hover {
     display: grid;
     gap: 1rem;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.metric-grid {
+    display: grid;
+    gap: 0.9rem;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    margin-bottom: 1rem;
+}
+
+.metric-item {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 1rem;
+}
+
+.metric-item strong {
+    font-size: 1.1rem;
+    line-height: 1.25;
+}
+
+.metric-label {
+    color: var(--muted);
+    font-size: 0.82rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
 }
 
 .stat-item {
@@ -218,6 +254,10 @@ a:hover {
     display: flex;
     flex-direction: column;
     gap: 0.7rem;
+}
+
+.history-list {
+    margin-top: 1rem;
 }
 
 .compact-row {
@@ -246,6 +286,45 @@ a:hover {
     overflow-wrap: anywhere;
 }
 
+.table-cell-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.inline-badges {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.meta-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin-top: 0.9rem;
+}
+
+.history-row {
+    align-items: flex-start;
+}
+
+.history-row-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+
+.history-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin: -0.15rem 0 0.4rem;
+    padding: 0 0.25rem;
+}
+
 .relationship-arrow {
     color: var(--muted);
     font-size: 1.2rem;
@@ -270,10 +349,84 @@ a:hover {
     color: var(--accent-strong);
 }
 
+.change-pill {
+    background: rgba(31, 108, 92, 0.08);
+    border: 1px solid rgba(31, 108, 92, 0.16);
+    border-radius: 999px;
+    color: var(--accent-strong);
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0.38rem 0.65rem;
+}
+
+.site-category-badge,
+.evidence-pill {
+    align-items: center;
+    border-radius: 999px;
+    display: inline-flex;
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 0.38rem 0.65rem;
+    width: fit-content;
+}
+
+.site-category-badge {
+    border: 1px solid rgba(23, 33, 31, 0.12);
+}
+
+.site-confidence-high {
+    background: rgba(31, 108, 92, 0.14);
+    color: var(--accent-strong);
+}
+
+.site-confidence-medium {
+    background: rgba(14, 98, 125, 0.12);
+    color: #0f5b73;
+}
+
+.site-confidence-low {
+    background: rgba(92, 108, 104, 0.12);
+    color: var(--muted);
+}
+
+.blacklist-badge {
+    align-items: center;
+    background: rgba(163, 93, 16, 0.12);
+    border: 1px solid rgba(163, 93, 16, 0.24);
+    border-radius: 999px;
+    color: var(--warning);
+    display: inline-flex;
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 0.38rem 0.65rem;
+    width: fit-content;
+}
+
 .tag-list {
     display: flex;
     flex-wrap: wrap;
     gap: 0.65rem;
+}
+
+.site-profile-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    margin-bottom: 1.35rem;
+}
+
+.site-evidence-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+}
+
+.evidence-pill {
+    background: rgba(23, 33, 31, 0.06);
+    border: 1px solid rgba(23, 33, 31, 0.12);
+    color: var(--ink);
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-weight: 600;
 }
 
 .tag {
@@ -344,6 +497,20 @@ a:hover {
     overflow-x: auto;
 }
 
+.command-list {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.command-list code {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    display: block;
+    overflow-x: auto;
+    padding: 0.9rem 1rem;
+}
+
 .data-table {
     border-collapse: collapse;
     width: 100%;
@@ -391,12 +558,24 @@ a:hover {
 }
 
 .meta-strip span {
-    color: rgba(255, 255, 255, 0.82);
+    color: var(--muted);
     font-size: 0.93rem;
 }
 
 .meta-strip strong {
+    color: var(--ink);
+}
+
+.hero .meta-strip span {
+    color: rgba(255, 255, 255, 0.82);
+}
+
+.hero .meta-strip strong {
     color: white;
+}
+
+.hero .site-category-badge {
+    border-color: rgba(255, 255, 255, 0.18);
 }
 
 .empty-state {
@@ -459,5 +638,10 @@ footer {
     .compact-row {
         align-items: flex-start;
         flex-direction: column;
+    }
+
+    .history-row-meta,
+    .section-actions {
+        justify-content: flex-start;
     }
 }

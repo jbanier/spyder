@@ -23,8 +23,32 @@
             <tbody>
                 {{#each relationships}}
                 <tr>
-                    <td>{{source_host}}</td>
-                    <td>{{target_host}}</td>
+                    <td>
+                        <div class="table-cell-stack">
+                            <span>{{source_host}}</span>
+                            {{#if source_site_category}}
+                            <div class="inline-badges">
+                                <span class="site-category-badge site-confidence-{{source_site_category.confidence}}">{{source_site_category.label}} · {{source_site_category.confidence}}</span>
+                            </div>
+                            {{/if}}
+                        </div>
+                    </td>
+                    <td>
+                        <div class="table-cell-stack">
+                            <span>{{target_host}}</span>
+                            {{#if target_site_category}}
+                            <div class="inline-badges">
+                                <span class="site-category-badge site-confidence-{{target_site_category.confidence}}">{{target_site_category.label}} · {{target_site_category.confidence}}</span>
+                            </div>
+                            {{/if}}
+                            {{#if is_blacklisted}}
+                            <div class="inline-badges">
+                                <span class="blacklist-badge">Blacklisted</span>
+                                <span class="muted">Matches {{blacklist_match_domain}}</span>
+                            </div>
+                            {{/if}}
+                        </div>
+                    </td>
                     <td><span class="count-pill">{{reference_count}}</span></td>
                 </tr>
                 {{/each}}

@@ -1,0 +1,278 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Historical Scan</p>
+    <h1>{{detail.scan.title}}</h1>
+    <p class="lead">{{detail.page_url}}</p>
+    <div class="meta-strip">
+        <span><strong>Site:</strong> {{detail.page_host}}</span>
+        <span><strong>Scanned:</strong> {{detail.scan.scanned_at}}</span>
+        <span><strong>Language:</strong> {{detail.scan.language}}</span>
+        {{#if detail.previous_scan}}
+        <span><strong>Previous:</strong> {{detail.previous_scan.scanned_at}}</span>
+        {{/if}}
+    </div>
+    {{#if detail.site_profile}}
+    <div class="meta-badges">
+        <span class="site-category-badge site-confidence-{{detail.site_profile.confidence}}">{{detail.site_profile.label}} · {{detail.site_profile.confidence}}</span>
+    </div>
+    {{/if}}
+    <div class="actions">
+        <a href="{{page_url}}" class="btn btn-secondary">Current Page</a>
+        <a href="{{history_url}}" class="btn btn-secondary">Scan History</a>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Change Summary</h2>
+        {{#if has_previous_scan}}
+        <span class="count-pill">Compared with previous scan</span>
+        {{else}}
+        <span class="count-pill">Baseline scan</span>
+        {{/if}}
+    </div>
+    {{#if has_previous_scan}}
+    <div class="metric-grid">
+        <article class="metric-item">
+            <span class="metric-label">Links</span>
+            <strong>+{{detail.diff.change_summary.added_links}} / -{{detail.diff.change_summary.removed_links}}</strong>
+        </article>
+        <article class="metric-item">
+            <span class="metric-label">Emails</span>
+            <strong>+{{detail.diff.change_summary.added_emails}} / -{{detail.diff.change_summary.removed_emails}}</strong>
+        </article>
+        <article class="metric-item">
+            <span class="metric-label">Crypto</span>
+            <strong>+{{detail.diff.change_summary.added_crypto_refs}} / -{{detail.diff.change_summary.removed_crypto_refs}}</strong>
+        </article>
+        <article class="metric-item">
+            <span class="metric-label">Metadata</span>
+            <strong>
+                {{#if detail.diff.change_summary.title_changed}}Title {{/if}}
+                {{#if detail.diff.change_summary.language_changed}}Language{{/if}}
+                {{#unless detail.diff.change_summary.title_changed}}{{#unless detail.diff.change_summary.language_changed}}No change{{/unless}}{{/unless}}
+            </strong>
+        </article>
+    </div>
+    {{#unless detail.diff.change_summary.has_changes}}
+    <p class="empty-copy">This scan matched the previous successful scan.</p>
+    {{/unless}}
+    {{else}}
+    <p class="empty-copy">This is the oldest stored scan for this page, so no diff is available yet.</p>
+    {{/if}}
+</section>
+
+{{#if detail.site_profile}}
+<section class="card site-profile-card">
+    <div class="section-heading">
+        <h2>Site Classification</h2>
+        <span class="count-pill">{{detail.site_profile.page_count}} pages</span>
+    </div>
+    <div class="inline-badges">
+        <span class="site-category-badge site-confidence-{{detail.site_profile.confidence}}">{{detail.site_profile.label}} · {{detail.site_profile.confidence}}</span>
+        <span class="muted">Last classified {{detail.site_profile.last_classified_at}}</span>
+    </div>
+    {{#if detail.site_profile.source_page_id}}
+    <p class="detail-reference">
+        Evidence source:
+        <a class="inline-link" href="/pages/{{detail.site_profile.source_page_id}}">{{detail.site_profile.source_page_title}}</a>
+    </p>
+    {{/if}}
+    <div class="site-evidence-list">
+        {{#each detail.site_profile.evidence}}
+        <span class="evidence-pill">{{this}}</span>
+        {{/each}}
+    </div>
+</section>
+{{/if}}
+
+<div class="dashboard-grid">
+    <section class="card">
+        <div class="section-heading">
+            <h2>Snapshot Links</h2>
+            <span class="count-pill">{{detail.scan.outbound_link_count}}</span>
+        </div>
+        {{#if has_outgoing_links}}
+        <div class="compact-list">
+            {{#each detail.outgoing_links}}
+            <div class="compact-row compact-row-static">
+                <div>
+                    <a class="compact-title" href="{{target_url}}" target="_blank" rel="noopener noreferrer">{{target_url}}</a>
+                    <div class="cell-subtitle">{{target_host}}</div>
+                    {{#if is_blacklisted}}
+                    <div class="inline-badges">
+                        <span class="blacklist-badge">Blacklisted</span>
+                        <span class="muted">Matches {{blacklist_match_domain}}</span>
+                    </div>
+                    {{/if}}
+                </div>
+                {{#if target_page_id}}
+                <a class="inline-link" href="/pages/{{target_page_id}}">{{target_page_title}}</a>
+                {{/if}}
+            </div>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No links were captured in this scan.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Snapshot Emails</h2>
+            <span class="count-pill">{{detail.scan.email_count}}</span>
+        </div>
+        {{#if has_emails}}
+        <div class="tag-list">
+            {{#each detail.emails}}
+            <a class="tag" href="{{detail_url}}">{{value}}</a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No emails were captured in this scan.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Snapshot Crypto</h2>
+            <span class="count-pill">{{detail.scan.crypto_count}}</span>
+        </div>
+        {{#if has_crypto_refs}}
+        <div class="tag-list">
+            {{#each detail.crypto_refs}}
+            <a class="tag" href="{{detail_url}}">{{asset_type}}: {{reference}}</a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No crypto references were captured in this scan.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Added Links</h2>
+            <span class="count-pill">{{detail.diff.change_summary.added_links}}</span>
+        </div>
+        {{#if has_added_links}}
+        <div class="compact-list">
+            {{#each detail.diff.added_links}}
+            <div class="compact-row compact-row-static">
+                <div>
+                    <a class="compact-title" href="{{target_url}}" target="_blank" rel="noopener noreferrer">{{target_url}}</a>
+                    <div class="cell-subtitle">{{target_host}}</div>
+                    {{#if is_blacklisted}}
+                    <div class="inline-badges">
+                        <span class="blacklist-badge">Blacklisted</span>
+                        <span class="muted">Matches {{blacklist_match_domain}}</span>
+                    </div>
+                    {{/if}}
+                </div>
+                {{#if target_page_id}}
+                <a class="inline-link" href="/pages/{{target_page_id}}">{{target_page_title}}</a>
+                {{/if}}
+            </div>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No links were added in this scan.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Removed Links</h2>
+            <span class="count-pill">{{detail.diff.change_summary.removed_links}}</span>
+        </div>
+        {{#if has_removed_links}}
+        <div class="compact-list">
+            {{#each detail.diff.removed_links}}
+            <div class="compact-row compact-row-static">
+                <div>
+                    <a class="compact-title" href="{{target_url}}" target="_blank" rel="noopener noreferrer">{{target_url}}</a>
+                    <div class="cell-subtitle">{{target_host}}</div>
+                    {{#if is_blacklisted}}
+                    <div class="inline-badges">
+                        <span class="blacklist-badge">Blacklisted</span>
+                        <span class="muted">Matches {{blacklist_match_domain}}</span>
+                    </div>
+                    {{/if}}
+                </div>
+                {{#if target_page_id}}
+                <a class="inline-link" href="/pages/{{target_page_id}}">{{target_page_title}}</a>
+                {{/if}}
+            </div>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No links were removed in this scan.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Added Emails</h2>
+            <span class="count-pill">{{detail.diff.change_summary.added_emails}}</span>
+        </div>
+        {{#if has_added_emails}}
+        <div class="tag-list">
+            {{#each detail.diff.added_emails}}
+            <a class="tag" href="{{detail_url}}">{{value}}</a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No emails were added in this scan.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Removed Emails</h2>
+            <span class="count-pill">{{detail.diff.change_summary.removed_emails}}</span>
+        </div>
+        {{#if has_removed_emails}}
+        <div class="tag-list">
+            {{#each detail.diff.removed_emails}}
+            <a class="tag" href="{{detail_url}}">{{value}}</a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No emails were removed in this scan.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Added Crypto</h2>
+            <span class="count-pill">{{detail.diff.change_summary.added_crypto_refs}}</span>
+        </div>
+        {{#if has_added_crypto_refs}}
+        <div class="tag-list">
+            {{#each detail.diff.added_crypto_refs}}
+            <a class="tag" href="{{detail_url}}">{{asset_type}}: {{reference}}</a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No crypto references were added in this scan.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Removed Crypto</h2>
+            <span class="count-pill">{{detail.diff.change_summary.removed_crypto_refs}}</span>
+        </div>
+        {{#if has_removed_crypto_refs}}
+        <div class="tag-list">
+            {{#each detail.diff.removed_crypto_refs}}
+            <a class="tag" href="{{detail_url}}">{{asset_type}}: {{reference}}</a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No crypto references were removed in this scan.</p>
+        {{/if}}
+    </section>
+</div>
+{{/inline}}
+
+{{> base}}

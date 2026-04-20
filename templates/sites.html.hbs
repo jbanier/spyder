@@ -1,0 +1,74 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Host Profiles</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+{{#if has_sites}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Classified Hosts</h2>
+        <span class="muted">{{site_count}} profiles</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Host</th>
+                    <th>Category</th>
+                    <th>Pages</th>
+                    <th>Evidence</th>
+                    <th>Evidence Source</th>
+                    <th>Last Classified</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each sites}}
+                <tr>
+                    <td>{{host}}</td>
+                    <td>
+                        <span class="site-category-badge site-confidence-{{confidence}}">{{label}} · {{confidence}}</span>
+                    </td>
+                    <td><span class="count-pill">{{page_count}}</span></td>
+                    <td>
+                        <div class="site-evidence-list">
+                            {{#each evidence}}
+                            <span class="evidence-pill">{{this}}</span>
+                            {{/each}}
+                        </div>
+                    </td>
+                    <td>
+                        {{#if source_page_id}}
+                        <a class="inline-link" href="/pages/{{source_page_id}}">{{source_page_title}}</a>
+                        <div class="cell-subtitle">{{source_page_url}}</div>
+                        {{else}}
+                        <span class="muted">Unknown</span>
+                        {{/if}}
+                    </td>
+                    <td>{{last_classified_at}}</td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+</section>
+{{#if has_pagination}}
+<section class="pagination-bar">
+    {{#if pagination.has_previous_page}}
+    <a class="btn btn-secondary" href="{{pagination.previous_page_url}}">Previous</a>
+    {{/if}}
+    {{#if pagination.has_next_page}}
+    <a class="btn btn-secondary" href="{{pagination.next_page_url}}">Next</a>
+    {{/if}}
+</section>
+{{/if}}
+{{else}}
+<section class="empty-state">
+    <h2>No site profiles yet</h2>
+    <p>Run the crawler again after this migration so host classifications can be computed from stored pages.</p>
+</section>
+{{/if}}
+{{/inline}}
+
+{{> base}}

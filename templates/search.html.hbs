@@ -39,9 +39,15 @@
                 <h3><a class="row-link" href="/pages/{{page_id}}">{{title}}</a></h3>
                 <p><a href="{{url}}" target="_blank" rel="noopener noreferrer">{{url}}</a></p>
                 <div class="meta-strip">
+                    <span><strong>Host:</strong> {{host}}</span>
                     <span><strong>Language:</strong> {{language}}</span>
                     <span><strong>Last Scan:</strong> {{scraped_at}}</span>
                 </div>
+                {{#if site_category}}
+                <div class="meta-badges">
+                    <span class="site-category-badge site-confidence-{{site_category.confidence}}">{{site_category.label}} · {{site_category.confidence}}</span>
+                </div>
+                {{/if}}
             </article>
             {{/each}}
         </div>

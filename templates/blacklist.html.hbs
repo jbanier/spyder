@@ -1,0 +1,64 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Domain Blacklist</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+    <div class="actions">
+        <a href="/api/blacklist" class="btn btn-secondary">JSON</a>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Manage From CLI</h2>
+    </div>
+    <div class="command-list">
+        <code>cargo run --bin spyder -- blacklist list</code>
+        <code>cargo run --bin spyder -- blacklist add example.com</code>
+        <code>cargo run --bin spyder -- blacklist remove example.com</code>
+    </div>
+</section>
+
+{{#if has_entries}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Configured Domains</h2>
+        <span class="muted">{{entry_count}} rules</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Domain</th>
+                    <th>Added</th>
+                    <th>Current Page Links</th>
+                    <th>Historical Scan Links</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each entries}}
+                <tr>
+                    <td>
+                        <div class="table-cell-stack">
+                            <span class="row-link">{{domain}}</span>
+                            <span class="blacklist-badge">Blacklisted</span>
+                        </div>
+                    </td>
+                    <td>{{created_at}}</td>
+                    <td><span class="count-pill">{{page_link_count}}</span></td>
+                    <td><span class="count-pill">{{page_scan_link_count}}</span></td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+</section>
+{{else}}
+<section class="empty-state">
+    <h2>No blacklisted domains</h2>
+    <p>Add a domain from the CLI to stop discovered links from being queued while keeping them visible in page intelligence views.</p>
+</section>
+{{/if}}
+{{/inline}}
+
+{{> base}}

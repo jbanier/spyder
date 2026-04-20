@@ -9,6 +9,101 @@
         <span><strong>Created:</strong> {{page.created_at}}</span>
         <span><strong>Last Scan:</strong> {{page.last_scanned_at}}</span>
     </div>
+    {{#if page.site_profile}}
+    <div class="meta-badges">
+        <span class="site-category-badge site-confidence-{{page.site_profile.confidence}}">{{page.site_profile.label}} · {{page.site_profile.confidence}}</span>
+    </div>
+    {{/if}}
+    <div class="actions">
+        <a href="{{history_url}}" class="btn btn-secondary">Scan History</a>
+    </div>
+</section>
+
+{{#if page.site_profile}}
+<section class="card site-profile-card">
+    <div class="section-heading">
+        <h2>Site Classification</h2>
+        <span class="count-pill">{{page.site_profile.page_count}} pages</span>
+    </div>
+    <div class="inline-badges">
+        <span class="site-category-badge site-confidence-{{page.site_profile.confidence}}">{{page.site_profile.label}} · {{page.site_profile.confidence}}</span>
+        <span class="muted">Last classified {{page.site_profile.last_classified_at}}</span>
+    </div>
+    {{#if page.site_profile.source_page_id}}
+    <p class="detail-reference">
+        Evidence source:
+        <a class="inline-link" href="/pages/{{page.site_profile.source_page_id}}">{{page.site_profile.source_page_title}}</a>
+    </p>
+    {{/if}}
+    <div class="site-evidence-list">
+        {{#each page.site_profile.evidence}}
+        <span class="evidence-pill">{{this}}</span>
+        {{/each}}
+    </div>
+</section>
+{{/if}}
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Scan History</h2>
+        <div class="section-actions">
+            <span class="count-pill">{{scan_count}} scans</span>
+            <a class="muted-link" href="{{history_url}}">Full history</a>
+        </div>
+    </div>
+    {{#if has_scan_history}}
+    {{#if has_latest_change_summary}}
+    {{#if latest_change_summary.has_changes}}
+    <div class="metric-grid">
+        <article class="metric-item">
+            <span class="metric-label">Links</span>
+            <strong>+{{latest_change_summary.added_links}} / -{{latest_change_summary.removed_links}}</strong>
+        </article>
+        <article class="metric-item">
+            <span class="metric-label">Emails</span>
+            <strong>+{{latest_change_summary.added_emails}} / -{{latest_change_summary.removed_emails}}</strong>
+        </article>
+        <article class="metric-item">
+            <span class="metric-label">Crypto</span>
+            <strong>+{{latest_change_summary.added_crypto_refs}} / -{{latest_change_summary.removed_crypto_refs}}</strong>
+        </article>
+        <article class="metric-item">
+            <span class="metric-label">Metadata</span>
+            <strong>
+                {{#if latest_change_summary.title_changed}}Title {{/if}}
+                {{#if latest_change_summary.language_changed}}Language{{/if}}
+                {{#unless latest_change_summary.title_changed}}{{#unless latest_change_summary.language_changed}}No change{{/unless}}{{/unless}}
+            </strong>
+        </article>
+    </div>
+    {{else}}
+    <p class="empty-copy">The latest scan matched the previous successful scan.</p>
+    {{/if}}
+    {{else}}
+    <p class="empty-copy">Only one successful scan has been captured for this page so far.</p>
+    {{/if}}
+
+    <div class="compact-list history-list">
+        {{#each scan_history}}
+        <a class="compact-row history-row" href="{{detail_url}}">
+            <div>
+                <span class="compact-title">{{scanned_at}}</span>
+                <div class="cell-subtitle">{{title}}</div>
+            </div>
+            <div class="history-row-meta">
+                <span class="count-pill">{{outbound_link_count}} links</span>
+                <span class="count-pill">{{email_count}} emails</span>
+                <span class="count-pill">{{crypto_count}} crypto</span>
+            </div>
+        </a>
+        {{/each}}
+    </div>
+    {{#if has_more_scans}}
+    <p class="empty-copy">Showing the five most recent scans here.</p>
+    {{/if}}
+    {{else}}
+    <p class="empty-copy">This page was indexed before history capture existed, so no scan snapshots are stored yet.</p>
+    {{/if}}
 </section>
 
 <div class="dashboard-grid">
@@ -24,6 +119,12 @@
                 <div>
                     <a class="compact-title" href="{{target_url}}" target="_blank" rel="noopener noreferrer">{{target_url}}</a>
                     <div class="cell-subtitle">{{target_host}}</div>
+                    {{#if is_blacklisted}}
+                    <div class="inline-badges">
+                        <span class="blacklist-badge">Blacklisted</span>
+                        <span class="muted">Matches {{blacklist_match_domain}}</span>
+                    </div>
+                    {{/if}}
                 </div>
                 {{#if target_page_id}}
                 <a class="inline-link" href="/pages/{{target_page_id}}">{{target_page_title}}</a>

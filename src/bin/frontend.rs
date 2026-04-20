@@ -6,11 +6,14 @@ use rocket::{get, launch, routes};
 use rocket_dyn_templates::{context, Template};
 use spyder::models::PaginatedResult;
 use spyder::{
-    collect_stats, establish_connection, get_crypto_entity_detail, get_email_entity_detail,
-    get_page_detail, list_crypto_entities, list_email_entities, list_page_summaries,
-    list_site_relationships, list_work_units, search_pages,
+    collect_stats, establish_connection, find_matching_blacklist_domain, get_crypto_entity_detail,
+    get_email_entity_detail, get_page_detail, get_page_scan_detail, list_crypto_entities,
+    list_domain_blacklist_rules, list_domain_blacklist_summaries, list_email_entities,
+    list_page_scan_summaries, list_page_summaries, list_site_profiles, list_site_relationships,
+    list_work_units, search_pages,
 };
 use url::form_urlencoded;
+use url::Url;
 
 #[derive(Serialize)]
 #[serde(crate = "rocket::serde")]
@@ -29,6 +32,21 @@ struct PaginationView {
     has_next_page: bool,
     previous_page_url: String,
     next_page_url: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+struct WorkUnitView {
+    id: i32,
+    url: String,
+    status: String,
+    retry_count: i32,
+    next_attempt_at: String,
+    last_attempt_at: Option<String>,
+    last_error: Option<String>,
+    created_at: String,
+    is_blacklisted: bool,
+    blacklist_match_domain: Option<String>,
 }
 
 #[derive(FromForm, Clone)]
@@ -154,6 +172,17 @@ fn page_detail(page_id: i32) -> Result<Template, Status> {
     let incoming_link_count = page.incoming_links.len();
     let email_count = page.emails.len();
     let crypto_ref_count = page.crypto_refs.len();
+    let scan_history = list_page_scan_summaries(&mut connection, page_id)
+        .map_err(|_| Status::InternalServerError)?;
+    let recent_scans = scan_history.iter().take(5).cloned().collect::<Vec<_>>();
+    let scan_count = scan_history.len();
+    let has_scan_history = !recent_scans.is_empty();
+    let latest_change_summary = recent_scans
+        .first()
+        .and_then(|scan| scan.change_summary.clone());
+    let has_latest_change_summary = latest_change_summary.is_some();
+    let history_url = format!("/pages/{page_id}/history");
+    let has_more_scans = scan_count > recent_scans.len();
 
     Ok(Template::render(
         "page_detail",
@@ -161,6 +190,13 @@ fn page_detail(page_id: i32) -> Result<Template, Status> {
             title: page.title.clone(),
             description: "Page detail with outbound links, inbound references, emails, wallets, and scan metadata.",
             page: page,
+            scan_history: recent_scans,
+            scan_count: scan_count,
+            has_scan_history: has_scan_history,
+            latest_change_summary: latest_change_summary,
+            has_latest_change_summary: has_latest_change_summary,
+            history_url: history_url,
+            has_more_scans: has_more_scans,
             has_outgoing_links: has_outgoing_links,
             has_incoming_links: has_incoming_links,
             has_emails: has_emails,
@@ -169,6 +205,77 @@ fn page_detail(page_id: i32) -> Result<Template, Status> {
             incoming_link_count: incoming_link_count,
             email_count: email_count,
             crypto_ref_count: crypto_ref_count,
+        },
+    ))
+}
+
+#[get("/pages/<page_id>/history")]
+fn page_history(page_id: i32) -> Result<Template, Status> {
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let page =
+        get_page_detail(&mut connection, page_id).map_err(|_| Status::InternalServerError)?;
+    let Some(page) = page else {
+        return Err(Status::NotFound);
+    };
+    let scans = list_page_scan_summaries(&mut connection, page_id)
+        .map_err(|_| Status::InternalServerError)?;
+    let latest_scan_url = scans.first().map(|scan| scan.detail_url.clone());
+    let has_scans = !scans.is_empty();
+    let scan_count = scans.len();
+
+    Ok(Template::render(
+        "page_history",
+        context! {
+            title: format!("{} History", page.title.clone()),
+            description: "Review historical scan snapshots and scan-to-scan changes for this page.",
+            page: page,
+            scans: scans,
+            has_scans: has_scans,
+            scan_count: scan_count,
+            latest_scan_url: latest_scan_url,
+        },
+    ))
+}
+
+#[get("/pages/<page_id>/history/<scan_id>")]
+fn page_scan_detail(page_id: i32, scan_id: i32) -> Result<Template, Status> {
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let detail = get_page_scan_detail(&mut connection, page_id, scan_id)
+        .map_err(|_| Status::InternalServerError)?;
+    let Some(detail) = detail else {
+        return Err(Status::NotFound);
+    };
+    let has_previous_scan = detail.diff.has_previous_scan;
+    let has_added_links = !detail.diff.added_links.is_empty();
+    let has_removed_links = !detail.diff.removed_links.is_empty();
+    let has_added_emails = !detail.diff.added_emails.is_empty();
+    let has_removed_emails = !detail.diff.removed_emails.is_empty();
+    let has_added_crypto_refs = !detail.diff.added_crypto_refs.is_empty();
+    let has_removed_crypto_refs = !detail.diff.removed_crypto_refs.is_empty();
+    let has_outgoing_links = !detail.outgoing_links.is_empty();
+    let has_emails = !detail.emails.is_empty();
+    let has_crypto_refs = !detail.crypto_refs.is_empty();
+    let history_url = format!("/pages/{page_id}/history");
+    let page_url = format!("/pages/{page_id}");
+
+    Ok(Template::render(
+        "page_scan_detail",
+        context! {
+            title: format!("{} Scan", detail.page_title.clone()),
+            description: "Inspect one historical page snapshot and compare it with the previous successful scan.",
+            detail: detail,
+            history_url: history_url,
+            page_url: page_url,
+            has_previous_scan: has_previous_scan,
+            has_added_links: has_added_links,
+            has_removed_links: has_removed_links,
+            has_added_emails: has_added_emails,
+            has_removed_emails: has_removed_emails,
+            has_added_crypto_refs: has_added_crypto_refs,
+            has_removed_crypto_refs: has_removed_crypto_refs,
+            has_outgoing_links: has_outgoing_links,
+            has_emails: has_emails,
+            has_crypto_refs: has_crypto_refs,
         },
     ))
 }
@@ -182,6 +289,16 @@ fn list_work(list_query: Option<ListQuery>) -> Result<Template, Status> {
     let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
     let workunits = list_work_units(&mut connection, list_query.limit, list_query.offset)
         .map_err(|_| Status::InternalServerError)?;
+    let blacklist_domains = list_domain_blacklist_rules(&mut connection)
+        .map_err(|_| Status::InternalServerError)?
+        .into_iter()
+        .map(|rule| rule.domain)
+        .collect::<Vec<_>>();
+    let workunit_views = workunits
+        .items
+        .iter()
+        .map(|workunit| work_unit_view_from_model(workunit, &blacklist_domains))
+        .collect::<Vec<_>>();
     let has_workunits = !workunits.items.is_empty();
     let pagination = pagination_context("/work", &workunits, &[]);
     let has_pagination = pagination.has_previous_page || pagination.has_next_page;
@@ -191,9 +308,56 @@ fn list_work(list_query: Option<ListQuery>) -> Result<Template, Status> {
         context! {
             title: "Queue",
             description: "Inspect queued, completed, retried, and terminally failed URLs.",
-            workunits: workunits.items,
+            workunits: workunit_views,
             has_workunits: has_workunits,
             workunit_count: workunits.total_count,
+            pagination: pagination,
+            has_pagination: has_pagination,
+        },
+    ))
+}
+
+#[get("/blacklist")]
+fn blacklist() -> Result<Template, Status> {
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let entries = list_domain_blacklist_summaries(&mut connection)
+        .map_err(|_| Status::InternalServerError)?;
+    let has_entries = !entries.is_empty();
+    let entry_count = entries.len();
+
+    Ok(Template::render(
+        "blacklist",
+        context! {
+            title: "Domain Blacklist",
+            description: "Review domains blocked from discovered-link queueing and see how often they appear in stored links.",
+            entries: entries,
+            has_entries: has_entries,
+            entry_count: entry_count,
+        },
+    ))
+}
+
+#[get("/sites?<list_query..>")]
+fn sites(list_query: Option<ListQuery>) -> Result<Template, Status> {
+    let list_query = list_query.unwrap_or(ListQuery {
+        limit: None,
+        offset: None,
+    });
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let sites = list_site_profiles(&mut connection, list_query.limit, list_query.offset)
+        .map_err(|_| Status::InternalServerError)?;
+    let has_sites = !sites.items.is_empty();
+    let pagination = pagination_context("/sites", &sites, &[]);
+    let has_pagination = pagination.has_previous_page || pagination.has_next_page;
+
+    Ok(Template::render(
+        "sites",
+        context! {
+            title: "Site Profiles",
+            description: "Heuristic host categorization derived from crawled page content and structure.",
+            sites: sites.items,
+            site_count: sites.total_count,
+            has_sites: has_sites,
             pagination: pagination,
             has_pagination: has_pagination,
         },
@@ -384,6 +548,74 @@ fn api_search(
     }))
 }
 
+#[get("/api/blacklist")]
+fn api_blacklist() -> Result<Json<ApiResponse<Vec<spyder::models::DomainBlacklistSummary>>>, Status>
+{
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let entries = list_domain_blacklist_summaries(&mut connection)
+        .map_err(|_| Status::InternalServerError)?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: entries,
+    }))
+}
+
+#[get("/api/sites?<list_query..>")]
+fn api_sites(
+    list_query: Option<ListQuery>,
+) -> Result<Json<ApiResponse<PaginatedResult<spyder::models::SiteProfileSummary>>>, Status> {
+    let list_query = list_query.unwrap_or(ListQuery {
+        limit: None,
+        offset: None,
+    });
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let sites = list_site_profiles(&mut connection, list_query.limit, list_query.offset)
+        .map_err(|_| Status::InternalServerError)?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: sites,
+    }))
+}
+
+#[get("/api/pages/<page_id>/history")]
+fn api_page_history(
+    page_id: i32,
+) -> Result<Json<ApiResponse<Vec<spyder::models::PageScanSummary>>>, Status> {
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let page =
+        get_page_detail(&mut connection, page_id).map_err(|_| Status::InternalServerError)?;
+    if page.is_none() {
+        return Err(Status::NotFound);
+    }
+    let scans = list_page_scan_summaries(&mut connection, page_id)
+        .map_err(|_| Status::InternalServerError)?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: scans,
+    }))
+}
+
+#[get("/api/pages/<page_id>/history/<scan_id>")]
+fn api_page_scan_detail(
+    page_id: i32,
+    scan_id: i32,
+) -> Result<Json<ApiResponse<spyder::models::PageScanDetail>>, Status> {
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let detail = get_page_scan_detail(&mut connection, page_id, scan_id)
+        .map_err(|_| Status::InternalServerError)?;
+    let Some(detail) = detail else {
+        return Err(Status::NotFound);
+    };
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: detail,
+    }))
+}
+
 fn pagination_context<T>(
     base_path: &str,
     page: &PaginatedResult<T>,
@@ -402,6 +634,30 @@ fn pagination_context<T>(
         has_next_page,
         previous_page_url: build_list_url(base_path, page.limit, previous_offset, extra_params),
         next_page_url: build_list_url(base_path, page.limit, next_offset, extra_params),
+    }
+}
+
+fn work_unit_view_from_model(
+    workunit: &spyder::models::WorkUnit,
+    blacklist_domains: &[String],
+) -> WorkUnitView {
+    let host = Url::parse(&workunit.url)
+        .ok()
+        .and_then(|url| url.host_str().map(|value| value.to_ascii_lowercase()))
+        .unwrap_or_default();
+    let blacklist_match_domain = find_matching_blacklist_domain(&host, blacklist_domains);
+
+    WorkUnitView {
+        id: workunit.id,
+        url: workunit.url.clone(),
+        status: workunit.status.clone(),
+        retry_count: workunit.retry_count,
+        next_attempt_at: workunit.next_attempt_at.clone(),
+        last_attempt_at: workunit.last_attempt_at.clone(),
+        last_error: workunit.last_error.clone(),
+        created_at: workunit.created_at.clone(),
+        is_blacklisted: blacklist_match_domain.is_some(),
+        blacklist_match_domain,
     }
 }
 
@@ -431,13 +687,21 @@ fn rocket() -> _ {
                 data,
                 pages,
                 page_detail,
+                page_history,
+                page_scan_detail,
                 list_work,
+                blacklist,
+                sites,
                 relationships,
                 email_entities,
                 crypto_entities,
                 search_page,
                 api_stats,
-                api_search
+                api_search,
+                api_blacklist,
+                api_sites,
+                api_page_history,
+                api_page_scan_detail
             ],
         )
         .mount("/static", FileServer::from(relative!("static")))

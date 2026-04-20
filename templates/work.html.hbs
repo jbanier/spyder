@@ -27,7 +27,17 @@
             <tbody>
                 {{#each workunits}}
                 <tr>
-                    <td class="content-cell"><a href="{{url}}" target="_blank" rel="noopener noreferrer">{{url}}</a></td>
+                    <td class="content-cell">
+                        <div class="table-cell-stack">
+                            <a href="{{url}}" target="_blank" rel="noopener noreferrer">{{url}}</a>
+                            {{#if is_blacklisted}}
+                            <div class="inline-badges">
+                                <span class="blacklist-badge">Blacklisted</span>
+                                <span class="muted">Matches {{blacklist_match_domain}}</span>
+                            </div>
+                            {{/if}}
+                        </div>
+                    </td>
                     <td><span class="status-pill status-{{status}}">{{status}}</span></td>
                     <td>{{retry_count}}</td>
                     <td>{{next_attempt_at}}</td>

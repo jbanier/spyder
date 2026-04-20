@@ -49,8 +49,15 @@
         <div class="compact-list">
             {{#each pages}}
             <a class="compact-row" href="/pages/{{id}}">
-                <span class="compact-title">{{title}}</span>
-                <span class="compact-meta">{{host}}</span>
+                <div class="table-cell-stack">
+                    <span class="compact-title">{{title}}</span>
+                    <span class="compact-meta">{{host}}</span>
+                    {{#if site_category}}
+                    <div class="inline-badges">
+                        <span class="site-category-badge site-confidence-{{site_category.confidence}}">{{site_category.label}} · {{site_category.confidence}}</span>
+                    </div>
+                    {{/if}}
+                </div>
                 <span class="compact-meta">{{last_scanned_at}}</span>
             </a>
             {{/each}}
@@ -108,9 +115,29 @@
         <div class="compact-list">
             {{#each relationships}}
             <div class="compact-row compact-row-static">
-                <span class="compact-title">{{source_host}}</span>
+                <div class="table-cell-stack">
+                    <span class="compact-title">{{source_host}}</span>
+                    {{#if source_site_category}}
+                    <div class="inline-badges">
+                        <span class="site-category-badge site-confidence-{{source_site_category.confidence}}">{{source_site_category.label}} · {{source_site_category.confidence}}</span>
+                    </div>
+                    {{/if}}
+                </div>
                 <span class="relationship-arrow">→</span>
-                <span class="compact-meta">{{target_host}}</span>
+                <div class="table-cell-stack">
+                    <span class="compact-meta">{{target_host}}</span>
+                    {{#if target_site_category}}
+                    <div class="inline-badges">
+                        <span class="site-category-badge site-confidence-{{target_site_category.confidence}}">{{target_site_category.label}} · {{target_site_category.confidence}}</span>
+                    </div>
+                    {{/if}}
+                    {{#if is_blacklisted}}
+                    <div class="inline-badges">
+                        <span class="blacklist-badge">Blacklisted</span>
+                        <span class="muted">Matches {{blacklist_match_domain}}</span>
+                    </div>
+                    {{/if}}
+                </div>
                 <span class="count-pill">{{reference_count}} links</span>
             </div>
             {{/each}}

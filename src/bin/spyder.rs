@@ -3,8 +3,10 @@ use reqwest::blocking::Client;
 use reqwest::{Proxy, StatusCode};
 use spyder::extraction::extract_page_snapshot;
 use spyder::{
-    create_work_unit, establish_connection, get_pending_work_units, mark_work_unit_as_done,
-    record_work_unit_failure, save_page_info,
+    add_domain_blacklist_entry, create_work_unit, establish_connection,
+    find_matching_blacklist_domain, get_pending_work_units, list_domain_blacklist_rules,
+    mark_work_unit_as_done, record_work_unit_failure, remove_domain_blacklist_entry,
+    save_page_info,
 };
 use std::env;
 use std::time::Duration;
@@ -19,6 +21,11 @@ enum FailureKind {
 struct CrawlFailure {
     error: anyhow::Error,
     kind: FailureKind,
+}
+
+struct DiscoveryEnqueueOutcome {
+    queued_count: usize,
+    skipped_blacklisted_count: usize,
 }
 
 impl CrawlFailure {
@@ -80,26 +87,15 @@ fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
     let snapshot = fetch_page_snapshot(client, url)
         .map_err(|failure| failure.error)
         .with_context(|| format!("unable to discover links for seed {url}"))?;
-
-    let mut inserted = 1;
-    for discovered_url in snapshot
-        .links
-        .into_iter()
-        .map(|item| item.target_url)
-        .collect::<std::collections::HashSet<_>>()
-    {
-        let parsed_discovered = Url::parse(&discovered_url)
-            .with_context(|| format!("invalid discovered url from {url}: {discovered_url}"))?;
-        match parsed_discovered.scheme() {
-            "http" | "https" => {
-                create_work_unit(&mut connection, parsed_discovered.as_str())?;
-                inserted += 1;
-            }
-            _ => {}
-        }
+    let outcome = enqueue_discovered_links(&mut connection, &snapshot)?;
+    if outcome.skipped_blacklisted_count > 0 {
+        println!(
+            "Skipped {} blacklisted discovered URLs",
+            outcome.skipped_blacklisted_count
+        );
     }
 
-    Ok(inserted)
+    Ok(1 + outcome.queued_count)
 }
 
 fn work_queue(client: &Client) -> Result<()> {
@@ -113,12 +109,18 @@ fn work_queue(client: &Client) -> Result<()> {
         match fetch_page_snapshot(client, &work_unit.url) {
             Ok(page_snapshot) => {
                 save_page_info(&mut connection, &page_snapshot)?;
-                let discovered_count = enqueue_discovered_links(&mut connection, &page_snapshot)?;
+                let discovery_outcome = enqueue_discovered_links(&mut connection, &page_snapshot)?;
                 mark_work_unit_as_done(&mut connection, work_unit.id)?;
                 println!(
                     "Stored page and queued {} discovered URLs",
-                    discovered_count
+                    discovery_outcome.queued_count
                 );
+                if discovery_outcome.skipped_blacklisted_count > 0 {
+                    println!(
+                        "Skipped {} blacklisted discovered URLs",
+                        discovery_outcome.skipped_blacklisted_count
+                    );
+                }
             }
             Err(failure) => {
                 eprintln!(
@@ -141,26 +143,74 @@ fn work_queue(client: &Client) -> Result<()> {
 fn enqueue_discovered_links(
     connection: &mut diesel::sqlite::SqliteConnection,
     snapshot: &spyder::models::PageSnapshot,
-) -> Result<usize> {
-    let mut created = 0;
+) -> Result<DiscoveryEnqueueOutcome> {
+    let blacklist_domains = list_domain_blacklist_rules(connection)?
+        .into_iter()
+        .map(|rule| rule.domain)
+        .collect::<Vec<_>>();
+    let mut outcome = DiscoveryEnqueueOutcome {
+        queued_count: 0,
+        skipped_blacklisted_count: 0,
+    };
+
     for link in &snapshot.links {
         let parsed = Url::parse(&link.target_url)
             .with_context(|| format!("invalid discovered url: {}", link.target_url))?;
         match parsed.scheme() {
             "http" | "https" => {
+                let link_host = parsed
+                    .host_str()
+                    .map(|value| value.to_ascii_lowercase())
+                    .unwrap_or_else(|| link.target_host.to_ascii_lowercase());
+                if find_matching_blacklist_domain(&link_host, &blacklist_domains).is_some() {
+                    outcome.skipped_blacklisted_count += 1;
+                    continue;
+                }
                 create_work_unit(connection, parsed.as_str())?;
-                created += 1;
+                outcome.queued_count += 1;
             }
             _ => {}
         }
     }
-    Ok(created)
+    Ok(outcome)
+}
+
+fn list_blacklist() -> Result<()> {
+    let mut connection = establish_connection()?;
+    let entries = list_domain_blacklist_rules(&mut connection)?;
+
+    if entries.is_empty() {
+        println!("No blacklisted domains configured");
+        return Ok(());
+    }
+
+    for entry in entries {
+        println!("{}", entry.domain);
+    }
+    Ok(())
+}
+
+fn add_blacklist_domain(raw_domain: &str) -> Result<()> {
+    let mut connection = establish_connection()?;
+    let entry = add_domain_blacklist_entry(&mut connection, raw_domain)?;
+    println!("Blacklisted {}", entry.domain);
+    Ok(())
+}
+
+fn remove_blacklist_domain(raw_domain: &str) -> Result<()> {
+    let mut connection = establish_connection()?;
+    let domain = remove_domain_blacklist_entry(&mut connection, raw_domain)?;
+    println!("Removed blacklist entry {}", domain);
+    Ok(())
 }
 
 fn usage(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
     eprintln!("    add <url>      enqueue the seed page and discovered links.");
+    eprintln!("    blacklist list");
+    eprintln!("    blacklist add <domain>");
+    eprintln!("    blacklist remove <domain>");
     eprintln!("    work           process pending work units and store page metadata.");
 }
 
@@ -242,6 +292,27 @@ fn main() {
                 Err(anyhow::anyhow!("no url is provided"))
             }
         },
+        Some("blacklist") => match args.next().as_deref() {
+            Some("list") => list_blacklist(),
+            Some("add") => match args.next() {
+                Some(domain) => add_blacklist_domain(&domain),
+                None => {
+                    usage(&program);
+                    Err(anyhow::anyhow!("no blacklist domain is provided"))
+                }
+            },
+            Some("remove") => match args.next() {
+                Some(domain) => remove_blacklist_domain(&domain),
+                None => {
+                    usage(&program);
+                    Err(anyhow::anyhow!("no blacklist domain is provided"))
+                }
+            },
+            Some(_) | None => {
+                usage(&program);
+                Err(anyhow::anyhow!("invalid or missing blacklist subcommand"))
+            }
+        },
         Some("work") => work_queue(&client),
         Some(_) | None => {
             usage(&program);
@@ -258,6 +329,34 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diesel::connection::SimpleConnection;
+    use diesel::Connection;
+
+    fn setup_connection() -> diesel::sqlite::SqliteConnection {
+        let mut conn =
+            diesel::sqlite::SqliteConnection::establish(":memory:").expect("in-memory sqlite");
+        conn.batch_execute(
+            "
+            CREATE TABLE work_unit(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              url VARCHAR NOT NULL UNIQUE,
+              status VARCHAR NOT NULL DEFAULT 'pending',
+              retry_count INTEGER NOT NULL DEFAULT 0,
+              next_attempt_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              last_attempt_at VARCHAR,
+              last_error VARCHAR,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE domain_blacklist(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              domain VARCHAR NOT NULL UNIQUE,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            ",
+        )
+        .expect("schema setup");
+        conn
+    }
 
     #[test]
     fn proxy_prefers_uppercase_then_lowercase() {
@@ -283,5 +382,38 @@ mod tests {
         assert!(is_retriable_status(StatusCode::TOO_MANY_REQUESTS));
         assert!(is_retriable_status(StatusCode::BAD_GATEWAY));
         assert!(!is_retriable_status(StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn discovered_blacklisted_links_are_not_queued() {
+        let mut conn = setup_connection();
+        add_domain_blacklist_entry(&mut conn, "blocked.onion").expect("add blacklist");
+
+        let snapshot = spyder::models::PageSnapshot {
+            title: "Seed".to_string(),
+            url: "http://seed.onion".to_string(),
+            language: "English".to_string(),
+            links: vec![
+                spyder::models::LinkObservation {
+                    target_url: "http://allowed.onion".to_string(),
+                    target_host: "allowed.onion".to_string(),
+                },
+                spyder::models::LinkObservation {
+                    target_url: "http://sub.blocked.onion".to_string(),
+                    target_host: "sub.blocked.onion".to_string(),
+                },
+            ],
+            emails: Vec::new(),
+            crypto_refs: Vec::new(),
+            classification_signals: spyder::models::ClassificationSignals::default(),
+        };
+
+        let outcome = enqueue_discovered_links(&mut conn, &snapshot).expect("enqueue links");
+        assert_eq!(outcome.queued_count, 1);
+        assert_eq!(outcome.skipped_blacklisted_count, 1);
+
+        let pending = get_pending_work_units(&mut conn).expect("pending work units");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].url, "http://allowed.onion/");
     }
 }

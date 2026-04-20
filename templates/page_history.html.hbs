@@ -1,0 +1,67 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Page History</p>
+    <h1>{{page.title}}</h1>
+    <p class="lead">{{page.url}}</p>
+    <div class="meta-strip">
+        <span><strong>Site:</strong> {{page.host}}</span>
+        <span><strong>Language:</strong> {{page.language}}</span>
+        <span><strong>Last Scan:</strong> {{page.last_scanned_at}}</span>
+    </div>
+    <div class="actions">
+        <a href="/pages/{{page.id}}" class="btn btn-secondary">Current Page</a>
+        {{#if latest_scan_url}}
+        <a href="{{latest_scan_url}}" class="btn btn-secondary">Latest Diff</a>
+        {{/if}}
+    </div>
+</section>
+
+{{#if has_scans}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Historical Scans</h2>
+        <span class="count-pill">{{scan_count}} scans</span>
+    </div>
+    <div class="compact-list history-list">
+        {{#each scans}}
+        <a class="compact-row history-row" href="{{detail_url}}">
+            <div>
+                <span class="compact-title">{{scanned_at}}</span>
+                <div class="cell-subtitle">{{title}}</div>
+                <div class="compact-meta">{{language}}</div>
+            </div>
+            <div class="history-row-meta">
+                <span class="count-pill">{{outbound_link_count}} links</span>
+                <span class="count-pill">{{email_count}} emails</span>
+                <span class="count-pill">{{crypto_count}} crypto</span>
+            </div>
+        </a>
+        {{#if change_summary}}
+        <div class="history-summary">
+            {{#if change_summary.has_changes}}
+            <span class="change-pill">+{{change_summary.added_links}} / -{{change_summary.removed_links}} links</span>
+            <span class="change-pill">+{{change_summary.added_emails}} / -{{change_summary.removed_emails}} emails</span>
+            <span class="change-pill">+{{change_summary.added_crypto_refs}} / -{{change_summary.removed_crypto_refs}} crypto</span>
+            {{#if change_summary.title_changed}}<span class="change-pill">title changed</span>{{/if}}
+            {{#if change_summary.language_changed}}<span class="change-pill">language changed</span>{{/if}}
+            {{else}}
+            <span class="muted">Matched the previous successful scan.</span>
+            {{/if}}
+        </div>
+        {{else}}
+        <div class="history-summary">
+            <span class="muted">Baseline scan for stored history.</span>
+        </div>
+        {{/if}}
+        {{/each}}
+    </div>
+</section>
+{{else}}
+<section class="empty-state">
+    <h2>No stored scan history</h2>
+    <p>This page exists in the latest-state tables, but no historical snapshots have been captured for it yet.</p>
+</section>
+{{/if}}
+{{/inline}}
+
+{{> base}}
