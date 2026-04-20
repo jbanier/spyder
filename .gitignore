@@ -18,3 +18,4 @@ target/
 .env
 pages.db
 Cargo.lock
+db.sqlite
