@@ -1,0 +1,95 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Page Detail</p>
+    <h1>{{page.title}}</h1>
+    <p class="lead">{{page.url}}</p>
+    <div class="meta-strip">
+        <span><strong>Site:</strong> {{page.host}}</span>
+        <span><strong>Language:</strong> {{page.language}}</span>
+        <span><strong>Created:</strong> {{page.created_at}}</span>
+        <span><strong>Last Scan:</strong> {{page.last_scanned_at}}</span>
+    </div>
+</section>
+
+<div class="dashboard-grid">
+    <section class="card">
+        <div class="section-heading">
+            <h2>Outbound Links</h2>
+            <span class="count-pill">{{outgoing_link_count}}</span>
+        </div>
+        {{#if has_outgoing_links}}
+        <div class="compact-list">
+            {{#each page.outgoing_links}}
+            <div class="compact-row compact-row-static">
+                <div>
+                    <a class="compact-title" href="{{target_url}}" target="_blank" rel="noopener noreferrer">{{target_url}}</a>
+                    <div class="cell-subtitle">{{target_host}}</div>
+                </div>
+                {{#if target_page_id}}
+                <a class="inline-link" href="/pages/{{target_page_id}}">{{target_page_title}}</a>
+                {{/if}}
+            </div>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No outbound links recorded for this page.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Inbound References</h2>
+            <span class="count-pill">{{incoming_link_count}}</span>
+        </div>
+        {{#if has_incoming_links}}
+        <div class="compact-list">
+            {{#each page.incoming_links}}
+            <a class="compact-row" href="/pages/{{source_page_id}}">
+                <span class="compact-title">{{source_title}}</span>
+                <span class="compact-meta">{{source_host}}</span>
+                <span class="compact-meta">{{source_url}}</span>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No other scanned page references this URL yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Emails</h2>
+            <span class="count-pill">{{email_count}}</span>
+        </div>
+        {{#if has_emails}}
+        <div class="tag-list">
+            {{#each page.emails}}
+            <a class="tag" href="{{detail_url}}">{{value}}</a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No email addresses were extracted from this page.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Crypto References</h2>
+            <span class="count-pill">{{crypto_ref_count}}</span>
+        </div>
+        {{#if has_crypto_refs}}
+        <div class="tag-list">
+            {{#each page.crypto_refs}}
+            <a class="tag" href="{{detail_url}}">
+                {{asset_type}}: {{reference}}
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No crypto references were extracted from this page.</p>
+        {{/if}}
+    </section>
+</div>
+{{/inline}}
+
+{{> base}}

@@ -1,125 +1,34 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{title}} - Spyder Dashboard</title>
+    <title>{{title}} | Spyder</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
     <nav class="navbar">
         <div class="nav-container">
-            <h1><a href="/">🕷️ Spyder</a></h1>
+            <h1><a href="/">Spyder</a></h1>
             <ul class="nav-links">
-                <li><a href="/">Accueil</a></li>
-                <li><a href="/work">Liens visite</a></li>
-                <li><a href="/data">Données</a></li>
-                <li><a href="/search">Recherche</a></li>
-                <li><a href="/api/stats">Stats API</a></li>
+                <li><a href="/pages">Pages</a></li>
+                <li><a href="/relationships">Relationships</a></li>
+                <li><a href="/entities/emails">Emails</a></li>
+                <li><a href="/entities/crypto">Crypto</a></li>
+                <li><a href="/work">Queue</a></li>
+                <li><a href="/search">Search</a></li>
             </ul>
         </div>
     </nav>
-    
+
     <main class="container">
         {{{body}}}
-        
-        <!-- Section Workunits -->
-        {{#if workunits}}
-        <div class="card">
-            <h3>🔄 URLs en cours de traitement</h3>
-            <div class="data-table-container">
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>URL</th>
-                            <th>Statut</th>
-                            <th>Essais</th>
-                            <th>Erreur</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{#each workunits}}
-                        <tr>
-                            <td class="content-cell">
-                                <a href="{{url}}" target="_blank" rel="noopener noreferrer" title="{{url}}">{{url}}</a>
-                            </td>
-                            <td>
-                                <span class="status-pill status-{{status}}">{{status}}</span>
-                            </td>
-                            <td>{{retry_count}}</td>
-                            <td class="content-cell">{{last_error}}</td>
-                        </tr>
-                        {{/each}}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        {{/if}}
-        
-        <!-- Section Pages analysées -->
-        {{#if pages}}
-        <div class="card">
-            <h3>📊 Pages analysées</h3>
-            <div class="data-table-container">
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Titre</th>
-                            <th>URL</th>
-                            <th>Scrapée le</th>
-                            <th>Liens</th>
-                            <th>Coins</th>
-                            <th>Emails</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{#each pages}}
-                        <tr>
-                            <td class="content-cell">
-                                <strong>{{title}}</strong>
-                            </td>
-                            <td class="content-cell">
-                                <a href="{{url}}" target="_blank" rel="noopener noreferrer" title="{{url}}">{{url}}</a>
-                            </td>
-                            <td>{{created_at}}</td>
-                            <td style="text-align: center;">
-                                <span style="background: #3498db; color: white; padding: 0.25rem 0.5rem; border-radius: 3px; font-size: 0.875rem;">
-                                    {{links}}
-                                </span>
-                            </td>
-                            <td style="text-align: center;">
-                                <span style="background: #f39c12; color: white; padding: 0.25rem 0.5rem; border-radius: 3px; font-size: 0.875rem;">
-                                    {{coins}}
-                                </span>
-                            </td>
-                            <td style="text-align: center;">
-                                <span style="background: #e74c3c; color: white; padding: 0.25rem 0.5rem; border-radius: 3px; font-size: 0.875rem;">
-                                    {{emails}}
-                                </span>
-                            </td>
-                        </tr>
-                        {{/each}}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        {{/if}}
-        
-        <!-- État vide -->
-        {{#unless workunits}}
-        {{#unless pages}}
-        <div class="empty-state">
-            <h2>🕷️ Aucune donnée disponible</h2>
-            <p>Le crawler n'a pas encore traité d'URLs ou les données ne sont pas encore disponibles.</p>
-        </div>
-        {{/unless}}
-        {{/unless}}
     </main>
-    
+
     <footer>
-        <p>&copy; 2024 Spyder Dashboard</p>
+        <p>Spyder crawler dashboard</p>
     </footer>
-    
+
     <script src="/static/js/app.js"></script>
 </body>
 </html>

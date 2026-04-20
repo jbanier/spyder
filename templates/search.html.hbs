@@ -1,17 +1,18 @@
 {{#*inline "body"}}
-<div class="hero">
+<section class="hero hero-compact">
+    <p class="eyebrow">Search</p>
     <h1>{{title}}</h1>
     <p class="lead">{{description}}</p>
-</div>
+</section>
 
-<div class="card search-card">
+<section class="card search-card">
     <form class="search-form" action="/search" method="get">
         <input
             class="search-field"
             type="text"
             name="query"
             value="{{query}}"
-            placeholder="Titre, URL ou email"
+            placeholder="Title, URL, language, email, wallet"
         >
         <input
             class="search-limit"
@@ -19,37 +20,43 @@
             name="limit"
             min="1"
             max="50"
-            value="20"
+            value="{{limit}}"
         >
-        <button type="submit" class="btn">Rechercher</button>
+        <button type="submit" class="btn">Search</button>
     </form>
-</div>
+</section>
 
 {{#if has_query}}
     {{#if has_results}}
-    <div class="card">
-        <h3>Résultats</h3>
+    <section class="card">
+        <div class="section-heading">
+            <h2>Results</h2>
+            <span class="muted">{{result_count}} matches</span>
+        </div>
         <div class="search-results-grid">
             {{#each results}}
             <article class="search-result-card">
-                <h4>{{title}}</h4>
+                <h3><a class="row-link" href="/pages/{{page_id}}">{{title}}</a></h3>
                 <p><a href="{{url}}" target="_blank" rel="noopener noreferrer">{{url}}</a></p>
-                <p class="muted">Indexée le {{scraped_at}}</p>
+                <div class="meta-strip">
+                    <span><strong>Language:</strong> {{language}}</span>
+                    <span><strong>Last Scan:</strong> {{scraped_at}}</span>
+                </div>
             </article>
             {{/each}}
         </div>
-    </div>
+    </section>
     {{else}}
-    <div class="empty-state">
-        <h2>Aucun résultat</h2>
-        <p>Aucune page ne correspond à la recherche <strong>{{query}}</strong>.</p>
-    </div>
+    <section class="empty-state">
+        <h2>No results</h2>
+        <p>No indexed page matched <strong>{{query}}</strong>.</p>
+    </section>
     {{/if}}
 {{else}}
-<div class="empty-state">
-    <h2>Recherche plein texte</h2>
-    <p>Saisissez un terme pour chercher dans les titres, URLs et emails stockés en base.</p>
-</div>
+<section class="empty-state">
+    <h2>Search the dataset</h2>
+    <p>Use the form above to search titles, URLs, languages, email addresses, and crypto references.</p>
+</section>
 {{/if}}
 {{/inline}}
 

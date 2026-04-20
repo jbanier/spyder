@@ -1,106 +1,102 @@
 use anyhow::{Context, Result};
-use regex::Regex;
 use reqwest::blocking::Client;
-use reqwest::Url;
-use scraper::{Html, Selector};
-use spyder::models::NewPage;
+use reqwest::{Proxy, StatusCode};
+use spyder::extraction::extract_page_snapshot;
 use spyder::{
     create_work_unit, establish_connection, get_pending_work_units, mark_work_unit_as_done,
-    mark_work_unit_as_failed, save_page_info,
+    record_work_unit_failure, save_page_info,
 };
-use std::collections::HashSet;
 use std::env;
 use std::time::Duration;
+use url::Url;
 
-fn extract_links(body: &str, base_url: &Url) -> Result<HashSet<String>> {
-    let document = Html::parse_document(body);
-    let selector = Selector::parse("a[href]").expect("valid selector");
-    let mut discovered = HashSet::new();
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FailureKind {
+    Retriable,
+    Permanent,
+}
 
-    for element in document.select(&selector) {
-        if let Some(raw_href) = element.value().attr("href") {
-            if let Ok(url) = base_url.join(raw_href) {
-                match url.scheme() {
-                    "http" | "https" => {
-                        discovered.insert(url.to_string());
-                    }
-                    _ => {}
-                }
-            }
+struct CrawlFailure {
+    error: anyhow::Error,
+    kind: FailureKind,
+}
+
+impl CrawlFailure {
+    fn retriable(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            kind: FailureKind::Retriable,
         }
     }
 
-    Ok(discovered)
+    fn permanent(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            kind: FailureKind::Permanent,
+        }
+    }
 }
 
-fn build_page(url: &str, body: &str) -> Result<NewPage> {
-    let document = Html::parse_document(body);
-    let selector = Selector::parse("title").expect("valid selector");
+fn fetch_page_snapshot(
+    client: &Client,
+    url: &str,
+) -> std::result::Result<spyder::models::PageSnapshot, CrawlFailure> {
+    let body = fetch_body(client, url)?;
+    extract_page_snapshot(url, &body)
+        .map_err(|error| CrawlFailure::permanent(error.context(format!("failed to parse {url}"))))
+}
 
-    let title_text = document
-        .select(&selector)
-        .next()
-        .map(|title| title.text().collect::<Vec<_>>().join(" "))
-        .filter(|title| !title.trim().is_empty())
-        .unwrap_or_else(|| "no title".to_string());
-
-    let email_regex = Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")?;
-    let crypto_address_regex = Regex::new(r"(bitcoin|ethereum):[a-zA-Z0-9]+")?;
-    let base_url = Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
-
-    let mut emails = HashSet::new();
-    let mut coins = HashSet::new();
-    let mut links = extract_links(body, &base_url)?;
-
-    for caps in email_regex.captures_iter(body) {
-        emails.insert(caps[0].to_string());
+fn fetch_body(client: &Client, url: &str) -> std::result::Result<String, CrawlFailure> {
+    let response = client.get(url).send().map_err(|error| {
+        let wrapped = anyhow::Error::new(error).context(format!("request failed for {url}"));
+        if is_retriable_request_error(&wrapped) {
+            CrawlFailure::retriable(wrapped)
+        } else {
+            CrawlFailure::permanent(wrapped)
+        }
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        let error = anyhow::anyhow!("non-success status {} for {}", status.as_u16(), url);
+        return if is_retriable_status(status) {
+            Err(CrawlFailure::retriable(error))
+        } else {
+            Err(CrawlFailure::permanent(error))
+        };
     }
 
-    for caps in crypto_address_regex.captures_iter(body) {
-        coins.insert(caps[0].to_string());
-    }
-
-    let mut link_list = links.drain().collect::<Vec<_>>();
-    link_list.sort();
-
-    let mut email_list = emails.into_iter().collect::<Vec<_>>();
-    email_list.sort();
-
-    let mut coin_list = coins.into_iter().collect::<Vec<_>>();
-    coin_list.sort();
-
-    Ok(NewPage {
-        title: title_text,
-        url: url.to_string(),
-        links: link_list.join(","),
-        emails: email_list.join(","),
-        coins: coin_list.join(","),
+    response.text().map_err(|error| {
+        let wrapped =
+            anyhow::Error::new(error).context(format!("failed to read response body for {url}"));
+        CrawlFailure::retriable(wrapped)
     })
-}
-
-fn fetch_body(client: &Client, url: &str) -> Result<String> {
-    client
-        .get(url)
-        .send()
-        .with_context(|| format!("request failed for {url}"))?
-        .error_for_status()
-        .with_context(|| format!("non-success status for {url}"))?
-        .text()
-        .with_context(|| format!("failed to read response body for {url}"))
 }
 
 fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
     let mut connection = establish_connection()?;
     create_work_unit(&mut connection, url)?;
 
-    let parsed = Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
-    let body = fetch_body(client, url)?;
-    let links = extract_links(&body, &parsed)?;
+    Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
+    let snapshot = fetch_page_snapshot(client, url)
+        .map_err(|failure| failure.error)
+        .with_context(|| format!("unable to discover links for seed {url}"))?;
 
     let mut inserted = 1;
-    for discovered_url in links {
-        create_work_unit(&mut connection, &discovered_url)?;
-        inserted += 1;
+    for discovered_url in snapshot
+        .links
+        .into_iter()
+        .map(|item| item.target_url)
+        .collect::<std::collections::HashSet<_>>()
+    {
+        let parsed_discovered = Url::parse(&discovered_url)
+            .with_context(|| format!("invalid discovered url from {url}: {discovered_url}"))?;
+        match parsed_discovered.scheme() {
+            "http" | "https" => {
+                create_work_unit(&mut connection, parsed_discovered.as_str())?;
+                inserted += 1;
+            }
+            _ => {}
+        }
     }
 
     Ok(inserted)
@@ -114,20 +110,51 @@ fn work_queue(client: &Client) -> Result<()> {
     for work_unit in work_units {
         println!("Processing {}", work_unit.url);
 
-        match fetch_body(client, &work_unit.url).and_then(|body| build_page(&work_unit.url, &body))
-        {
-            Ok(page) => {
-                save_page_info(&mut connection, &page)?;
+        match fetch_page_snapshot(client, &work_unit.url) {
+            Ok(page_snapshot) => {
+                save_page_info(&mut connection, &page_snapshot)?;
+                let discovered_count = enqueue_discovered_links(&mut connection, &page_snapshot)?;
                 mark_work_unit_as_done(&mut connection, work_unit.id)?;
+                println!(
+                    "Stored page and queued {} discovered URLs",
+                    discovered_count
+                );
             }
-            Err(error) => {
-                eprintln!("ERROR: couldn't extract page information: {error:?}");
-                mark_work_unit_as_failed(&mut connection, work_unit.id, &error.to_string())?;
+            Err(failure) => {
+                eprintln!(
+                    "ERROR: couldn't extract page information: {:?}",
+                    failure.error
+                );
+                record_work_unit_failure(
+                    &mut connection,
+                    work_unit.id,
+                    &failure.error.to_string(),
+                    failure.kind == FailureKind::Retriable,
+                )?;
             }
         }
     }
 
     Ok(())
+}
+
+fn enqueue_discovered_links(
+    connection: &mut diesel::sqlite::SqliteConnection,
+    snapshot: &spyder::models::PageSnapshot,
+) -> Result<usize> {
+    let mut created = 0;
+    for link in &snapshot.links {
+        let parsed = Url::parse(&link.target_url)
+            .with_context(|| format!("invalid discovered url: {}", link.target_url))?;
+        match parsed.scheme() {
+            "http" | "https" => {
+                create_work_unit(connection, parsed.as_str())?;
+                created += 1;
+            }
+            _ => {}
+        }
+    }
+    Ok(created)
 }
 
 fn usage(program: &str) {
@@ -150,20 +177,60 @@ fn print_error(error: &anyhow::Error) {
     }
 }
 
-fn build_http_client() -> Client {
-    Client::builder()
+fn build_http_client() -> Result<Client> {
+    let mut builder = Client::builder()
         .timeout(Duration::from_secs(15))
-        // Avoid macOS system proxy discovery, which can panic in restricted or
-        // misconfigured environments before the request is even attempted.
-        .no_proxy()
-        .build()
-        .expect("http client should build")
+        .no_proxy();
+    if let Some(proxy_url) = configured_proxy_url() {
+        builder = builder.proxy(
+            Proxy::all(&proxy_url).with_context(|| format!("invalid proxy url: {proxy_url}"))?,
+        );
+    }
+
+    builder.build().context("http client should build")
+}
+
+fn configured_proxy_url() -> Option<String> {
+    configured_proxy_url_from_values(env::var("ALL_PROXY").ok(), env::var("all_proxy").ok())
+}
+
+fn configured_proxy_url_from_values(
+    upper: Option<String>,
+    lower: Option<String>,
+) -> Option<String> {
+    upper
+        .into_iter()
+        .chain(lower)
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn is_retriable_request_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        if let Some(reqwest_error) = cause.downcast_ref::<reqwest::Error>() {
+            reqwest_error.is_timeout() || reqwest_error.is_connect() || reqwest_error.is_request()
+        } else {
+            false
+        }
+    })
+}
+
+fn is_retriable_status(status: StatusCode) -> bool {
+    status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
 }
 
 fn main() {
     let mut args = env::args();
     let program = args.next().unwrap_or_else(|| "spyder".to_string());
-    let client = build_http_client();
+    let client = match build_http_client() {
+        Ok(client) => client,
+        Err(error) => {
+            print_error(&error);
+            std::process::exit(1);
+        }
+    };
 
     let result = match args.next().as_deref() {
         Some("add") => match args.next() {
@@ -185,5 +252,36 @@ fn main() {
     if let Err(error) = result {
         print_error(&error);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_prefers_uppercase_then_lowercase() {
+        assert_eq!(
+            configured_proxy_url_from_values(
+                Some("socks5h://upper:9050".to_string()),
+                Some("socks5h://lower:9050".to_string()),
+            ),
+            Some("socks5h://upper:9050".to_string())
+        );
+        assert_eq!(
+            configured_proxy_url_from_values(None, Some(" socks5h://lower:9050 ".to_string())),
+            Some("socks5h://lower:9050".to_string())
+        );
+        assert_eq!(
+            configured_proxy_url_from_values(None, Some("   ".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn retryable_statuses_match_transient_http_failures() {
+        assert!(is_retriable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retriable_status(StatusCode::BAD_GATEWAY));
+        assert!(!is_retriable_status(StatusCode::NOT_FOUND));
     }
 }

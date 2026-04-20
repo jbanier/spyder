@@ -1,0 +1,61 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Crawler Queue</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+{{#if has_workunits}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Tracked URLs</h2>
+        <span class="muted">{{workunit_count}} records</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>URL</th>
+                    <th>Status</th>
+                    <th>Retries</th>
+                    <th>Next Attempt</th>
+                    <th>Last Attempt</th>
+                    <th>Created</th>
+                    <th>Last Error</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each workunits}}
+                <tr>
+                    <td class="content-cell"><a href="{{url}}" target="_blank" rel="noopener noreferrer">{{url}}</a></td>
+                    <td><span class="status-pill status-{{status}}">{{status}}</span></td>
+                    <td>{{retry_count}}</td>
+                    <td>{{next_attempt_at}}</td>
+                    <td>{{last_attempt_at}}</td>
+                    <td>{{created_at}}</td>
+                    <td class="content-cell">{{last_error}}</td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+</section>
+{{#if has_pagination}}
+<section class="pagination-bar">
+    {{#if pagination.has_previous_page}}
+    <a class="btn btn-secondary" href="{{pagination.previous_page_url}}">Previous</a>
+    {{/if}}
+    {{#if pagination.has_next_page}}
+    <a class="btn btn-secondary" href="{{pagination.next_page_url}}">Next</a>
+    {{/if}}
+</section>
+{{/if}}
+{{else}}
+<section class="empty-state">
+    <h2>No queued work</h2>
+    <p>Seed a URL with the crawler to populate this queue.</p>
+</section>
+{{/if}}
+{{/inline}}
+
+{{> base}}

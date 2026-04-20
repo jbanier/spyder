@@ -1,0 +1,53 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Host Graph</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+{{#if has_relationships}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Observed Site Links</h2>
+        <span class="muted">{{relationship_count}} relationships</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Source Site</th>
+                    <th>Target Site</th>
+                    <th>Observed Links</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each relationships}}
+                <tr>
+                    <td>{{source_host}}</td>
+                    <td>{{target_host}}</td>
+                    <td><span class="count-pill">{{reference_count}}</span></td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+</section>
+{{#if has_pagination}}
+<section class="pagination-bar">
+    {{#if pagination.has_previous_page}}
+    <a class="btn btn-secondary" href="{{pagination.previous_page_url}}">Previous</a>
+    {{/if}}
+    {{#if pagination.has_next_page}}
+    <a class="btn btn-secondary" href="{{pagination.next_page_url}}">Next</a>
+    {{/if}}
+</section>
+{{/if}}
+{{else}}
+<section class="empty-state">
+    <h2>No cross-site references yet</h2>
+    <p>Relationships appear here after the crawler scans pages that link to other hosts.</p>
+</section>
+{{/if}}
+{{/inline}}
+
+{{> base}}

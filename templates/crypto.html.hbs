@@ -1,0 +1,65 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Entity Index</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+<div class="dashboard-grid dashboard-grid-wide">
+    <section class="card">
+        <div class="section-heading">
+            <h2>Wallets And References</h2>
+            <span class="muted">{{entity_count}} distinct values</span>
+        </div>
+        {{#if has_entities}}
+        <div class="compact-list">
+            {{#each entities}}
+            <a class="compact-row" href="{{detail_url}}">
+                <span class="compact-title">{{asset_type}}</span>
+                <span class="compact-meta">{{reference}}</span>
+                <span class="count-pill">{{page_count}} pages</span>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No crypto references have been extracted yet.</p>
+        {{/if}}
+        {{#if has_pagination}}
+        <section class="pagination-bar pagination-bar-inline">
+            {{#if pagination.has_previous_page}}
+            <a class="btn btn-secondary" href="{{pagination.previous_page_url}}">Previous</a>
+            {{/if}}
+            {{#if pagination.has_next_page}}
+            <a class="btn btn-secondary" href="{{pagination.next_page_url}}">Next</a>
+            {{/if}}
+        </section>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        {{#if has_selected}}
+        <div class="section-heading">
+            <h2>{{selected.asset_type}}</h2>
+            <span class="count-pill">{{selected_page_count}} pages</span>
+        </div>
+        <p class="detail-reference">{{selected.reference}}</p>
+        <div class="compact-list">
+            {{#each selected.pages}}
+            <a class="compact-row" href="/pages/{{id}}">
+                <span class="compact-title">{{title}}</span>
+                <span class="compact-meta">{{language}}</span>
+                <span class="compact-meta">{{last_scanned_at}}</span>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <div class="empty-state empty-state-inline">
+            <h2>Select a reference</h2>
+            <p>Choose a wallet or payment reference from the left to see all matching pages.</p>
+        </div>
+        {{/if}}
+    </section>
+</div>
+{{/inline}}
+
+{{> base}}

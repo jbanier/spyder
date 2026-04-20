@@ -1,9 +1,35 @@
 # Spyder
 
-Spyder is a small Rust web indexing project with two apps:
+Spyder is a Rust crawler plus Rocket dashboard for collecting pages, links, and page-level observations from the clearnet and Tor-hosted sites.
 
-- `spyder`: a CLI crawler that queues URLs, fetches pages, and stores extracted metadata.
-- `frontend`: a Rocket web app that reads the same database and exposes a dashboard plus JSON endpoints.
+It ships with two binaries:
+
+- `spyder`: CLI crawler and queue worker
+- `frontend`: web interface over the same SQLite database
+
+## What It Stores
+
+For each scanned page, Spyder now stores:
+
+- title
+- URL
+- primary detected language when possible
+- last scan timestamp
+- outbound links
+- extracted email addresses
+- extracted crypto references
+
+Normalized tables are also maintained for:
+
+- page-to-page references
+- email observations
+- crypto observations
+
+That makes it possible to answer questions like:
+
+- which sites reference other sites
+- which pages mention the same email address
+- which pages reuse the same wallet or payment reference
 
 ## Requirements
 
@@ -11,142 +37,229 @@ Spyder is a small Rust web indexing project with two apps:
 - SQLite
 - `diesel_cli` with SQLite support
 
-Install Diesel CLI if you do not already have it:
+Install Diesel CLI if needed:
 
 ```bash
 cargo install diesel_cli --no-default-features --features sqlite
 ```
 
-If SQLite linking is a problem on your machine, there is an optional bundled SQLite dependency commented in [Cargo.toml](/Users/jbanier/Documents/work/code/spyder/Cargo.toml).
+If SQLite linking is a problem on your machine, the bundled SQLite dependency is already enabled in [Cargo.toml](/Users/jbanier/Documents/work/code/spyder/Cargo.toml).
 
-## Project Layout
+## First Start
 
-- [src/bin/spyder.rs](/Users/jbanier/Documents/work/code/spyder/src/bin/spyder.rs): crawler CLI
-- [src/bin/frontend.rs](/Users/jbanier/Documents/work/code/spyder/src/bin/frontend.rs): Rocket frontend
-- [migrations/2025-05-15-155131_base/up.sql](/Users/jbanier/Documents/work/code/spyder/migrations/2025-05-15-155131_base/up.sql): initial SQLite schema
+### 1. Configure the database
 
-## Database Bootstrap
-
-The app expects `DATABASE_URL` to be set. The simplest setup is a local SQLite file in the project root.
-
-Create a `.env` file:
+Create a `.env` file in the project root:
 
 ```bash
 printf 'DATABASE_URL=spyder.sqlite\n' > .env
 ```
 
-Bootstrap the database and apply migrations:
+### 2. Create the SQLite database
 
 ```bash
-cargo install diesel_cli --no-default-features --features sqlite
 diesel setup
 diesel migration run
 ```
 
-Notes:
+This applies:
 
-- `diesel setup` creates the SQLite database pointed to by `DATABASE_URL`.
-- `diesel migration run` creates the `work_unit` and `page` tables.
-- If the database already exists, rerunning `diesel migration run` is safe for unapplied migrations only.
+- the base schema
+- the enrichment migration for language, scan timestamps, links, emails, and crypto observations
+- the retry/backfill migration that adds retry scheduling and preserves legacy intel in normalized tables
 
-To reset from scratch during development:
+If you already have an older database, `diesel migration run` upgrades it in place. Back it up first if the data matters.
+
+### 3. Build the project
 
 ```bash
-diesel migration redo
+cargo build
 ```
 
-## Start The CLI App
+## Basic Crawl Workflow
 
-Build or run the crawler with Cargo:
+### Add a seed URL
 
 ```bash
 cargo run --bin spyder -- add https://example.com
 ```
 
-This command:
+This:
 
 - inserts the seed URL into `work_unit`
-- fetches the seed page
-- extracts links from that page
-- enqueues discovered `http` and `https` links
+- fetches that page immediately
+- extracts links from the fetched page
+- queues discovered `http` and `https` links
 
-Process pending work units:
+### Process the queue
 
 ```bash
 cargo run --bin spyder -- work
 ```
 
-The crawler stores page metadata in the `page` table:
+For each pending work unit, Spyder:
 
-- page title
-- discovered links
-- email addresses
-- crypto-like addresses matching the current regex
+- fetches the page
+- extracts title, links, emails, crypto references, and language
+- updates the `page` record
+- queues newly discovered links for recursive crawling
+- refreshes normalized link/email/crypto observations
+- marks the work unit as `done`, reschedules transient failures, or marks terminal failures as `failed`
 
-If a page fails to process, the work unit is marked as `failed` and the error is stored in `last_error`.
+Retry behavior:
 
-## Start The Frontend App
+- transient network and Tor-related failures are requeued automatically
+- retries are bounded and use increasing backoff
+- permanently bad inputs such as invalid URLs are not retried forever
 
-Run the web UI against the same database:
+## Tor / Onion Usage
+
+Spyder uses `reqwest` with SOCKS support. To crawl `.onion` targets, run it through a Tor SOCKS proxy.
+
+Typical local setup:
+
+- start Tor locally
+- make sure the SOCKS proxy is reachable on `localhost:9050`
+
+Seed an onion URL:
+
+```bash
+all_proxy=socks5h://localhost:9050 cargo run --bin spyder -- add http://somesite.onion
+```
+
+Process the queued onion URLs:
+
+```bash
+all_proxy=socks5h://localhost:9050 cargo run --bin spyder -- work
+```
+
+The `socks5h` form is important because hostname resolution must happen through Tor for `.onion` hosts.
+
+## Start The Web Interface
+
+Run the frontend against the same `DATABASE_URL`:
 
 ```bash
 cargo run --bin frontend
 ```
 
-Rocket listens on `127.0.0.1:8000` by default unless you override its config. Open:
+Rocket listens on `127.0.0.1:8000` by default.
 
-- `http://127.0.0.1:8000/`
-- `http://127.0.0.1:8000/data`
-- `http://127.0.0.1:8000/work`
+Main pages:
 
-Available JSON endpoints:
+- `http://127.0.0.1:8000/`: dashboard
+- `http://127.0.0.1:8000/pages`: scanned pages list
+- `http://127.0.0.1:8000/work`: crawl queue
+- `http://127.0.0.1:8000/relationships`: host-to-host reference summary
+- `http://127.0.0.1:8000/entities/emails`: shared email view
+- `http://127.0.0.1:8000/entities/crypto`: shared crypto reference view
+- `http://127.0.0.1:8000/search`: search titles, URLs, language, emails, and wallets
+
+## Web UI Views
+
+### Pages
+
+The pages list shows:
+
+- title
+- URL and host
+- detected language
+- last scan timestamp
+- counts for links, emails, and crypto references
+- previous/next navigation through the dataset
+
+Each page links to a detail view that shows:
+
+- outbound links
+- inbound references from other scanned pages
+- extracted emails
+- extracted crypto references
+- scan timestamps
+
+### Shared Emails
+
+`/entities/emails` groups identical email addresses across pages.
+
+Selecting one email shows every page that referenced it.
+
+The list view is paginated.
+
+### Shared Crypto References
+
+`/entities/crypto` groups identical wallet or payment references across pages.
+
+Selecting one reference shows every page that referenced it.
+
+The list view is paginated.
+
+### Site Relationships
+
+`/relationships` summarizes host-to-host links observed during scanning, so you can see which sites reference which other sites.
+
+The list view is paginated.
+
+## JSON Endpoints
 
 - `GET /api/stats`
 - `GET /api/search?query=example`
 - `GET /api/search?query=example&limit=25`
 
-Search UI:
+## Typical Local Session
 
-- `GET /search`
-
-## Typical Local Workflow
-
-1. Set `DATABASE_URL` in `.env`.
+1. Create `.env` with `DATABASE_URL=spyder.sqlite`.
 2. Run `diesel setup`.
 3. Run `diesel migration run`.
 4. Seed one or more URLs with `cargo run --bin spyder -- add <url>`.
-5. Process the queue with `cargo run --bin spyder -- work`.
-6. Start the UI with `cargo run --bin frontend`.
+5. Process pending work with `cargo run --bin spyder -- work`.
+6. Start the frontend with `cargo run --bin frontend`.
+7. Open `/pages`, `/relationships`, `/entities/emails`, and `/entities/crypto`.
 
 ## Useful Commands
 
 ```bash
-# compile everything
+# build everything
 cargo build
 
 # run tests
 cargo test
 
+# re-run all migrations during development
+diesel migration redo
+
 # regenerate Diesel schema after schema changes
 diesel print-schema > src/schema.rs
 ```
 
-### Add a web site to be scraped with:
+## Current Limitations
 
-```
-all_proxy=socks5h://localhost:9050 target/debug/spyder add http://somesite.onion
-```
+- Language detection is best effort and stores one primary language per page.
+- Crypto extraction is pattern-based. It is useful for discovery and cross-matching, not for full wallet validation.
+- The host relationship view is table-based. There is no visual graph yet.
+- Tor crawling depends on an external SOCKS proxy such as Tor running locally.
+- Completed pages are not automatically recrawled on a schedule yet; rescanning still requires explicit operator action.
 
 ## Troubleshooting
 
-`DATABASE_URL must be set`
+### `DATABASE_URL must be set`
 
 Set it in your shell or create the `.env` file shown above.
 
-`error connecting to spyder.sqlite`
+### `error connecting to spyder.sqlite`
 
-Make sure you ran `diesel setup` and `diesel migration run` from the project root.
+Run `diesel setup` and `diesel migration run` from the project root.
 
-SQLite build or linking errors
+### `no such table`
 
-Install SQLite development libraries on your machine, or enable the bundled SQLite dependency noted in [Cargo.toml](/Users/jbanier/Documents/work/code/spyder/Cargo.toml).
+Your database schema is missing or outdated. Run:
+
+```bash
+diesel migration run
+```
+
+### `.onion` requests fail
+
+Check that:
+
+- Tor is running
+- the SOCKS proxy is available on the host and port you configured
+- you used `socks5h`, not plain `socks5`

@@ -1,0 +1,63 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Entity Index</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+<div class="dashboard-grid dashboard-grid-wide">
+    <section class="card">
+        <div class="section-heading">
+            <h2>Email Addresses</h2>
+            <span class="muted">{{entity_count}} distinct values</span>
+        </div>
+        {{#if has_entities}}
+        <div class="compact-list">
+            {{#each entities}}
+            <a class="compact-row" href="{{detail_url}}">
+                <span class="compact-title">{{value}}</span>
+                <span class="count-pill">{{page_count}} pages</span>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No email addresses have been extracted yet.</p>
+        {{/if}}
+        {{#if has_pagination}}
+        <section class="pagination-bar pagination-bar-inline">
+            {{#if pagination.has_previous_page}}
+            <a class="btn btn-secondary" href="{{pagination.previous_page_url}}">Previous</a>
+            {{/if}}
+            {{#if pagination.has_next_page}}
+            <a class="btn btn-secondary" href="{{pagination.next_page_url}}">Next</a>
+            {{/if}}
+        </section>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        {{#if has_selected}}
+        <div class="section-heading">
+            <h2>{{selected.value}}</h2>
+            <span class="count-pill">{{selected_page_count}} pages</span>
+        </div>
+        <div class="compact-list">
+            {{#each selected.pages}}
+            <a class="compact-row" href="/pages/{{id}}">
+                <span class="compact-title">{{title}}</span>
+                <span class="compact-meta">{{language}}</span>
+                <span class="compact-meta">{{last_scanned_at}}</span>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <div class="empty-state empty-state-inline">
+            <h2>Select an email</h2>
+            <p>Choose a value from the left to see all pages that mention it.</p>
+        </div>
+        {{/if}}
+    </section>
+</div>
+{{/inline}}
+
+{{> base}}

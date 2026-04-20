@@ -1,0 +1,64 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Page Inventory</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+{{#if has_pages}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Indexed Pages</h2>
+        <span class="muted">{{page_count}} records</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Page</th>
+                    <th>Site</th>
+                    <th>Language</th>
+                    <th>Last Scan</th>
+                    <th>Links</th>
+                    <th>Emails</th>
+                    <th>Crypto</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each pages}}
+                <tr>
+                    <td>
+                        <a class="row-link" href="/pages/{{id}}">{{title}}</a>
+                        <div class="cell-subtitle">{{url}}</div>
+                    </td>
+                    <td>{{host}}</td>
+                    <td>{{language}}</td>
+                    <td>{{last_scanned_at}}</td>
+                    <td><span class="count-pill">{{outbound_link_count}}</span></td>
+                    <td><span class="count-pill">{{email_count}}</span></td>
+                    <td><span class="count-pill">{{crypto_count}}</span></td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+</section>
+{{#if has_pagination}}
+<section class="pagination-bar">
+    {{#if pagination.has_previous_page}}
+    <a class="btn btn-secondary" href="{{pagination.previous_page_url}}">Previous</a>
+    {{/if}}
+    {{#if pagination.has_next_page}}
+    <a class="btn btn-secondary" href="{{pagination.next_page_url}}">Next</a>
+    {{/if}}
+</section>
+{{/if}}
+{{else}}
+<section class="empty-state">
+    <h2>No pages scanned yet</h2>
+    <p>Run the crawler and come back here to inspect indexed pages.</p>
+</section>
+{{/if}}
+{{/inline}}
+
+{{> base}}

@@ -1,0 +1,125 @@
+{{#*inline "body"}}
+<section class="hero">
+    <p class="eyebrow">Dark Web Scan Intelligence</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+    <div class="actions">
+        <a href="/pages" class="btn">Browse Pages</a>
+        <a href="/work" class="btn btn-secondary">Inspect Queue</a>
+        <a href="/relationships" class="btn btn-secondary">Site Relationships</a>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Scan Stats</h2>
+        <a href="/api/stats" class="muted-link">JSON</a>
+    </div>
+    <div class="stats-grid">
+        <article class="stat-item">
+            <strong>{{stats.total_pages}}</strong>
+            <span>Pages</span>
+        </article>
+        <article class="stat-item">
+            <strong>{{stats.total_domains}}</strong>
+            <span>Sites</span>
+        </article>
+        <article class="stat-item">
+            <strong>{{stats.pending_work_units}}</strong>
+            <span>Pending URLs</span>
+        </article>
+        <article class="stat-item">
+            <strong>{{stats.failed_work_units}}</strong>
+            <span>Failed URLs</span>
+        </article>
+        <article class="stat-item">
+            <strong>{{stats.last_scrape}}</strong>
+            <span>Last Scan</span>
+        </article>
+    </div>
+</section>
+
+<div class="dashboard-grid">
+    <section class="card">
+        <div class="section-heading">
+            <h2>Recent Pages</h2>
+            <a href="/pages" class="muted-link">All pages</a>
+        </div>
+        {{#if has_pages}}
+        <div class="compact-list">
+            {{#each pages}}
+            <a class="compact-row" href="/pages/{{id}}">
+                <span class="compact-title">{{title}}</span>
+                <span class="compact-meta">{{host}}</span>
+                <span class="compact-meta">{{last_scanned_at}}</span>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No pages have been scanned yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Shared Emails</h2>
+            <a href="/entities/emails" class="muted-link">All emails</a>
+        </div>
+        {{#if has_email_entities}}
+        <div class="compact-list">
+            {{#each email_entities}}
+            <a class="compact-row" href="{{detail_url}}">
+                <span class="compact-title">{{value}}</span>
+                <span class="count-pill">{{page_count}} pages</span>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No email addresses detected yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Shared Wallets</h2>
+            <a href="/entities/crypto" class="muted-link">All references</a>
+        </div>
+        {{#if has_crypto_entities}}
+        <div class="compact-list">
+            {{#each crypto_entities}}
+            <a class="compact-row" href="{{detail_url}}">
+                <span class="compact-title">{{asset_type}}</span>
+                <span class="compact-meta">{{reference}}</span>
+                <span class="count-pill">{{page_count}} pages</span>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No crypto references detected yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Site Relationships</h2>
+            <a href="/relationships" class="muted-link">All relationships</a>
+        </div>
+        {{#if has_relationships}}
+        <div class="compact-list">
+            {{#each relationships}}
+            <div class="compact-row compact-row-static">
+                <span class="compact-title">{{source_host}}</span>
+                <span class="relationship-arrow">→</span>
+                <span class="compact-meta">{{target_host}}</span>
+                <span class="count-pill">{{reference_count}} links</span>
+            </div>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No cross-site references have been observed yet.</p>
+        {{/if}}
+    </section>
+</div>
+{{/inline}}
+
+{{> base}}
