@@ -9,6 +9,7 @@ use spyder::{
     save_page_info,
 };
 use std::env;
+use std::fmt::Display;
 use std::time::Duration;
 use url::Url;
 
@@ -16,6 +17,11 @@ use url::Url;
 enum FailureKind {
     Retriable,
     Permanent,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct WorkOptions {
+    onion_only: bool,
 }
 
 struct CrawlFailure {
@@ -41,6 +47,58 @@ impl CrawlFailure {
             error,
             kind: FailureKind::Permanent,
         }
+    }
+}
+
+fn print_status(message: impl Display) {
+    println!("==> {message}");
+}
+
+fn print_progress(current: usize, total: usize, message: impl Display) {
+    println!("[{current}/{total}] {message}");
+}
+
+fn count_label(count: usize, singular: &str, plural: &str) -> String {
+    format!("{} {}", count, if count == 1 { singular } else { plural })
+}
+
+fn compact_for_terminal(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return normalized;
+    }
+
+    let truncated = normalized.chars().take(max_chars).collect::<String>();
+    if normalized.chars().count() > max_chars {
+        format!("{truncated}...")
+    } else {
+        normalized
+    }
+}
+
+fn summarize_page_snapshot(snapshot: &spyder::models::PageSnapshot) -> String {
+    let mut parts = vec![
+        count_label(snapshot.links.len(), "link", "links"),
+        count_label(snapshot.emails.len(), "email", "emails"),
+        count_label(snapshot.crypto_refs.len(), "crypto ref", "crypto refs"),
+    ];
+    let language = compact_for_terminal(&snapshot.language, 24);
+    if !language.is_empty() {
+        parts.push(format!("language {language}"));
+    }
+
+    let title = compact_for_terminal(&snapshot.title, 48);
+    if title.is_empty() {
+        parts.join(", ")
+    } else {
+        format!("title \"{title}\", {}", parts.join(", "))
+    }
+}
+
+fn failure_kind_label(kind: FailureKind) -> &'static str {
+    match kind {
+        FailureKind::Retriable => "retriable",
+        FailureKind::Permanent => "permanent",
     }
 }
 
@@ -81,13 +139,21 @@ fn fetch_body(client: &Client, url: &str) -> std::result::Result<String, CrawlFa
 
 fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
     let mut connection = establish_connection()?;
+    print_status(format!("Queueing seed URL {url}"));
     create_work_unit(&mut connection, url)?;
 
     Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
+    print_status(format!("Fetching seed page {url}"));
     let snapshot = fetch_page_snapshot(client, url)
         .map_err(|failure| failure.error)
         .with_context(|| format!("unable to discover links for seed {url}"))?;
+    print_status(format!("Extracted {}", summarize_page_snapshot(&snapshot)));
+    print_status("Queueing discovered links from the seed page");
     let outcome = enqueue_discovered_links(&mut connection, &snapshot)?;
+    println!(
+        "Queued {} discovered URLs from the seed page",
+        outcome.queued_count
+    );
     if outcome.skipped_blacklisted_count > 0 {
         println!(
             "Skipped {} blacklisted discovered URLs",
@@ -98,31 +164,75 @@ fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
     Ok(1 + outcome.queued_count)
 }
 
-fn work_queue(client: &Client) -> Result<()> {
+fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
     let mut connection = establish_connection()?;
-    let work_units = get_pending_work_units(&mut connection)?;
+    print_status("Loading pending work units");
+    let pending_work_units = get_pending_work_units(&mut connection)?;
+    let pending_count = pending_work_units.len();
+    let work_units = select_work_units_for_processing(pending_work_units, options);
 
-    println!("Working with {} pending work units", work_units.len());
-    for work_unit in work_units {
-        println!("Processing {}", work_unit.url);
+    if work_units.is_empty() {
+        if options.onion_only {
+            println!(
+                "No pending .onion work units to process ({} non-onion pending URLs skipped)",
+                pending_count
+            );
+        } else {
+            println!("No pending work units to process");
+        }
+        return Ok(());
+    }
+
+    let total = work_units.len();
+    if options.onion_only {
+        let skipped_count = pending_count - work_units.len();
+        println!(
+            "Working with {} pending work units whose host ends in .onion ({} skipped)",
+            work_units.len(),
+            skipped_count
+        );
+    } else {
+        println!("Working with {} pending work units", work_units.len());
+    }
+    for (index, work_unit) in work_units.into_iter().enumerate() {
+        let current = index + 1;
+        print_progress(current, total, format!("Fetching {}", work_unit.url));
 
         match fetch_page_snapshot(client, &work_unit.url) {
             Ok(page_snapshot) => {
+                print_progress(
+                    current,
+                    total,
+                    format!("Extracted {}", summarize_page_snapshot(&page_snapshot)),
+                );
                 save_page_info(&mut connection, &page_snapshot)?;
                 let discovery_outcome = enqueue_discovered_links(&mut connection, &page_snapshot)?;
                 mark_work_unit_as_done(&mut connection, work_unit.id)?;
-                println!(
-                    "Stored page and queued {} discovered URLs",
-                    discovery_outcome.queued_count
+                print_progress(
+                    current,
+                    total,
+                    format!(
+                        "Stored page and queued {} discovered URLs",
+                        discovery_outcome.queued_count
+                    ),
                 );
                 if discovery_outcome.skipped_blacklisted_count > 0 {
-                    println!(
-                        "Skipped {} blacklisted discovered URLs",
-                        discovery_outcome.skipped_blacklisted_count
+                    print_progress(
+                        current,
+                        total,
+                        format!(
+                            "Skipped {} blacklisted discovered URLs",
+                            discovery_outcome.skipped_blacklisted_count
+                        ),
                     );
                 }
             }
             Err(failure) => {
+                eprintln!(
+                    "[{current}/{total}] Failed to process {} ({})",
+                    work_unit.url,
+                    failure_kind_label(failure.kind)
+                );
                 eprintln!(
                     "ERROR: couldn't extract page information: {:?}",
                     failure.error
@@ -133,11 +243,37 @@ fn work_queue(client: &Client) -> Result<()> {
                     &failure.error.to_string(),
                     failure.kind == FailureKind::Retriable,
                 )?;
+                eprintln!(
+                    "[{current}/{total}] Recorded failure state for {}",
+                    work_unit.url
+                );
             }
         }
     }
 
     Ok(())
+}
+
+fn select_work_units_for_processing(
+    work_units: Vec<spyder::models::WorkUnit>,
+    options: WorkOptions,
+) -> Vec<spyder::models::WorkUnit> {
+    work_units
+        .into_iter()
+        .filter(|work_unit| !options.onion_only || url_targets_onion(&work_unit.url))
+        .collect()
+}
+
+fn url_targets_onion(url: &str) -> bool {
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .host_str()
+                .map(|host| host.trim_end_matches('.').to_string())
+        })
+        .map(|host| host.to_ascii_lowercase().ends_with(".onion"))
+        .unwrap_or(false)
 }
 
 fn enqueue_discovered_links(
@@ -211,7 +347,7 @@ fn usage(program: &str) {
     eprintln!("    blacklist list");
     eprintln!("    blacklist add <domain>");
     eprintln!("    blacklist remove <domain>");
-    eprintln!("    work           process pending work units and store page metadata.");
+    eprintln!("    work [--onion-only] process pending work units and store page metadata.");
 }
 
 fn print_error(error: &anyhow::Error) {
@@ -228,8 +364,10 @@ fn print_error(error: &anyhow::Error) {
 }
 
 fn build_http_client() -> Result<Client> {
+    // Crawl targets may present self-signed, expired, or otherwise invalid certificates.
     let mut builder = Client::builder()
         .timeout(Duration::from_secs(15))
+        .danger_accept_invalid_certs(true)
         .no_proxy();
     if let Some(proxy_url) = configured_proxy_url() {
         builder = builder.proxy(
@@ -253,6 +391,19 @@ fn configured_proxy_url_from_values(
         .chain(lower)
         .map(|value| value.trim().to_string())
         .find(|value| !value.is_empty())
+}
+
+fn parse_work_options(args: impl IntoIterator<Item = String>) -> Result<WorkOptions> {
+    let mut options = WorkOptions::default();
+
+    for arg in args {
+        match arg.as_str() {
+            "--onion-only" => options.onion_only = true,
+            _ => anyhow::bail!("invalid work option: {arg}"),
+        }
+    }
+
+    Ok(options)
 }
 
 fn is_retriable_request_error(error: &anyhow::Error) -> bool {
@@ -313,7 +464,13 @@ fn main() {
                 Err(anyhow::anyhow!("invalid or missing blacklist subcommand"))
             }
         },
-        Some("work") => work_queue(&client),
+        Some("work") => match parse_work_options(args) {
+            Ok(options) => work_queue(&client, options),
+            Err(error) => {
+                usage(&program);
+                Err(error)
+            }
+        },
         Some(_) | None => {
             usage(&program);
             Err(anyhow::anyhow!("invalid or missing subcommand"))
@@ -382,6 +539,66 @@ mod tests {
         assert!(is_retriable_status(StatusCode::TOO_MANY_REQUESTS));
         assert!(is_retriable_status(StatusCode::BAD_GATEWAY));
         assert!(!is_retriable_status(StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn compact_for_terminal_normalizes_whitespace_and_truncates() {
+        assert_eq!(
+            compact_for_terminal("  Alpha   Beta\tGamma  ", 10),
+            "Alpha Beta..."
+        );
+    }
+
+    #[test]
+    fn snapshot_summary_includes_title_and_counts() {
+        let snapshot = spyder::models::PageSnapshot {
+            title: "Alpha Market".to_string(),
+            url: "http://alpha.onion".to_string(),
+            language: "English".to_string(),
+            links: vec![spyder::models::LinkObservation {
+                target_url: "http://beta.onion".to_string(),
+                target_host: "beta.onion".to_string(),
+            }],
+            emails: vec!["ops@alpha.onion".to_string()],
+            crypto_refs: vec![spyder::models::CryptoReference {
+                asset_type: "btc".to_string(),
+                reference: "bc1test".to_string(),
+            }],
+            classification_signals: spyder::models::ClassificationSignals::default(),
+        };
+
+        assert_eq!(
+            summarize_page_snapshot(&snapshot),
+            "title \"Alpha Market\", 1 link, 1 email, 1 crypto ref, language English"
+        );
+    }
+
+    #[test]
+    fn work_options_accept_onion_only_flag() {
+        let options = parse_work_options(vec!["--onion-only".to_string()]).expect("work options");
+        assert_eq!(options, WorkOptions { onion_only: true });
+    }
+
+    #[test]
+    fn work_options_reject_unknown_flags() {
+        let error = parse_work_options(vec!["--bogus".to_string()]).expect_err("invalid option");
+        assert_eq!(error.to_string(), "invalid work option: --bogus");
+    }
+
+    #[test]
+    fn onion_only_work_selection_skips_non_onion_urls() {
+        let mut conn = setup_connection();
+        create_work_unit(&mut conn, "http://alpha.onion").expect("insert onion work unit");
+        create_work_unit(&mut conn, "https://example.com").expect("insert clearnet work unit");
+        create_work_unit(&mut conn, "notaurl").expect("insert invalid work unit");
+
+        let selected = select_work_units_for_processing(
+            get_pending_work_units(&mut conn).expect("pending work units"),
+            WorkOptions { onion_only: true },
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].url, "http://alpha.onion");
     }
 
     #[test]

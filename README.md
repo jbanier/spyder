@@ -101,6 +101,8 @@ This:
 cargo run --bin spyder -- work
 ```
 
+Use `cargo run --bin spyder -- work --onion-only` to process only pending URLs whose host ends in `.onion`.
+
 For each pending work unit, Spyder:
 
 - fetches the page
@@ -157,7 +159,7 @@ all_proxy=socks5h://localhost:9050 cargo run --bin spyder -- add http://somesite
 Process the queued onion URLs:
 
 ```bash
-all_proxy=socks5h://localhost:9050 cargo run --bin spyder -- work
+all_proxy=socks5h://localhost:9050 cargo run --bin spyder -- work --onion-only
 ```
 
 The `socks5h` form is important because hostname resolution must happen through Tor for `.onion` hosts.
