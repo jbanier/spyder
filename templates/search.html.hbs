@@ -6,7 +6,13 @@
 </section>
 
 <section class="card search-card">
-    <form class="search-form" action="/search" method="get">
+    <form
+        class="search-form"
+        action="/search"
+        method="get"
+        data-api-search
+        data-results-target="#search-results"
+    >
         <input
             class="search-field"
             type="text"
@@ -26,6 +32,7 @@
     </form>
 </section>
 
+<div id="search-results">
 {{#if has_query}}
     {{#if has_results}}
     <section class="card">
@@ -64,6 +71,7 @@
     <p>Use the form above to search titles, URLs, languages, email addresses, and crypto references.</p>
 </section>
 {{/if}}
+</div>
 {{/inline}}
 
 {{> base}}

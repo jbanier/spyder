@@ -136,6 +136,7 @@ diesel::joinable!(page_scan -> page (page_id));
 diesel::joinable!(page_scan_crypto -> page_scan (scan_id));
 diesel::joinable!(page_scan_email -> page_scan (scan_id));
 diesel::joinable!(page_scan_link -> page_scan (scan_id));
+diesel::joinable!(site_profile -> page (source_page_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     domain_blacklist,

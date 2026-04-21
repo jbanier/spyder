@@ -678,6 +678,10 @@ fn build_list_url(
 
 #[launch]
 fn rocket() -> _ {
+    build_rocket()
+}
+
+fn build_rocket() -> rocket::Rocket<rocket::Build> {
     rocket::build()
         .attach(Template::fairing())
         .mount(
@@ -705,4 +709,199 @@ fn rocket() -> _ {
             ],
         )
         .mount("/static", FileServer::from(relative!("static")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diesel::connection::SimpleConnection;
+    use diesel::Connection;
+    use rocket::http::Status;
+    use rocket::local::blocking::Client;
+    use spyder::models::{
+        CategoryHint, ClassificationSignals, CryptoReference, LinkObservation, PageSnapshot,
+    };
+    use spyder::save_page_info;
+    use std::env;
+    use std::fs;
+    use std::process;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn setup_test_database() -> String {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let database_path =
+            env::temp_dir().join(format!("spyder-frontend-{}-{unique}.sqlite", process::id()));
+        let database_url = database_path.to_string_lossy().into_owned();
+
+        let mut conn =
+            diesel::sqlite::SqliteConnection::establish(&database_url).expect("sqlite file");
+        conn.batch_execute(
+            "
+            CREATE TABLE work_unit(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              url VARCHAR NOT NULL UNIQUE,
+              status VARCHAR NOT NULL DEFAULT 'pending',
+              retry_count INTEGER NOT NULL DEFAULT 0,
+              next_attempt_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              last_attempt_at VARCHAR,
+              last_error VARCHAR,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX idx_work_unit_status_next_attempt_at ON work_unit(status, next_attempt_at);
+            CREATE TABLE domain_blacklist(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              domain VARCHAR NOT NULL UNIQUE,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE page(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              title VARCHAR NOT NULL,
+              url VARCHAR NOT NULL UNIQUE,
+              links VARCHAR NOT NULL,
+              emails VARCHAR NOT NULL,
+              coins VARCHAR NOT NULL,
+              language VARCHAR NOT NULL DEFAULT '',
+              last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE page_classification(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              page_id INTEGER NOT NULL UNIQUE,
+              host VARCHAR NOT NULL,
+              category VARCHAR NOT NULL,
+              confidence VARCHAR NOT NULL,
+              score INTEGER NOT NULL DEFAULT 0,
+              evidence VARCHAR NOT NULL DEFAULT '',
+              last_classified_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE page_scan(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              page_id INTEGER NOT NULL,
+              title VARCHAR NOT NULL,
+              language VARCHAR NOT NULL DEFAULT '',
+              scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE page_scan_link(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              scan_id INTEGER NOT NULL,
+              target_url VARCHAR NOT NULL,
+              target_host VARCHAR NOT NULL DEFAULT '',
+              UNIQUE(scan_id, target_url)
+            );
+            CREATE TABLE page_scan_email(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              scan_id INTEGER NOT NULL,
+              email VARCHAR NOT NULL,
+              UNIQUE(scan_id, email)
+            );
+            CREATE TABLE page_scan_crypto(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              scan_id INTEGER NOT NULL,
+              asset_type VARCHAR NOT NULL,
+              reference VARCHAR NOT NULL,
+              UNIQUE(scan_id, asset_type, reference)
+            );
+            CREATE TABLE page_link(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              source_page_id INTEGER NOT NULL,
+              target_url VARCHAR NOT NULL,
+              target_host VARCHAR NOT NULL DEFAULT '',
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(source_page_id, target_url)
+            );
+            CREATE TABLE page_email(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              page_id INTEGER NOT NULL,
+              email VARCHAR NOT NULL,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(page_id, email)
+            );
+            CREATE TABLE page_crypto(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              page_id INTEGER NOT NULL,
+              asset_type VARCHAR NOT NULL,
+              reference VARCHAR NOT NULL,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(page_id, asset_type, reference)
+            );
+            CREATE TABLE site_profile(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              host VARCHAR NOT NULL UNIQUE,
+              category VARCHAR NOT NULL,
+              confidence VARCHAR NOT NULL,
+              score INTEGER NOT NULL DEFAULT 0,
+              page_count INTEGER NOT NULL DEFAULT 0,
+              evidence VARCHAR NOT NULL DEFAULT '',
+              source_page_id INTEGER,
+              last_classified_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            ",
+        )
+        .expect("schema setup");
+
+        let forum_snapshot = PageSnapshot {
+            title: "Beta Forum".to_string(),
+            url: "http://beta.onion".to_string(),
+            language: "French".to_string(),
+            links: vec![LinkObservation {
+                target_url: "http://alpha.onion".to_string(),
+                target_host: "alpha.onion".to_string(),
+            }],
+            emails: vec!["team@shared.test".to_string()],
+            crypto_refs: vec![CryptoReference {
+                asset_type: "bitcoin".to_string(),
+                reference: "bc1qalpha000000000000000000000000000000000".to_string(),
+            }],
+            classification_signals: ClassificationSignals {
+                word_count: 220,
+                password_form_count: 1,
+                hints: vec![
+                    CategoryHint {
+                        category: "forum".to_string(),
+                        evidence: "title:forum".to_string(),
+                        weight: 6,
+                    },
+                    CategoryHint {
+                        category: "forum".to_string(),
+                        evidence: "text:thread".to_string(),
+                        weight: 4,
+                    },
+                ],
+                ..ClassificationSignals::default()
+            },
+        };
+        save_page_info(&mut conn, &forum_snapshot).expect("seed page");
+
+        database_url
+    }
+
+    #[test]
+    fn search_page_renders_results_container_and_matching_results() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client.get("/search?query=forum&limit=5").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        let body = response.into_string().expect("response body");
+        assert!(body.contains("data-api-search"));
+        assert!(body.contains("data-results-target=\"#search-results\""));
+        assert!(body.contains("id=\"search-results\""));
+        assert!(body.contains("Beta Forum"));
+        assert!(body.contains("search-results-grid"));
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
 }
