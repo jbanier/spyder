@@ -5,9 +5,10 @@ use spyder::extraction::extract_page_snapshot;
 use spyder::{
     add_domain_blacklist_entry, create_work_unit, establish_connection,
     find_matching_blacklist_domain, get_pending_work_units, list_domain_blacklist_rules,
-    mark_work_unit_as_done, record_work_unit_failure, remove_domain_blacklist_entry,
-    save_page_info,
+    mark_work_unit_as_done, normalize_crawl_url, record_work_unit_failure,
+    remove_domain_blacklist_entry, save_page_info,
 };
+use std::collections::HashSet;
 use std::env;
 use std::fmt::Display;
 use std::time::Duration;
@@ -138,15 +139,16 @@ fn fetch_body(client: &Client, url: &str) -> std::result::Result<String, CrawlFa
 }
 
 fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
+    let normalized_url = normalize_crawl_url(url);
     let mut connection = establish_connection()?;
-    print_status(format!("Queueing seed URL {url}"));
-    create_work_unit(&mut connection, url)?;
+    print_status(format!("Queueing seed URL {normalized_url}"));
+    create_work_unit(&mut connection, &normalized_url)?;
 
-    Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
-    print_status(format!("Fetching seed page {url}"));
-    let snapshot = fetch_page_snapshot(client, url)
+    Url::parse(&normalized_url).with_context(|| format!("invalid url: {normalized_url}"))?;
+    print_status(format!("Fetching seed page {normalized_url}"));
+    let snapshot = fetch_page_snapshot(client, &normalized_url)
         .map_err(|failure| failure.error)
-        .with_context(|| format!("unable to discover links for seed {url}"))?;
+        .with_context(|| format!("unable to discover links for seed {normalized_url}"))?;
     print_status(format!("Extracted {}", summarize_page_snapshot(&snapshot)));
     print_status("Queueing discovered links from the seed page");
     let outcome = enqueue_discovered_links(&mut connection, &snapshot)?;
@@ -194,11 +196,23 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
     } else {
         println!("Working with {} pending work units", work_units.len());
     }
+    let mut processed_urls = HashSet::new();
     for (index, work_unit) in work_units.into_iter().enumerate() {
         let current = index + 1;
-        print_progress(current, total, format!("Fetching {}", work_unit.url));
+        let crawl_url = normalize_crawl_url(&work_unit.url);
+        if processed_urls.contains(&crawl_url) {
+            mark_work_unit_as_done(&mut connection, work_unit.id)?;
+            print_progress(
+                current,
+                total,
+                format!("Skipped duplicate URL {}", work_unit.url),
+            );
+            continue;
+        }
 
-        match fetch_page_snapshot(client, &work_unit.url) {
+        print_progress(current, total, format!("Fetching {crawl_url}"));
+
+        match fetch_page_snapshot(client, &crawl_url) {
             Ok(page_snapshot) => {
                 print_progress(
                     current,
@@ -208,6 +222,7 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
                 save_page_info(&mut connection, &page_snapshot)?;
                 let discovery_outcome = enqueue_discovered_links(&mut connection, &page_snapshot)?;
                 mark_work_unit_as_done(&mut connection, work_unit.id)?;
+                processed_urls.insert(crawl_url.clone());
                 print_progress(
                     current,
                     total,
@@ -230,7 +245,7 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
             Err(failure) => {
                 eprintln!(
                     "[{current}/{total}] Failed to process {} ({})",
-                    work_unit.url,
+                    crawl_url,
                     failure_kind_label(failure.kind)
                 );
                 eprintln!(
@@ -632,5 +647,35 @@ mod tests {
         let pending = get_pending_work_units(&mut conn).expect("pending work units");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].url, "http://allowed.onion/");
+    }
+
+    #[test]
+    fn discovered_fragment_links_share_one_work_unit() {
+        let mut conn = setup_connection();
+
+        let snapshot = spyder::models::PageSnapshot {
+            title: "Seed".to_string(),
+            url: "http://seed.onion".to_string(),
+            language: "English".to_string(),
+            links: vec![
+                spyder::models::LinkObservation {
+                    target_url: "http://allowed.onion/docs#faq".to_string(),
+                    target_host: "allowed.onion".to_string(),
+                },
+                spyder::models::LinkObservation {
+                    target_url: "http://allowed.onion/docs#pricing".to_string(),
+                    target_host: "allowed.onion".to_string(),
+                },
+            ],
+            emails: Vec::new(),
+            crypto_refs: Vec::new(),
+            classification_signals: spyder::models::ClassificationSignals::default(),
+        };
+
+        enqueue_discovered_links(&mut conn, &snapshot).expect("enqueue links");
+
+        let pending = get_pending_work_units(&mut conn).expect("pending work units");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].url, "http://allowed.onion/docs");
     }
 }

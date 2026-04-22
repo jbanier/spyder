@@ -175,6 +175,16 @@ pub fn establish_connection() -> Result<SqliteConnection> {
         .with_context(|| format!("error connecting to {database_url}"))
 }
 
+pub fn normalize_crawl_url(raw_url: &str) -> String {
+    match Url::parse(raw_url) {
+        Ok(parsed) if parsed.fragment().is_some() => raw_url
+            .split_once('#')
+            .map(|(without_fragment, _)| without_fragment.to_string())
+            .unwrap_or_else(|| raw_url.to_string()),
+        _ => raw_url.to_string(),
+    }
+}
+
 pub fn normalize_blacklist_domain(raw_domain: &str) -> Result<String> {
     let trimmed = raw_domain.trim().trim_end_matches('.');
     anyhow::ensure!(!trimmed.is_empty(), "blacklist domain must not be empty");
@@ -359,8 +369,9 @@ pub fn list_site_profiles(
 }
 
 pub fn create_work_unit(conn: &mut SqliteConnection, url: &str) -> Result<()> {
+    let normalized_url = normalize_crawl_url(url);
     let work_unit = NewUnit {
-        url,
+        url: &normalized_url,
         status: STATUS_PENDING,
     };
 
@@ -374,6 +385,39 @@ pub fn create_work_unit(conn: &mut SqliteConnection, url: &str) -> Result<()> {
     Ok(())
 }
 
+fn normalize_link_observations(links: &[LinkObservation]) -> Vec<LinkObservation> {
+    let mut normalized = links
+        .iter()
+        .map(|link| {
+            let target_url = normalize_crawl_url(&link.target_url);
+            let target_host = Url::parse(&target_url)
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+                .unwrap_or_else(|| link.target_host.to_ascii_lowercase());
+
+            LinkObservation {
+                target_url,
+                target_host,
+            }
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    normalized.sort_by(|left, right| {
+        left.target_url
+            .cmp(&right.target_url)
+            .then_with(|| left.target_host.cmp(&right.target_host))
+    });
+    normalized
+}
+
+fn normalize_page_snapshot(snapshot: &PageSnapshot) -> PageSnapshot {
+    let mut normalized = snapshot.clone();
+    normalized.url = normalize_crawl_url(&normalized.url);
+    normalized.links = normalize_link_observations(&normalized.links);
+    normalized
+}
+
 pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> Result<()> {
     use crate::schema::page::dsl::{
         coins as page_coins, emails as page_emails, language as page_language,
@@ -384,6 +428,7 @@ pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> R
         page_classification, page_crypto, page_email, page_link, page_scan, page_scan_crypto,
         page_scan_email, page_scan_link, site_profile,
     };
+    let snapshot = normalize_page_snapshot(snapshot);
 
     let new_page = NewPage {
         title: snapshot.title.clone(),
@@ -540,7 +585,7 @@ pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> R
                 .context("error saving page crypto references")?;
         }
 
-        let classification = classify_page_snapshot(snapshot);
+        let classification = classify_page_snapshot(&snapshot);
         if !classification.host.is_empty() {
             diesel::insert_into(page_classification::table)
                 .values(NewPageClassification {
@@ -2468,6 +2513,18 @@ mod tests {
     }
 
     #[test]
+    fn work_units_ignore_url_fragments() {
+        let mut conn = setup_connection();
+
+        create_work_unit(&mut conn, "https://example.com/page#faq").expect("fragment insert");
+        create_work_unit(&mut conn, "https://example.com/page").expect("canonical insert");
+
+        let work_units = list_work_units(&mut conn, None, None).expect("load work units");
+        assert_eq!(work_units.items.len(), 1);
+        assert_eq!(work_units.items[0].url, "https://example.com/page");
+    }
+
+    #[test]
     fn transient_failures_are_rescheduled_then_exhausted() {
         let mut conn = setup_connection();
 
@@ -2910,6 +2967,63 @@ mod tests {
         assert_eq!(
             scan_detail.diff.removed_crypto_refs[0].asset_type,
             "bitcoin"
+        );
+    }
+
+    #[test]
+    fn saving_pages_ignores_url_fragments() {
+        let mut conn = setup_connection();
+
+        let snapshot = PageSnapshot {
+            title: "Anchor Heavy Page".to_string(),
+            url: "https://example.com/docs/page#overview".to_string(),
+            language: "English".to_string(),
+            links: vec![
+                LinkObservation {
+                    target_url: "https://example.com/docs/faq#shipping".to_string(),
+                    target_host: "EXAMPLE.com".to_string(),
+                },
+                LinkObservation {
+                    target_url: "https://example.com/docs/faq#returns".to_string(),
+                    target_host: "example.com".to_string(),
+                },
+            ],
+            emails: Vec::new(),
+            crypto_refs: Vec::new(),
+            classification_signals: ClassificationSignals::default(),
+        };
+        save_page_info(&mut conn, &snapshot).expect("save fragment page");
+
+        let mut rescanned = snapshot.clone();
+        rescanned.url = "https://example.com/docs/page".to_string();
+        rescanned.title = "Anchor Heavy Page Rescanned".to_string();
+        save_page_info(&mut conn, &rescanned).expect("save canonical page");
+
+        assert_eq!(
+            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page").expect("page count"),
+            1
+        );
+        assert_eq!(
+            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_link")
+                .expect("page link count"),
+            1
+        );
+        assert_eq!(
+            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_scan").expect("scan count"),
+            2
+        );
+        assert_eq!(
+            scalar_nullable_text(&mut conn, "SELECT url AS value FROM page LIMIT 1")
+                .expect("page url"),
+            Some("https://example.com/docs/page".to_string())
+        );
+        assert_eq!(
+            scalar_nullable_text(
+                &mut conn,
+                "SELECT target_url AS value FROM page_link LIMIT 1"
+            )
+            .expect("stored target url"),
+            Some("https://example.com/docs/faq".to_string())
         );
     }
 

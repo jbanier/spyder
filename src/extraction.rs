@@ -10,8 +10,10 @@ use url::Url;
 use whatlang::detect;
 
 pub fn extract_page_snapshot(url: &str, body: &str) -> Result<PageSnapshot> {
+    let normalized_url = crate::normalize_crawl_url(url);
     let document = Html::parse_document(body);
-    let base_url = Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
+    let base_url =
+        Url::parse(&normalized_url).with_context(|| format!("invalid url: {normalized_url}"))?;
     let title = extract_title(&document);
     let text = extract_document_text(&document);
     let links = extract_links(&document, &base_url);
@@ -20,7 +22,7 @@ pub fn extract_page_snapshot(url: &str, body: &str) -> Result<PageSnapshot> {
 
     Ok(PageSnapshot {
         title,
-        url: url.to_string(),
+        url: normalized_url,
         language: detect_primary_language(&text),
         links,
         emails: extract_emails(body),
@@ -50,9 +52,10 @@ fn extract_links(document: &Html, base_url: &Url) -> Vec<LinkObservation> {
 
     for element in document.select(&selector) {
         if let Some(raw_href) = element.value().attr("href") {
-            if let Ok(url) = base_url.join(raw_href) {
+            if let Ok(mut url) = base_url.join(raw_href) {
                 match url.scheme() {
                     "http" | "https" => {
+                        url.set_fragment(None);
                         let target_url = url.to_string();
                         let target_host = url.host_str().unwrap_or_default().to_string();
                         discovered.insert(LinkObservation {
@@ -529,5 +532,34 @@ mod tests {
             .hints
             .iter()
             .any(|hint| hint.category == "market"));
+    }
+
+    #[test]
+    fn snapshot_ignores_url_fragments() {
+        let snapshot = extract_page_snapshot(
+            "https://example.com/docs/page#overview",
+            r##"
+            <html>
+                <head><title>Docs</title></head>
+                <body>
+                    <a href="#faq">FAQ</a>
+                    <a href="/docs/page#returns">Returns</a>
+                    <a href="/docs/next#intro">Next</a>
+                </body>
+            </html>
+            "##,
+        )
+        .expect("snapshot");
+
+        assert_eq!(snapshot.url, "https://example.com/docs/page");
+        assert_eq!(snapshot.links.len(), 2);
+        assert!(snapshot
+            .links
+            .iter()
+            .any(|link| link.target_url == "https://example.com/docs/page"));
+        assert!(snapshot
+            .links
+            .iter()
+            .any(|link| link.target_url == "https://example.com/docs/next"));
     }
 }
