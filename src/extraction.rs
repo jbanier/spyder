@@ -12,8 +12,8 @@ use whatlang::detect;
 pub fn extract_page_snapshot(url: &str, body: &str) -> Result<PageSnapshot> {
     let normalized_url = crate::normalize_crawl_url(url);
     let document = Html::parse_document(body);
-    let base_url =
-        Url::parse(&normalized_url).with_context(|| format!("invalid url: {normalized_url}"))?;
+    let base_url = Url::parse(&crate::strip_url_fragment(url))
+        .with_context(|| format!("invalid url: {url}"))?;
     let title = extract_title(&document);
     let text = extract_document_text(&document);
     let links = extract_links(&document, &base_url);
@@ -52,11 +52,10 @@ fn extract_links(document: &Html, base_url: &Url) -> Vec<LinkObservation> {
 
     for element in document.select(&selector) {
         if let Some(raw_href) = element.value().attr("href") {
-            if let Ok(mut url) = base_url.join(raw_href) {
+            if let Ok(url) = base_url.join(raw_href) {
                 match url.scheme() {
                     "http" | "https" => {
-                        url.set_fragment(None);
-                        let target_url = url.to_string();
+                        let target_url = crate::normalize_crawl_url(url.as_str());
                         let target_host = url.host_str().unwrap_or_default().to_string();
                         discovered.insert(LinkObservation {
                             target_url,
@@ -479,11 +478,11 @@ mod tests {
         assert!(snapshot
             .links
             .iter()
-            .any(|link| link.target_url == "https://example.com/about"));
+            .any(|link| link.target_url == "https://example.com"));
         assert!(snapshot
             .links
             .iter()
-            .any(|link| link.target_url == "https://alpha.onion/"));
+            .any(|link| link.target_url == "https://alpha.onion"));
         assert!(snapshot.crypto_refs.iter().any(|item| {
             item.asset_type == "bitcoin"
                 && item.reference == "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
@@ -551,15 +550,11 @@ mod tests {
         )
         .expect("snapshot");
 
-        assert_eq!(snapshot.url, "https://example.com/docs/page");
-        assert_eq!(snapshot.links.len(), 2);
+        assert_eq!(snapshot.url, "https://example.com");
+        assert_eq!(snapshot.links.len(), 1);
         assert!(snapshot
             .links
             .iter()
-            .any(|link| link.target_url == "https://example.com/docs/page"));
-        assert!(snapshot
-            .links
-            .iter()
-            .any(|link| link.target_url == "https://example.com/docs/next"));
+            .any(|link| link.target_url == "https://example.com"));
     }
 }

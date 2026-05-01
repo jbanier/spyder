@@ -646,7 +646,7 @@ mod tests {
 
         let pending = get_pending_work_units(&mut conn).expect("pending work units");
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].url, "http://allowed.onion/");
+        assert_eq!(pending[0].url, "http://allowed.onion");
     }
 
     #[test]
@@ -676,6 +676,6 @@ mod tests {
 
         let pending = get_pending_work_units(&mut conn).expect("pending work units");
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].url, "http://allowed.onion/docs");
+        assert_eq!(pending[0].url, "http://allowed.onion");
     }
 }

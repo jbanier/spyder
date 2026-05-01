@@ -175,13 +175,41 @@ pub fn establish_connection() -> Result<SqliteConnection> {
         .with_context(|| format!("error connecting to {database_url}"))
 }
 
-pub fn normalize_crawl_url(raw_url: &str) -> String {
+pub fn strip_url_fragment(raw_url: &str) -> String {
     match Url::parse(raw_url) {
         Ok(parsed) if parsed.fragment().is_some() => raw_url
             .split_once('#')
             .map(|(without_fragment, _)| without_fragment.to_string())
             .unwrap_or_else(|| raw_url.to_string()),
         _ => raw_url.to_string(),
+    }
+}
+
+pub fn normalize_crawl_url(raw_url: &str) -> String {
+    let without_fragment = strip_url_fragment(raw_url);
+    match Url::parse(&without_fragment) {
+        Ok(parsed) => {
+            let host = match parsed.host_str() {
+                Some(host) => host,
+                None => return without_fragment,
+            };
+            let mut normalized = format!("{}://", parsed.scheme());
+            if !parsed.username().is_empty() {
+                normalized.push_str(parsed.username());
+                if let Some(password) = parsed.password() {
+                    normalized.push(':');
+                    normalized.push_str(password);
+                }
+                normalized.push('@');
+            }
+            normalized.push_str(host);
+            if let Some(port) = parsed.port() {
+                normalized.push(':');
+                normalized.push_str(&port.to_string());
+            }
+            normalized
+        }
+        Err(_) => without_fragment,
     }
 }
 
@@ -2521,7 +2549,7 @@ mod tests {
 
         let work_units = list_work_units(&mut conn, None, None).expect("load work units");
         assert_eq!(work_units.items.len(), 1);
-        assert_eq!(work_units.items[0].url, "https://example.com/page");
+        assert_eq!(work_units.items[0].url, "https://example.com");
     }
 
     #[test]
@@ -2770,13 +2798,10 @@ mod tests {
             .into_iter()
             .find(|site| site.host == "gamma.onion")
             .expect("gamma site profile");
-        assert_eq!(gamma.category, CATEGORY_SEARCH_ENGINE);
-        assert_eq!(gamma.page_count, 2);
-        assert_eq!(
-            gamma.source_page_url.as_deref(),
-            Some("http://gamma.onion/search")
-        );
-        assert!(gamma.evidence.iter().any(|item| item == "pages:2"));
+        assert_eq!(gamma.category, CATEGORY_DOCS);
+        assert_eq!(gamma.page_count, 1);
+        assert_eq!(gamma.source_page_url.as_deref(), Some("http://gamma.onion"));
+        assert!(gamma.evidence.iter().any(|item| item == "pages:1"));
     }
 
     #[test]
@@ -3015,7 +3040,7 @@ mod tests {
         assert_eq!(
             scalar_nullable_text(&mut conn, "SELECT url AS value FROM page LIMIT 1")
                 .expect("page url"),
-            Some("https://example.com/docs/page".to_string())
+            Some("https://example.com".to_string())
         );
         assert_eq!(
             scalar_nullable_text(
@@ -3023,7 +3048,7 @@ mod tests {
                 "SELECT target_url AS value FROM page_link LIMIT 1"
             )
             .expect("stored target url"),
-            Some("https://example.com/docs/faq".to_string())
+            Some("https://example.com".to_string())
         );
     }
 
@@ -3195,5 +3220,162 @@ mod tests {
             migrated_work_unit.created_at
         );
         assert!(migrated_work_unit.last_attempt_at.is_none());
+    }
+
+    #[test]
+    fn host_level_cleanup_migration_collapses_existing_path_rows() {
+        let mut conn = setup_connection();
+        conn.batch_execute(
+            "
+            INSERT INTO work_unit(url, status, retry_count, next_attempt_at, last_attempt_at, last_error, created_at)
+            VALUES
+              ('http://alpha.onion/bob', 'done', 1, '2026-04-29 10:00:00', '2026-04-29 10:05:00', NULL, '2026-04-29 10:00:00'),
+              ('http://alpha.onion/alice', 'pending', 2, '2026-04-30 08:30:00', NULL, 'timeout', '2026-04-30 08:00:00');
+
+            INSERT INTO page(id, title, url, links, emails, coins, language, last_scanned_at, created_at)
+            VALUES
+              (1, 'Alpha Bob', 'http://alpha.onion/bob', '', '', '', 'English', '2026-04-29 10:05:00', '2026-04-29 10:00:00'),
+              (2, 'Alpha Alice', 'http://alpha.onion/alice', '', '', '', 'French', '2026-04-30 11:00:00', '2026-04-30 08:00:00');
+
+            INSERT INTO page_scan(id, page_id, title, language, scanned_at)
+            VALUES
+              (10, 1, 'Alpha Bob Scan', 'English', '2026-04-29 10:05:00'),
+              (11, 2, 'Alpha Alice Scan', 'French', '2026-04-30 11:00:00');
+
+            INSERT INTO page_scan_link(scan_id, target_url, target_host)
+            VALUES
+              (10, 'http://beta.onion/about', 'beta.onion'),
+              (10, 'http://beta.onion/contact', 'beta.onion'),
+              (11, 'http://gamma.onion/faq', 'gamma.onion');
+
+            INSERT INTO page_scan_email(scan_id, email)
+            VALUES
+              (10, 'team@alpha.onion'),
+              (11, 'ops@alpha.onion');
+
+            INSERT INTO page_scan_crypto(scan_id, asset_type, reference)
+            VALUES
+              (10, 'bitcoin', 'bc1qalpha000000000000000000000000000000000'),
+              (11, 'ethereum', '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+
+            INSERT INTO page_link(source_page_id, target_url, target_host, created_at)
+            VALUES
+              (1, 'http://beta.onion/about', 'beta.onion', '2026-04-29 10:05:00'),
+              (2, 'http://beta.onion/contact', 'beta.onion', '2026-04-30 11:00:00'),
+              (2, 'http://gamma.onion/faq', 'gamma.onion', '2026-04-30 11:00:00');
+
+            INSERT INTO page_email(page_id, email, created_at)
+            VALUES
+              (1, 'team@alpha.onion', '2026-04-29 10:05:00'),
+              (2, 'team@alpha.onion', '2026-04-30 11:00:00'),
+              (2, 'ops@alpha.onion', '2026-04-30 11:00:00');
+
+            INSERT INTO page_crypto(page_id, asset_type, reference, created_at)
+            VALUES
+              (1, 'bitcoin', 'bc1qalpha000000000000000000000000000000000', '2026-04-29 10:05:00'),
+              (2, 'bitcoin', 'bc1qalpha000000000000000000000000000000000', '2026-04-30 11:00:00'),
+              (2, 'ethereum', '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '2026-04-30 11:00:00');
+
+            INSERT INTO page_classification(page_id, host, category, confidence, score, evidence, last_classified_at)
+            VALUES
+              (1, 'alpha.onion', 'docs', 'medium', 6, 'title:docs', '2026-04-29 10:05:00'),
+              (2, 'alpha.onion', 'market', 'high', 9, 'title:market', '2026-04-30 11:00:00');
+
+            INSERT INTO site_profile(host, category, confidence, score, page_count, evidence, source_page_id, last_classified_at, created_at)
+            VALUES
+              ('alpha.onion', 'market', 'high', 9, 2, 'pages:2', 2, '2026-04-30 11:00:00', '2026-04-29 10:00:00');
+            ",
+        )
+        .expect("legacy path data");
+
+        conn.batch_execute(include_str!(
+            "../migrations/2026-04-30-170423_host_level_cleanup/up.sql"
+        ))
+        .expect("host cleanup migration");
+
+        let work_units = list_work_units(&mut conn, None, None).expect("work units");
+        assert_eq!(work_units.items.len(), 1);
+        assert_eq!(work_units.items[0].url, "http://alpha.onion");
+        assert_eq!(work_units.items[0].status, STATUS_DONE);
+
+        let pages = list_page_summaries(&mut conn, None, None).expect("page summaries");
+        assert_eq!(pages.items.len(), 1);
+        assert_eq!(pages.items[0].url, "http://alpha.onion");
+        assert_eq!(pages.items[0].title, "Alpha Alice");
+        assert_eq!(pages.items[0].language, "French");
+        assert_eq!(pages.items[0].outbound_link_count, 2);
+        assert_eq!(pages.items[0].email_count, 2);
+        assert_eq!(pages.items[0].crypto_count, 2);
+
+        let detail = get_page_detail(&mut conn, pages.items[0].id)
+            .expect("page detail")
+            .expect("page detail exists");
+        assert_eq!(detail.outgoing_links.len(), 2);
+        assert_eq!(detail.emails.len(), 2);
+        assert_eq!(detail.crypto_refs.len(), 2);
+
+        let history = list_page_scan_summaries(&mut conn, pages.items[0].id).expect("scan history");
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            scalar_count(
+                &mut conn,
+                "SELECT COUNT(*) AS count FROM page_scan WHERE page_id = 1"
+            )
+            .expect("scan count for canonical page"),
+            2
+        );
+        assert_eq!(
+            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_scan_link")
+                .expect("scan link count"),
+            2
+        );
+        assert_eq!(
+            scalar_nullable_text(
+                &mut conn,
+                "SELECT target_url AS value FROM page_scan_link WHERE scan_id = 10 LIMIT 1"
+            )
+            .expect("normalized scan link"),
+            Some("http://beta.onion".to_string())
+        );
+
+        assert_eq!(
+            scalar_nullable_text(&mut conn, "SELECT links AS value FROM page LIMIT 1")
+                .expect("page links summary"),
+            Some("http://beta.onion,http://gamma.onion".to_string())
+        );
+        assert_eq!(
+            scalar_nullable_text(&mut conn, "SELECT emails AS value FROM page LIMIT 1")
+                .expect("page emails summary"),
+            Some("ops@alpha.onion,team@alpha.onion".to_string())
+        );
+        assert_eq!(
+            scalar_nullable_text(&mut conn, "SELECT coins AS value FROM page LIMIT 1")
+                .expect("page coins summary"),
+            Some(
+                "bitcoin:bc1qalpha000000000000000000000000000000000,ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string()
+            )
+        );
+
+        assert_eq!(
+            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_classification")
+                .expect("classification count"),
+            1
+        );
+        assert_eq!(
+            scalar_nullable_text(
+                &mut conn,
+                "SELECT category AS value FROM page_classification LIMIT 1"
+            )
+            .expect("classification category"),
+            Some("market".to_string())
+        );
+
+        let sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
+        assert_eq!(sites.items.len(), 1);
+        assert_eq!(sites.items[0].host, "alpha.onion");
+        assert_eq!(sites.items[0].category, "market");
+        assert_eq!(sites.items[0].page_count, 1);
+        assert_eq!(sites.items[0].source_page_url.as_deref(), Some("http://alpha.onion"));
     }
 }
