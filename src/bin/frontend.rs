@@ -7,10 +7,10 @@ use rocket_dyn_templates::{context, Template};
 use spyder::models::PaginatedResult;
 use spyder::{
     collect_stats, establish_connection, find_matching_blacklist_domain, get_crypto_entity_detail,
-    get_email_entity_detail, get_page_detail, get_page_scan_detail, list_crypto_entities,
-    list_domain_blacklist_rules, list_domain_blacklist_summaries, list_email_entities,
-    list_page_scan_summaries, list_page_summaries, list_site_profiles, list_site_relationships,
-    list_work_units, search_pages,
+    get_email_entity_detail, get_page_detail, get_page_scan_detail, get_ssh_host_key_detail,
+    list_crypto_entities, list_domain_blacklist_rules, list_domain_blacklist_summaries,
+    list_email_entities, list_page_scan_summaries, list_page_summaries, list_site_profiles,
+    list_site_relationships, list_ssh_host_keys, list_work_units, search_pages,
 };
 use url::form_urlencoded;
 use url::Url;
@@ -76,6 +76,14 @@ struct CryptoQuery {
     offset: Option<i64>,
 }
 
+#[derive(FromForm, Clone)]
+struct SshQuery {
+    algorithm: Option<String>,
+    fingerprint: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
 fn render_pages(
     title: &str,
     description: &str,
@@ -119,6 +127,8 @@ fn index() -> Result<Template, Status> {
         .map_err(|_| Status::InternalServerError)?;
     let relationships = list_site_relationships(&mut connection, Some(8), Some(0))
         .map_err(|_| Status::InternalServerError)?;
+    let ssh_host_keys = list_ssh_host_keys(&mut connection, Some(8), Some(0))
+        .map_err(|_| Status::InternalServerError)?;
 
     Ok(Template::render(
         "dashboard",
@@ -130,10 +140,12 @@ fn index() -> Result<Template, Status> {
             email_entities: email_entities.items,
             crypto_entities: crypto_entities.items,
             relationships: relationships.items,
+            ssh_host_keys: ssh_host_keys.items,
             has_pages: pages.total_count > 0,
             has_email_entities: email_entities.total_count > 0,
             has_crypto_entities: crypto_entities.total_count > 0,
             has_relationships: relationships.total_count > 0,
+            has_ssh_host_keys: ssh_host_keys.total_count > 0,
         },
     ))
 }
@@ -483,6 +495,59 @@ fn crypto_entities(query: Option<CryptoQuery>) -> Result<Template, Status> {
     ))
 }
 
+#[get("/entities/ssh?<query..>")]
+fn ssh_entities(query: Option<SshQuery>) -> Result<Template, Status> {
+    let query = query.unwrap_or(SshQuery {
+        algorithm: None,
+        fingerprint: None,
+        limit: None,
+        offset: None,
+    });
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let entities = list_ssh_host_keys(&mut connection, query.limit, query.offset)
+        .map_err(|_| Status::InternalServerError)?;
+    let selected = match (query.algorithm.clone(), query.fingerprint.clone()) {
+        (Some(algorithm), Some(fingerprint)) => {
+            get_ssh_host_key_detail(&mut connection, &algorithm, &fingerprint)
+                .map_err(|_| Status::InternalServerError)?
+        }
+        _ => None,
+    };
+    let has_entities = !entities.items.is_empty();
+    let has_selected = selected.is_some();
+    let selected_host_count = selected.as_ref().map(|item| item.host_count).unwrap_or(0);
+    let selected_endpoint_count = selected
+        .as_ref()
+        .map(|item| item.endpoint_count)
+        .unwrap_or(0);
+    let mut extra_params = Vec::new();
+    if let Some(algorithm) = query.algorithm.as_ref() {
+        extra_params.push(("algorithm", algorithm.as_str()));
+    }
+    if let Some(fingerprint) = query.fingerprint.as_ref() {
+        extra_params.push(("fingerprint", fingerprint.as_str()));
+    }
+    let pagination = pagination_context("/entities/ssh", &entities, &extra_params);
+    let has_pagination = pagination.has_previous_page || pagination.has_next_page;
+
+    Ok(Template::render(
+        "ssh",
+        context! {
+            title: "Shared SSH Host Keys",
+            description: "Correlate SSH host keys across recently reachable hosts and identify infrastructure reused by multiple sites.",
+            entities: entities.items,
+            selected: selected,
+            has_entities: has_entities,
+            has_selected: has_selected,
+            entity_count: entities.total_count,
+            selected_host_count: selected_host_count,
+            selected_endpoint_count: selected_endpoint_count,
+            pagination: pagination,
+            has_pagination: has_pagination,
+        },
+    ))
+}
+
 #[get("/search?<search..>")]
 fn search_page(search: Option<SearchQuery>) -> Result<Template, Status> {
     let search = search.unwrap_or(SearchQuery {
@@ -699,6 +764,7 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 relationships,
                 email_entities,
                 crypto_entities,
+                ssh_entities,
                 search_page,
                 api_stats,
                 api_search,
@@ -719,9 +785,10 @@ mod tests {
     use rocket::http::Status;
     use rocket::local::blocking::Client;
     use spyder::models::{
-        CategoryHint, ClassificationSignals, CryptoReference, LinkObservation, PageSnapshot,
+        CategoryHint, ClassificationSignals, CryptoReference, LinkObservation,
+        NewHostSshObservation, PageSnapshot,
     };
-    use spyder::save_page_info;
+    use spyder::{save_host_ssh_observation, save_page_info, SSH_STATUS_SUCCESS};
     use std::env;
     use std::fs;
     use std::process;
@@ -758,6 +825,21 @@ mod tests {
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               domain VARCHAR NOT NULL UNIQUE,
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE host_ssh_observation(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              host VARCHAR NOT NULL,
+              port INTEGER NOT NULL,
+              status VARCHAR NOT NULL,
+              host_key_algorithm VARCHAR,
+              host_key VARCHAR,
+              host_key_fingerprint VARCHAR,
+              server_banner VARCHAR,
+              last_error VARCHAR,
+              last_attempt_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              last_success_at VARCHAR,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(host, port)
             );
             CREATE TABLE page(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
@@ -878,6 +960,22 @@ mod tests {
             },
         };
         save_page_info(&mut conn, &forum_snapshot).expect("seed page");
+        save_host_ssh_observation(
+            &mut conn,
+            &NewHostSshObservation {
+                host: "beta.onion".to_string(),
+                port: 22,
+                status: SSH_STATUS_SUCCESS.to_string(),
+                host_key_algorithm: Some("ssh-ed25519".to_string()),
+                host_key: Some("001122".to_string()),
+                host_key_fingerprint: Some("sha256:feedbeef".to_string()),
+                server_banner: Some("SSH-2.0-OpenSSH_9.9".to_string()),
+                last_error: None,
+                last_attempt_at: String::new(),
+                last_success_at: None,
+            },
+        )
+        .expect("seed ssh host key");
 
         database_url
     }
@@ -901,6 +999,29 @@ mod tests {
         assert!(body.contains("id=\"search-results\""));
         assert!(body.contains("Beta Forum"));
         assert!(body.contains("search-results-grid"));
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn ssh_page_renders_host_key_entities() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client
+            .get("/entities/ssh?algorithm=ssh-ed25519&fingerprint=sha256%3Afeedbeef")
+            .dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        let body = response.into_string().expect("response body");
+        assert!(body.contains("Shared SSH Host Keys"));
+        assert!(body.contains("sha256:feedbeef"));
+        assert!(body.contains("beta.onion:22"));
 
         fs::remove_file(&database_url).expect("remove test database");
     }

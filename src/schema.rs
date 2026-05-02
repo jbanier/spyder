@@ -9,6 +9,23 @@ diesel::table! {
 }
 
 diesel::table! {
+    host_ssh_observation (id) {
+        id -> Integer,
+        host -> Text,
+        port -> Integer,
+        status -> Text,
+        host_key_algorithm -> Nullable<Text>,
+        host_key -> Nullable<Text>,
+        host_key_fingerprint -> Nullable<Text>,
+        server_banner -> Nullable<Text>,
+        last_error -> Nullable<Text>,
+        last_attempt_at -> Text,
+        last_success_at -> Nullable<Text>,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
     page (id) {
         id -> Integer,
         title -> Text,
@@ -140,6 +157,7 @@ diesel::joinable!(site_profile -> page (source_page_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     domain_blacklist,
+    host_ssh_observation,
     page,
     page_classification,
     page_crypto,

@@ -19,6 +19,7 @@ use url::Url;
 pub const STATUS_PENDING: &str = "pending";
 pub const STATUS_DONE: &str = "done";
 pub const STATUS_FAILED: &str = "failed";
+pub const SSH_STATUS_SUCCESS: &str = "success";
 pub const MAX_RETRY_ATTEMPTS: i32 = 5;
 const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 200;
@@ -152,6 +153,28 @@ struct TargetHostCountRow {
     target_host: String,
     #[diesel(sql_type = BigInt)]
     count: i64,
+}
+
+#[derive(QueryableByName)]
+struct RecentHostRow {
+    #[diesel(sql_type = Text)]
+    host: String,
+    #[diesel(sql_type = Text)]
+    last_scanned_at: String,
+}
+
+#[derive(QueryableByName)]
+struct SshHostKeySummaryRow {
+    #[diesel(sql_type = Text)]
+    algorithm: String,
+    #[diesel(sql_type = Text)]
+    fingerprint: String,
+    #[diesel(sql_type = BigInt)]
+    host_count: i64,
+    #[diesel(sql_type = BigInt)]
+    endpoint_count: i64,
+    #[diesel(sql_type = Text)]
+    last_success_at: String,
 }
 
 #[derive(Clone, Copy)]
@@ -1509,6 +1532,279 @@ pub fn get_crypto_entity_detail(
     }))
 }
 
+pub fn list_recent_responding_hosts(
+    conn: &mut SqliteConnection,
+    recent_hours: i64,
+    requested_limit: Option<i64>,
+) -> Result<Vec<RecentHostCandidate>> {
+    let recent_hours = recent_hours.clamp(1, 24 * 365);
+    let limit = requested_limit.unwrap_or(200).clamp(1, 2_000);
+    let host_expr = sql_host_expr("p.url");
+    let query = format!(
+        "
+        SELECT
+            {host_expr} AS host,
+            MAX(p.last_scanned_at) AS last_scanned_at
+        FROM page p
+        WHERE {host_expr} != ''
+            AND p.last_scanned_at >= datetime(CURRENT_TIMESTAMP, '-{recent_hours} hours')
+        GROUP BY {host_expr}
+        ORDER BY last_scanned_at DESC, host ASC
+        LIMIT ?
+        "
+    );
+    let rows = sql_query(query)
+        .bind::<BigInt, _>(limit)
+        .load::<RecentHostRow>(conn)
+        .context("error loading recent responding hosts")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| RecentHostCandidate {
+            host: row.host,
+            last_scanned_at: row.last_scanned_at,
+        })
+        .collect())
+}
+
+pub fn get_host_ssh_observation(
+    conn: &mut SqliteConnection,
+    host_value: &str,
+    port_value: i32,
+) -> Result<Option<HostSshObservationRecord>> {
+    use crate::schema::host_ssh_observation::dsl as host_ssh_dsl;
+
+    let normalized_host = host_value.trim().trim_end_matches('.').to_ascii_lowercase();
+    if normalized_host.is_empty() {
+        return Ok(None);
+    }
+
+    host_ssh_dsl::host_ssh_observation
+        .filter(host_ssh_dsl::host.eq(normalized_host))
+        .filter(host_ssh_dsl::port.eq(port_value))
+        .select(HostSshObservationRecord::as_select())
+        .first::<HostSshObservationRecord>(conn)
+        .optional()
+        .context("error loading host ssh observation")
+}
+
+pub fn save_host_ssh_observation(
+    conn: &mut SqliteConnection,
+    observation: &NewHostSshObservation,
+) -> Result<()> {
+    use crate::schema::host_ssh_observation::dsl as host_ssh_dsl;
+
+    let normalized_host = observation
+        .host
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    anyhow::ensure!(
+        !normalized_host.is_empty(),
+        "host ssh observation host must not be empty"
+    );
+
+    let existing = get_host_ssh_observation(conn, &normalized_host, observation.port)?;
+    let current_timestamp = current_timestamp_text(conn)?;
+    let next_is_success = observation.status == SSH_STATUS_SUCCESS;
+    let next_host_key_algorithm = if next_is_success {
+        observation.host_key_algorithm.clone()
+    } else {
+        observation.host_key_algorithm.clone().or_else(|| {
+            existing
+                .as_ref()
+                .and_then(|row| row.host_key_algorithm.clone())
+        })
+    };
+    let next_host_key = if next_is_success {
+        observation.host_key.clone()
+    } else {
+        observation
+            .host_key
+            .clone()
+            .or_else(|| existing.as_ref().and_then(|row| row.host_key.clone()))
+    };
+    let next_host_key_fingerprint = if next_is_success {
+        observation.host_key_fingerprint.clone()
+    } else {
+        observation.host_key_fingerprint.clone().or_else(|| {
+            existing
+                .as_ref()
+                .and_then(|row| row.host_key_fingerprint.clone())
+        })
+    };
+    let persisted = NewHostSshObservation {
+        host: normalized_host,
+        port: observation.port,
+        status: observation.status.clone(),
+        host_key_algorithm: next_host_key_algorithm,
+        host_key: next_host_key,
+        host_key_fingerprint: next_host_key_fingerprint,
+        server_banner: observation.server_banner.clone(),
+        last_error: observation.last_error.clone(),
+        last_attempt_at: current_timestamp.clone(),
+        last_success_at: if next_is_success {
+            Some(current_timestamp.clone())
+        } else {
+            existing.and_then(|row| row.last_success_at)
+        },
+    };
+
+    diesel::insert_into(host_ssh_dsl::host_ssh_observation)
+        .values(&persisted)
+        .on_conflict((host_ssh_dsl::host, host_ssh_dsl::port))
+        .do_update()
+        .set((
+            host_ssh_dsl::status.eq(persisted.status.clone()),
+            host_ssh_dsl::host_key_algorithm.eq(persisted.host_key_algorithm.clone()),
+            host_ssh_dsl::host_key.eq(persisted.host_key.clone()),
+            host_ssh_dsl::host_key_fingerprint.eq(persisted.host_key_fingerprint.clone()),
+            host_ssh_dsl::server_banner.eq(persisted.server_banner.clone()),
+            host_ssh_dsl::last_error.eq(persisted.last_error.clone()),
+            host_ssh_dsl::last_attempt_at.eq(persisted.last_attempt_at.clone()),
+            host_ssh_dsl::last_success_at.eq(persisted.last_success_at.clone()),
+        ))
+        .execute(conn)
+        .context("error saving host ssh observation")?;
+
+    Ok(())
+}
+
+pub fn list_ssh_host_keys(
+    conn: &mut SqliteConnection,
+    requested_limit: Option<i64>,
+    requested_offset: Option<i64>,
+) -> Result<PaginatedResult<SshHostKeySummary>> {
+    let pagination = normalize_pagination(
+        requested_limit,
+        requested_offset,
+        DEFAULT_PAGE_LIMIT,
+        MAX_PAGE_LIMIT,
+    );
+    let total_count = scalar_count(
+        conn,
+        "
+        SELECT COUNT(*) AS count
+        FROM (
+            SELECT host_key_algorithm, host_key_fingerprint
+            FROM host_ssh_observation
+            WHERE host_key_algorithm IS NOT NULL
+                AND host_key_algorithm != ''
+                AND host_key_fingerprint IS NOT NULL
+                AND host_key_fingerprint != ''
+                AND last_success_at IS NOT NULL
+            GROUP BY host_key_algorithm, host_key_fingerprint
+        )
+        ",
+    )
+    .context("error counting ssh host keys")?;
+    let rows = sql_query(
+        "
+        SELECT
+            host_key_algorithm AS algorithm,
+            host_key_fingerprint AS fingerprint,
+            COUNT(DISTINCT host) AS host_count,
+            COUNT(*) AS endpoint_count,
+            MAX(last_success_at) AS last_success_at
+        FROM host_ssh_observation
+        WHERE host_key_algorithm IS NOT NULL
+            AND host_key_algorithm != ''
+            AND host_key_fingerprint IS NOT NULL
+            AND host_key_fingerprint != ''
+            AND last_success_at IS NOT NULL
+        GROUP BY host_key_algorithm, host_key_fingerprint
+        ORDER BY host_count DESC, endpoint_count DESC, last_success_at DESC, algorithm ASC, fingerprint ASC
+        LIMIT ? OFFSET ?
+        ",
+    )
+    .bind::<BigInt, _>(pagination.limit)
+    .bind::<BigInt, _>(pagination.offset)
+    .load::<SshHostKeySummaryRow>(conn)
+    .context("error loading ssh host key summaries")?;
+    let items = rows
+        .into_iter()
+        .map(|row| SshHostKeySummary {
+            detail_url: build_query_url(
+                "/entities/ssh",
+                &[
+                    ("algorithm", &row.algorithm),
+                    ("fingerprint", &row.fingerprint),
+                ],
+            ),
+            algorithm: row.algorithm,
+            fingerprint: row.fingerprint,
+            host_count: row.host_count.max(0) as usize,
+            endpoint_count: row.endpoint_count.max(0) as usize,
+            last_success_at: row.last_success_at,
+        })
+        .collect();
+
+    Ok(PaginatedResult {
+        items,
+        total_count,
+        limit: pagination.limit,
+        offset: pagination.offset,
+    })
+}
+
+pub fn get_ssh_host_key_detail(
+    conn: &mut SqliteConnection,
+    algorithm: &str,
+    fingerprint: &str,
+) -> Result<Option<SshHostKeyDetail>> {
+    use crate::schema::host_ssh_observation::dsl as host_ssh_dsl;
+
+    let rows = host_ssh_dsl::host_ssh_observation
+        .filter(host_ssh_dsl::host_key_algorithm.eq(algorithm))
+        .filter(host_ssh_dsl::host_key_fingerprint.eq(fingerprint))
+        .filter(host_ssh_dsl::last_success_at.is_not_null())
+        .order(host_ssh_dsl::host.asc())
+        .then_order_by(host_ssh_dsl::port.asc())
+        .select(HostSshObservationRecord::as_select())
+        .load::<HostSshObservationRecord>(conn)
+        .context("error loading ssh host key detail")?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let unique_hosts = rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>();
+    let site_profiles = load_site_profiles_by_hosts(conn, &unique_hosts)?;
+    let endpoints = rows
+        .iter()
+        .map(|row| {
+            let site_profile = site_profiles.get(&row.host);
+            SshHostKeyEndpoint {
+                host: row.host.clone(),
+                port: row.port,
+                status: row.status.clone(),
+                last_error: row.last_error.clone(),
+                last_attempt_at: row.last_attempt_at.clone(),
+                last_success_at: row.last_success_at.clone(),
+                server_banner: row.server_banner.clone(),
+                host_key: row.host_key.clone(),
+                site_category: site_profile
+                    .map(|profile| site_category_badge(&profile.category, &profile.confidence)),
+                source_page_id: site_profile.and_then(|profile| profile.source_page_id),
+                source_page_title: site_profile
+                    .and_then(|profile| profile.source_page_title.clone()),
+                source_page_url: site_profile.and_then(|profile| profile.source_page_url.clone()),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Some(SshHostKeyDetail {
+        algorithm: algorithm.to_string(),
+        fingerprint: fingerprint.to_string(),
+        host_count: endpoints
+            .iter()
+            .map(|item| item.host.clone())
+            .collect::<HashSet<_>>()
+            .len(),
+        endpoint_count: endpoints.len(),
+        endpoints,
+    }))
+}
+
 pub fn list_site_relationships(
     conn: &mut SqliteConnection,
     requested_limit: Option<i64>,
@@ -2182,6 +2478,12 @@ fn scalar_nullable_text(conn: &mut SqliteConnection, query: &str) -> Result<Opti
         .value)
 }
 
+fn current_timestamp_text(conn: &mut SqliteConnection) -> Result<String> {
+    scalar_nullable_text(conn, "SELECT CURRENT_TIMESTAMP AS value")
+        .context("error loading current timestamp")?
+        .context("current timestamp query returned no value")
+}
+
 fn host_from_url(value: &str) -> String {
     Url::parse(value)
         .ok()
@@ -2365,6 +2667,21 @@ mod tests {
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               domain VARCHAR NOT NULL UNIQUE,
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE host_ssh_observation(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              host VARCHAR NOT NULL,
+              port INTEGER NOT NULL,
+              status VARCHAR NOT NULL,
+              host_key_algorithm VARCHAR,
+              host_key VARCHAR,
+              host_key_fingerprint VARCHAR,
+              server_banner VARCHAR,
+              last_error VARCHAR,
+              last_attempt_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              last_success_at VARCHAR,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(host, port)
             );
             CREATE TABLE page(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
@@ -2732,6 +3049,116 @@ mod tests {
                 .map(|badge| badge.category.as_str()),
             Some(CATEGORY_FORUM)
         );
+    }
+
+    #[test]
+    fn host_ssh_observations_are_grouped_by_shared_key() {
+        let mut conn = setup_connection();
+
+        save_page_info(&mut conn, &alpha_snapshot()).expect("save alpha");
+        save_page_info(&mut conn, &beta_snapshot()).expect("save beta");
+        save_host_ssh_observation(
+            &mut conn,
+            &NewHostSshObservation {
+                host: "alpha.onion".to_string(),
+                port: 22,
+                status: SSH_STATUS_SUCCESS.to_string(),
+                host_key_algorithm: Some("ssh-ed25519".to_string()),
+                host_key: Some("001122".to_string()),
+                host_key_fingerprint: Some("sha256:feedbeef".to_string()),
+                server_banner: Some("SSH-2.0-OpenSSH_9.9".to_string()),
+                last_error: None,
+                last_attempt_at: String::new(),
+                last_success_at: None,
+            },
+        )
+        .expect("save alpha ssh observation");
+        save_host_ssh_observation(
+            &mut conn,
+            &NewHostSshObservation {
+                host: "beta.onion".to_string(),
+                port: 2222,
+                status: SSH_STATUS_SUCCESS.to_string(),
+                host_key_algorithm: Some("ssh-ed25519".to_string()),
+                host_key: Some("001122".to_string()),
+                host_key_fingerprint: Some("sha256:feedbeef".to_string()),
+                server_banner: Some("SSH-2.0-OpenSSH_9.9".to_string()),
+                last_error: None,
+                last_attempt_at: String::new(),
+                last_success_at: None,
+            },
+        )
+        .expect("save beta ssh observation");
+
+        let recent_hosts =
+            list_recent_responding_hosts(&mut conn, 24, Some(10)).expect("recent hosts");
+        assert_eq!(recent_hosts.len(), 2);
+
+        let summaries = list_ssh_host_keys(&mut conn, None, None).expect("ssh summaries");
+        assert_eq!(summaries.total_count, 1);
+        assert_eq!(summaries.items[0].algorithm, "ssh-ed25519");
+        assert_eq!(summaries.items[0].host_count, 2);
+        assert_eq!(summaries.items[0].endpoint_count, 2);
+
+        let detail = get_ssh_host_key_detail(&mut conn, "ssh-ed25519", "sha256:feedbeef")
+            .expect("ssh detail")
+            .expect("ssh detail exists");
+        assert_eq!(detail.host_count, 2);
+        assert_eq!(detail.endpoint_count, 2);
+        assert_eq!(detail.endpoints[0].host, "alpha.onion");
+        assert_eq!(detail.endpoints[1].host, "beta.onion");
+        assert!(detail.endpoints[0].site_category.is_some());
+    }
+
+    #[test]
+    fn failed_ssh_observations_preserve_last_successful_key() {
+        let mut conn = setup_connection();
+
+        save_host_ssh_observation(
+            &mut conn,
+            &NewHostSshObservation {
+                host: "alpha.onion".to_string(),
+                port: 22,
+                status: SSH_STATUS_SUCCESS.to_string(),
+                host_key_algorithm: Some("ssh-ed25519".to_string()),
+                host_key: Some("001122".to_string()),
+                host_key_fingerprint: Some("sha256:feedbeef".to_string()),
+                server_banner: Some("SSH-2.0-OpenSSH_9.9".to_string()),
+                last_error: None,
+                last_attempt_at: String::new(),
+                last_success_at: None,
+            },
+        )
+        .expect("save ssh success");
+        save_host_ssh_observation(
+            &mut conn,
+            &NewHostSshObservation {
+                host: "alpha.onion".to_string(),
+                port: 22,
+                status: "timeout".to_string(),
+                host_key_algorithm: None,
+                host_key: None,
+                host_key_fingerprint: None,
+                server_banner: None,
+                last_error: Some("timed out".to_string()),
+                last_attempt_at: String::new(),
+                last_success_at: None,
+            },
+        )
+        .expect("save ssh failure");
+
+        let observation = get_host_ssh_observation(&mut conn, "alpha.onion", 22)
+            .expect("load ssh observation")
+            .expect("ssh observation exists");
+        assert_eq!(observation.status, "timeout");
+        assert_eq!(
+            observation.host_key_fingerprint.as_deref(),
+            Some("sha256:feedbeef")
+        );
+        assert!(observation.last_success_at.is_some());
+
+        let summaries = list_ssh_host_keys(&mut conn, None, None).expect("ssh summaries");
+        assert_eq!(summaries.total_count, 1);
     }
 
     #[test]
@@ -3133,6 +3560,41 @@ mod tests {
     }
 
     #[test]
+    fn host_ssh_observation_migration_adds_host_key_table() {
+        let mut conn = SqliteConnection::establish(":memory:").expect("in-memory sqlite");
+        conn.batch_execute(include_str!(
+            "../migrations/2026-05-02-110000_host_ssh_observations/up.sql"
+        ))
+        .expect("host ssh observation migration");
+
+        save_host_ssh_observation(
+            &mut conn,
+            &NewHostSshObservation {
+                host: "alpha.onion".to_string(),
+                port: 22,
+                status: SSH_STATUS_SUCCESS.to_string(),
+                host_key_algorithm: Some("ssh-ed25519".to_string()),
+                host_key: Some("001122".to_string()),
+                host_key_fingerprint: Some("sha256:feedbeef".to_string()),
+                server_banner: Some("SSH-2.0-OpenSSH_9.9".to_string()),
+                last_error: None,
+                last_attempt_at: String::new(),
+                last_success_at: None,
+            },
+        )
+        .expect("save migrated ssh observation");
+
+        let observation = get_host_ssh_observation(&mut conn, "alpha.onion", 22)
+            .expect("load ssh observation")
+            .expect("ssh observation exists");
+        assert_eq!(observation.status, SSH_STATUS_SUCCESS);
+        assert_eq!(
+            observation.host_key_algorithm.as_deref(),
+            Some("ssh-ed25519")
+        );
+    }
+
+    #[test]
     fn retry_backfill_migration_populates_relationship_tables() {
         let mut conn = SqliteConnection::establish(":memory:").expect("in-memory sqlite");
         conn.batch_execute(
@@ -3358,8 +3820,11 @@ mod tests {
         );
 
         assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_classification")
-                .expect("classification count"),
+            scalar_count(
+                &mut conn,
+                "SELECT COUNT(*) AS count FROM page_classification"
+            )
+            .expect("classification count"),
             1
         );
         assert_eq!(
@@ -3376,6 +3841,9 @@ mod tests {
         assert_eq!(sites.items[0].host, "alpha.onion");
         assert_eq!(sites.items[0].category, "market");
         assert_eq!(sites.items[0].page_count, 1);
-        assert_eq!(sites.items[0].source_page_url.as_deref(), Some("http://alpha.onion"));
+        assert_eq!(
+            sites.items[0].source_page_url.as_deref(),
+            Some("http://alpha.onion")
+        );
     }
 }

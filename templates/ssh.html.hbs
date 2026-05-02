@@ -1,0 +1,100 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Infrastructure Correlation</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+<div class="dashboard-grid dashboard-grid-wide dashboard-grid-stacked">
+    <section class="card">
+        <div class="section-heading">
+            <h2>Observed Host Keys</h2>
+            <span class="muted">{{entity_count}} distinct values</span>
+        </div>
+        {{#if has_entities}}
+        <div class="compact-list">
+            {{#each entities}}
+            <a class="compact-row" href="{{detail_url}}">
+                <div class="table-cell-stack">
+                    <span class="compact-title">{{algorithm}}</span>
+                    <span class="compact-meta">{{fingerprint}}</span>
+                </div>
+                <div class="table-cell-stack">
+                    <span class="count-pill">{{host_count}} hosts</span>
+                    <span class="compact-meta">{{endpoint_count}} endpoints</span>
+                </div>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No SSH host keys have been captured yet. Run `spyder ssh-scan` to populate this view.</p>
+        {{/if}}
+        {{#if has_pagination}}
+        <section class="pagination-bar pagination-bar-inline">
+            {{#if pagination.has_previous_page}}
+            <a class="btn btn-secondary" href="{{pagination.previous_page_url}}">Previous</a>
+            {{/if}}
+            {{#if pagination.has_next_page}}
+            <a class="btn btn-secondary" href="{{pagination.next_page_url}}">Next</a>
+            {{/if}}
+        </section>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        {{#if has_selected}}
+        <div class="section-heading">
+            <h2>{{selected.algorithm}}</h2>
+            <div class="inline-badges">
+                <span class="count-pill">{{selected_host_count}} hosts</span>
+                <span class="count-pill">{{selected_endpoint_count}} endpoints</span>
+            </div>
+        </div>
+        <p class="detail-reference">{{selected.fingerprint}}</p>
+        <div class="compact-list">
+            {{#each selected.endpoints}}
+            <div class="compact-row compact-row-static">
+                <div class="table-cell-stack">
+                    <span class="compact-title">{{host}}:{{port}}</span>
+                    <div class="inline-badges">
+                        <span class="status-pill status-{{status}}">{{status}}</span>
+                        {{#if site_category}}
+                        <span class="site-category-badge site-confidence-{{site_category.confidence}}">{{site_category.label}} · {{site_category.confidence}}</span>
+                        {{/if}}
+                    </div>
+                    {{#if source_page_id}}
+                    <a class="inline-link" href="/pages/{{source_page_id}}">{{source_page_title}}</a>
+                    {{/if}}
+                    {{#if source_page_url}}
+                    <span class="compact-meta">{{source_page_url}}</span>
+                    {{/if}}
+                    {{#if server_banner}}
+                    <span class="compact-meta">{{server_banner}}</span>
+                    {{/if}}
+                    {{#if last_error}}
+                    <span class="compact-meta">{{last_error}}</span>
+                    {{/if}}
+                </div>
+                <div class="table-cell-stack">
+                    <span class="compact-meta">Last attempt {{last_attempt_at}}</span>
+                    {{#if last_success_at}}
+                    <span class="compact-meta">Last success {{last_success_at}}</span>
+                    {{/if}}
+                    {{#if host_key}}
+                    <span class="tag">{{host_key}}</span>
+                    {{/if}}
+                </div>
+            </div>
+            {{/each}}
+        </div>
+        {{else}}
+        <div class="empty-state empty-state-inline">
+            <h2>Select a host key</h2>
+            <p>Choose a fingerprint from the left to inspect every site and endpoint that presented it.</p>
+        </div>
+        {{/if}}
+    </section>
+</div>
+{{/inline}}
+
+{{> base}}

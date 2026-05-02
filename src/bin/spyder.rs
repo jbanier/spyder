@@ -1,16 +1,23 @@
 use anyhow::{Context, Result};
+use diesel::deserialize::QueryableByName;
+use diesel::RunQueryDsl;
 use reqwest::blocking::Client;
 use reqwest::{Proxy, StatusCode};
 use spyder::extraction::extract_page_snapshot;
+use spyder::models::{HostSshObservationRecord, NewHostSshObservation};
 use spyder::{
     add_domain_blacklist_entry, create_work_unit, establish_connection,
-    find_matching_blacklist_domain, get_pending_work_units, list_domain_blacklist_rules,
-    mark_work_unit_as_done, normalize_crawl_url, record_work_unit_failure,
-    remove_domain_blacklist_entry, save_page_info,
+    find_matching_blacklist_domain, get_host_ssh_observation, get_pending_work_units,
+    list_domain_blacklist_rules, list_recent_responding_hosts, mark_work_unit_as_done,
+    normalize_crawl_url, record_work_unit_failure, remove_domain_blacklist_entry,
+    save_host_ssh_observation, save_page_info, SSH_STATUS_SUCCESS,
 };
+use ssh2::{HashType, HostKeyType, Session};
 use std::collections::HashSet;
 use std::env;
 use std::fmt::Display;
+use std::io::{Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use url::Url;
 
@@ -25,6 +32,13 @@ struct WorkOptions {
     onion_only: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SshScanOptions {
+    recent_hours: i64,
+    stale_hours: i64,
+    limit: i64,
+}
+
 struct CrawlFailure {
     error: anyhow::Error,
     kind: FailureKind,
@@ -33,6 +47,43 @@ struct CrawlFailure {
 struct DiscoveryEnqueueOutcome {
     queued_count: usize,
     skipped_blacklisted_count: usize,
+}
+
+struct SocksProxyConfig {
+    host: String,
+    port: u16,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+struct SshHandshakeCapture {
+    algorithm: String,
+    host_key: String,
+    fingerprint: String,
+    server_banner: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct NullableTextValueRow {
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    value: Option<String>,
+}
+
+const SSH_PORTS: [u16; 2] = [22, 2222];
+const DEFAULT_SSH_SCAN_RECENT_HOURS: i64 = 24 * 7;
+const DEFAULT_SSH_SCAN_STALE_HOURS: i64 = 24;
+const DEFAULT_SSH_SCAN_LIMIT: i64 = 200;
+const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const TCP_IO_TIMEOUT: Duration = Duration::from_secs(15);
+
+impl Default for SshScanOptions {
+    fn default() -> Self {
+        Self {
+            recent_hours: DEFAULT_SSH_SCAN_RECENT_HOURS,
+            stale_hours: DEFAULT_SSH_SCAN_STALE_HOURS,
+            limit: DEFAULT_SSH_SCAN_LIMIT,
+        }
+    }
 }
 
 impl CrawlFailure {
@@ -269,6 +320,463 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
     Ok(())
 }
 
+fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
+    let mut connection = establish_connection()?;
+    print_status(format!(
+        "Loading hosts scanned in the last {} hours",
+        options.recent_hours
+    ));
+    let candidates =
+        list_recent_responding_hosts(&mut connection, options.recent_hours, Some(options.limit))?;
+    if candidates.is_empty() {
+        println!("No recently responding hosts to scan");
+        return Ok(());
+    }
+
+    let stale_cutoff = ssh_stale_cutoff_timestamp(&mut connection, options.stale_hours)?;
+    let proxy = load_socks_proxy_config()?;
+    match proxy.as_ref() {
+        Some(config) => print_status(format!(
+            "Scanning SSH through SOCKS proxy {}",
+            describe_socks_endpoint(config)
+        )),
+        None => print_status("No SOCKS proxy configured, scanning directly"),
+    }
+
+    let total_hosts = candidates.len();
+    let mut attempted = 0usize;
+    let mut skipped = 0usize;
+    let mut successes = 0usize;
+    let mut failures = 0usize;
+
+    for (index, candidate) in candidates.into_iter().enumerate() {
+        let current = index + 1;
+        print_progress(
+            current,
+            total_hosts,
+            format!("Scanning SSH endpoints for {}", candidate.host),
+        );
+
+        for port in SSH_PORTS {
+            let existing =
+                get_host_ssh_observation(&mut connection, &candidate.host, i32::from(port))?;
+            if should_skip_ssh_attempt(existing.as_ref(), &candidate.last_scanned_at, &stale_cutoff)
+            {
+                skipped += 1;
+                continue;
+            }
+
+            attempted += 1;
+            match probe_ssh_endpoint(proxy.as_ref(), &candidate.host, port) {
+                Ok(capture) => {
+                    let fingerprint_preview = compact_for_terminal(&capture.fingerprint, 42);
+                    save_host_ssh_observation(
+                        &mut connection,
+                        &NewHostSshObservation {
+                            host: candidate.host.clone(),
+                            port: i32::from(port),
+                            status: SSH_STATUS_SUCCESS.to_string(),
+                            host_key_algorithm: Some(capture.algorithm.clone()),
+                            host_key: Some(capture.host_key),
+                            host_key_fingerprint: Some(capture.fingerprint.clone()),
+                            server_banner: capture.server_banner,
+                            last_error: None,
+                            last_attempt_at: String::new(),
+                            last_success_at: None,
+                        },
+                    )?;
+                    successes += 1;
+                    print_progress(
+                        current,
+                        total_hosts,
+                        format!(
+                            "Saved {} {} for {}:{}",
+                            capture.algorithm, fingerprint_preview, candidate.host, port
+                        ),
+                    );
+                }
+                Err(error) => {
+                    let status = classify_ssh_probe_error(&error);
+                    save_host_ssh_observation(
+                        &mut connection,
+                        &NewHostSshObservation {
+                            host: candidate.host.clone(),
+                            port: i32::from(port),
+                            status: status.to_string(),
+                            host_key_algorithm: None,
+                            host_key: None,
+                            host_key_fingerprint: None,
+                            server_banner: None,
+                            last_error: Some(truncate_for_storage(&error.to_string(), 500)),
+                            last_attempt_at: String::new(),
+                            last_success_at: None,
+                        },
+                    )?;
+                    failures += 1;
+                    eprintln!(
+                        "[{current}/{total_hosts}] SSH scan failed for {}:{} ({status})",
+                        candidate.host, port
+                    );
+                    eprintln!("ERROR: {error:?}");
+                }
+            }
+        }
+    }
+
+    println!(
+        "Attempted {} SSH endpoints across {} hosts ({} successes, {} failures, {} skipped)",
+        attempted, total_hosts, successes, failures, skipped
+    );
+    Ok(())
+}
+
+fn load_socks_proxy_config() -> Result<Option<SocksProxyConfig>> {
+    configured_proxy_url()
+        .map(|proxy_url| parse_socks_proxy_config(&proxy_url))
+        .transpose()
+}
+
+fn parse_socks_proxy_config(proxy_url: &str) -> Result<SocksProxyConfig> {
+    let parsed =
+        Url::parse(proxy_url).with_context(|| format!("invalid proxy url: {proxy_url}"))?;
+    anyhow::ensure!(
+        matches!(parsed.scheme(), "socks5" | "socks5h"),
+        "ssh-scan requires a socks5 proxy url, got {}",
+        parsed.scheme()
+    );
+
+    let host = parsed
+        .host_str()
+        .map(|value| value.to_string())
+        .context("proxy url must include a host")?;
+    let port = parsed
+        .port_or_known_default()
+        .context("proxy url must include a port")?;
+    let username = if parsed.username().is_empty() {
+        None
+    } else {
+        Some(parsed.username().to_string())
+    };
+
+    Ok(SocksProxyConfig {
+        host,
+        port,
+        username,
+        password: parsed.password().map(|value| value.to_string()),
+    })
+}
+
+fn probe_ssh_endpoint(
+    proxy: Option<&SocksProxyConfig>,
+    host: &str,
+    port: u16,
+) -> Result<SshHandshakeCapture> {
+    let stream = connect_tcp_endpoint(proxy, host, port)?;
+    let mut session = Session::new().context("failed to create ssh session")?;
+    session.set_timeout(TCP_IO_TIMEOUT.as_millis() as u32);
+    session.set_tcp_stream(stream);
+    session
+        .handshake()
+        .with_context(|| format!("ssh handshake failed for {host}:{port}"))?;
+
+    let (host_key, host_key_type) = session
+        .host_key()
+        .context("ssh server completed handshake without a host key")?;
+    let algorithm = ssh_host_key_algorithm_name(host_key_type).to_string();
+    let fingerprint = session
+        .host_key_hash(HashType::Sha256)
+        .map(|bytes| format!("sha256:{}", hex_encode(bytes)))
+        .unwrap_or_else(|| format!("sha256:{}", hex_encode(host_key)));
+    let server_banner = session.banner().map(|value| value.to_string());
+    let _ = session.disconnect(None, "done", None);
+
+    Ok(SshHandshakeCapture {
+        algorithm,
+        host_key: hex_encode(host_key),
+        fingerprint,
+        server_banner,
+    })
+}
+
+fn connect_tcp_endpoint(
+    proxy: Option<&SocksProxyConfig>,
+    host: &str,
+    port: u16,
+) -> Result<TcpStream> {
+    match proxy {
+        Some(config) => connect_via_socks_proxy(config, host, port),
+        None => {
+            let address = resolve_socket_addr(host, port)?;
+            let stream = TcpStream::connect_timeout(&address, TCP_CONNECT_TIMEOUT)
+                .with_context(|| format!("tcp connect failed for {host}:{port}"))?;
+            apply_tcp_timeouts(&stream)?;
+            Ok(stream)
+        }
+    }
+}
+
+fn connect_via_socks_proxy(
+    proxy: &SocksProxyConfig,
+    target_host: &str,
+    target_port: u16,
+) -> Result<TcpStream> {
+    let proxy_address = resolve_socket_addr(&proxy.host, proxy.port)?;
+    let mut stream =
+        TcpStream::connect_timeout(&proxy_address, TCP_CONNECT_TIMEOUT).with_context(|| {
+            format!(
+                "tcp connect failed for SOCKS proxy {}",
+                describe_socks_endpoint(proxy)
+            )
+        })?;
+    apply_tcp_timeouts(&stream)?;
+
+    let methods = if proxy.username.is_some() || proxy.password.is_some() {
+        vec![0x00_u8, 0x02_u8]
+    } else {
+        vec![0x00_u8]
+    };
+    let mut greeting = vec![0x05_u8, methods.len() as u8];
+    greeting.extend_from_slice(&methods);
+    stream
+        .write_all(&greeting)
+        .context("SOCKS proxy greeting write failed")?;
+
+    let mut greeting_response = [0_u8; 2];
+    stream
+        .read_exact(&mut greeting_response)
+        .context("SOCKS proxy greeting response read failed")?;
+    anyhow::ensure!(
+        greeting_response[0] == 0x05,
+        "SOCKS proxy replied with unsupported version {}",
+        greeting_response[0]
+    );
+    match greeting_response[1] {
+        0x00 => {}
+        0x02 => perform_socks5_username_password_auth(&mut stream, proxy)?,
+        0xFF => anyhow::bail!("SOCKS proxy rejected all authentication methods"),
+        method => anyhow::bail!("SOCKS proxy selected unsupported auth method {method}"),
+    }
+
+    let mut request = vec![0x05_u8, 0x01_u8, 0x00_u8];
+    if let Ok(ip) = target_host.parse::<IpAddr>() {
+        match ip {
+            IpAddr::V4(value) => {
+                request.push(0x01);
+                request.extend_from_slice(&value.octets());
+            }
+            IpAddr::V6(value) => {
+                request.push(0x04);
+                request.extend_from_slice(&value.octets());
+            }
+        }
+    } else {
+        let host_bytes = target_host.as_bytes();
+        anyhow::ensure!(
+            host_bytes.len() <= u8::MAX as usize,
+            "target host is too long for SOCKS5: {target_host}"
+        );
+        request.push(0x03);
+        request.push(host_bytes.len() as u8);
+        request.extend_from_slice(host_bytes);
+    }
+    request.extend_from_slice(&target_port.to_be_bytes());
+
+    stream.write_all(&request).with_context(|| {
+        format!("SOCKS connect request write failed for {target_host}:{target_port}")
+    })?;
+
+    let mut response_header = [0_u8; 4];
+    stream
+        .read_exact(&mut response_header)
+        .context("SOCKS proxy connect response read failed")?;
+    anyhow::ensure!(
+        response_header[0] == 0x05,
+        "SOCKS proxy connect reply used unsupported version {}",
+        response_header[0]
+    );
+    anyhow::ensure!(
+        response_header[1] == 0x00,
+        "SOCKS proxy connect failed for {}:{} ({})",
+        target_host,
+        target_port,
+        socks_reply_label(response_header[1])
+    );
+    read_socks_reply_tail(&mut stream, response_header[3])?;
+
+    Ok(stream)
+}
+
+fn perform_socks5_username_password_auth(
+    stream: &mut TcpStream,
+    proxy: &SocksProxyConfig,
+) -> Result<()> {
+    let username = proxy.username.as_deref().unwrap_or_default().as_bytes();
+    let password = proxy.password.as_deref().unwrap_or_default().as_bytes();
+    anyhow::ensure!(
+        username.len() <= u8::MAX as usize && password.len() <= u8::MAX as usize,
+        "SOCKS proxy credentials are too long"
+    );
+
+    let mut request = vec![0x01_u8, username.len() as u8];
+    request.extend_from_slice(username);
+    request.push(password.len() as u8);
+    request.extend_from_slice(password);
+    stream
+        .write_all(&request)
+        .context("SOCKS proxy auth request write failed")?;
+
+    let mut response = [0_u8; 2];
+    stream
+        .read_exact(&mut response)
+        .context("SOCKS proxy auth response read failed")?;
+    anyhow::ensure!(
+        response[1] == 0x00,
+        "SOCKS proxy username/password authentication failed"
+    );
+    Ok(())
+}
+
+fn read_socks_reply_tail(stream: &mut TcpStream, address_type: u8) -> Result<()> {
+    match address_type {
+        0x01 => {
+            let mut buffer = [0_u8; 4];
+            stream.read_exact(&mut buffer)?;
+        }
+        0x03 => {
+            let mut length = [0_u8; 1];
+            stream.read_exact(&mut length)?;
+            let mut buffer = vec![0_u8; length[0] as usize];
+            stream.read_exact(&mut buffer)?;
+        }
+        0x04 => {
+            let mut buffer = [0_u8; 16];
+            stream.read_exact(&mut buffer)?;
+        }
+        other => anyhow::bail!("SOCKS proxy returned unsupported address type {other}"),
+    }
+
+    let mut port = [0_u8; 2];
+    stream.read_exact(&mut port)?;
+    Ok(())
+}
+
+fn resolve_socket_addr(host: &str, port: u16) -> Result<SocketAddr> {
+    (host, port)
+        .to_socket_addrs()
+        .with_context(|| format!("failed to resolve {host}:{port}"))?
+        .next()
+        .with_context(|| format!("no socket address found for {host}:{port}"))
+}
+
+fn apply_tcp_timeouts(stream: &TcpStream) -> Result<()> {
+    stream
+        .set_read_timeout(Some(TCP_IO_TIMEOUT))
+        .context("failed to set tcp read timeout")?;
+    stream
+        .set_write_timeout(Some(TCP_IO_TIMEOUT))
+        .context("failed to set tcp write timeout")?;
+    Ok(())
+}
+
+fn should_skip_ssh_attempt(
+    existing: Option<&HostSshObservationRecord>,
+    host_last_scanned_at: &str,
+    stale_cutoff: &str,
+) -> bool {
+    existing
+        .map(|row| {
+            let last_attempt_at = row.last_attempt_at.as_str();
+            last_attempt_at >= stale_cutoff && last_attempt_at >= host_last_scanned_at
+        })
+        .unwrap_or(false)
+}
+
+fn ssh_stale_cutoff_timestamp(
+    conn: &mut diesel::sqlite::SqliteConnection,
+    stale_hours: i64,
+) -> Result<String> {
+    let stale_hours = stale_hours.clamp(1, 24 * 365);
+    let query = format!("SELECT datetime(CURRENT_TIMESTAMP, '-{stale_hours} hours') AS value");
+    diesel::sql_query(query)
+        .get_result::<NullableTextValueRow>(conn)
+        .context("error loading ssh stale cutoff timestamp")?
+        .value
+        .context("ssh stale cutoff query returned no value")
+}
+
+fn classify_ssh_probe_error(error: &anyhow::Error) -> &'static str {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(|io_error| io_error.kind() == std::io::ErrorKind::TimedOut)
+            .unwrap_or(false)
+    }) {
+        return "timeout";
+    }
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(|io_error| io_error.kind() == std::io::ErrorKind::ConnectionRefused)
+            .unwrap_or(false)
+    }) {
+        return "connection-refused";
+    }
+
+    let rendered = error.to_string().to_ascii_lowercase();
+    if rendered.contains("socks") || rendered.contains("proxy") {
+        "proxy-error"
+    } else if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<ssh2::Error>().is_some())
+    {
+        "handshake-failed"
+    } else {
+        "network-error"
+    }
+}
+
+fn ssh_host_key_algorithm_name(key_type: HostKeyType) -> &'static str {
+    match key_type {
+        HostKeyType::Rsa => "ssh-rsa",
+        HostKeyType::Dss => "ssh-dss",
+        HostKeyType::Ecdsa256 => "ecdsa-sha2-nistp256",
+        HostKeyType::Ecdsa384 => "ecdsa-sha2-nistp384",
+        HostKeyType::Ecdsa521 => "ecdsa-sha2-nistp521",
+        HostKeyType::Ed25519 => "ssh-ed25519",
+        HostKeyType::Unknown => "unknown",
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
+}
+
+fn truncate_for_storage(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn describe_socks_endpoint(proxy: &SocksProxyConfig) -> String {
+    format!("{}:{}", proxy.host, proxy.port)
+}
+
+fn socks_reply_label(code: u8) -> &'static str {
+    match code {
+        0x01 => "general failure",
+        0x02 => "connection not allowed",
+        0x03 => "network unreachable",
+        0x04 => "host unreachable",
+        0x05 => "connection refused",
+        0x06 => "ttl expired",
+        0x07 => "command not supported",
+        0x08 => "address type not supported",
+        _ => "unknown error",
+    }
+}
+
 fn select_work_units_for_processing(
     work_units: Vec<spyder::models::WorkUnit>,
     options: WorkOptions,
@@ -362,6 +870,9 @@ fn usage(program: &str) {
     eprintln!("    blacklist list");
     eprintln!("    blacklist add <domain>");
     eprintln!("    blacklist remove <domain>");
+    eprintln!(
+        "    ssh-scan [--recent-hours N] [--stale-hours N] [--limit N] scan recent hosts for SSH host keys."
+    );
     eprintln!("    work [--onion-only] process pending work units and store page metadata.");
 }
 
@@ -421,6 +932,42 @@ fn parse_work_options(args: impl IntoIterator<Item = String>) -> Result<WorkOpti
     Ok(options)
 }
 
+fn parse_ssh_scan_options(args: impl IntoIterator<Item = String>) -> Result<SshScanOptions> {
+    let mut options = SshScanOptions::default();
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--recent-hours" => {
+                options.recent_hours =
+                    parse_i64_option_value(args.next(), "--recent-hours", 1, 24 * 365)?;
+            }
+            "--stale-hours" => {
+                options.stale_hours =
+                    parse_i64_option_value(args.next(), "--stale-hours", 1, 24 * 365)?;
+            }
+            "--limit" => {
+                options.limit = parse_i64_option_value(args.next(), "--limit", 1, 2_000)?;
+            }
+            _ => anyhow::bail!("invalid ssh-scan option: {arg}"),
+        }
+    }
+
+    Ok(options)
+}
+
+fn parse_i64_option_value(value: Option<String>, option: &str, min: i64, max: i64) -> Result<i64> {
+    let raw = value.with_context(|| format!("missing value for {option}"))?;
+    let parsed = raw
+        .parse::<i64>()
+        .with_context(|| format!("invalid integer value for {option}: {raw}"))?;
+    anyhow::ensure!(
+        parsed >= min && parsed <= max,
+        "{option} must be between {min} and {max}"
+    );
+    Ok(parsed)
+}
+
 fn is_retriable_request_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         if let Some(reqwest_error) = cause.downcast_ref::<reqwest::Error>() {
@@ -440,18 +987,12 @@ fn is_retriable_status(status: StatusCode) -> bool {
 fn main() {
     let mut args = env::args();
     let program = args.next().unwrap_or_else(|| "spyder".to_string());
-    let client = match build_http_client() {
-        Ok(client) => client,
-        Err(error) => {
-            print_error(&error);
-            std::process::exit(1);
-        }
-    };
-
     let result = match args.next().as_deref() {
         Some("add") => match args.next() {
-            Some(url) => enqueue_seed_and_links(&client, &url).map(|count| {
-                println!("Enqueued {count} URLs");
+            Some(url) => build_http_client().and_then(|client| {
+                enqueue_seed_and_links(&client, &url).map(|count| {
+                    println!("Enqueued {count} URLs");
+                })
             }),
             None => {
                 usage(&program);
@@ -479,8 +1020,15 @@ fn main() {
                 Err(anyhow::anyhow!("invalid or missing blacklist subcommand"))
             }
         },
+        Some("ssh-scan") => match parse_ssh_scan_options(args) {
+            Ok(options) => ssh_scan_hosts(options),
+            Err(error) => {
+                usage(&program);
+                Err(error)
+            }
+        },
         Some("work") => match parse_work_options(args) {
-            Ok(options) => work_queue(&client, options),
+            Ok(options) => build_http_client().and_then(|client| work_queue(&client, options)),
             Err(error) => {
                 usage(&program);
                 Err(error)
@@ -598,6 +1146,40 @@ mod tests {
     fn work_options_reject_unknown_flags() {
         let error = parse_work_options(vec!["--bogus".to_string()]).expect_err("invalid option");
         assert_eq!(error.to_string(), "invalid work option: --bogus");
+    }
+
+    #[test]
+    fn ssh_scan_options_use_defaults() {
+        let options = parse_ssh_scan_options(Vec::<String>::new()).expect("ssh scan options");
+        assert_eq!(
+            options,
+            SshScanOptions {
+                recent_hours: DEFAULT_SSH_SCAN_RECENT_HOURS,
+                stale_hours: DEFAULT_SSH_SCAN_STALE_HOURS,
+                limit: DEFAULT_SSH_SCAN_LIMIT,
+            }
+        );
+    }
+
+    #[test]
+    fn ssh_scan_options_parse_custom_values() {
+        let options = parse_ssh_scan_options(vec![
+            "--recent-hours".to_string(),
+            "12".to_string(),
+            "--stale-hours".to_string(),
+            "4".to_string(),
+            "--limit".to_string(),
+            "32".to_string(),
+        ])
+        .expect("ssh scan options");
+        assert_eq!(
+            options,
+            SshScanOptions {
+                recent_hours: 12,
+                stale_hours: 4,
+                limit: 32,
+            }
+        );
     }
 
     #[test]

@@ -622,6 +622,20 @@ a:hover {
     color: var(--danger);
 }
 
+.status-success {
+    background: rgba(31, 136, 61, 0.13);
+    color: #1f883d;
+}
+
+.status-timeout,
+.status-network-error,
+.status-handshake-failed,
+.status-proxy-error,
+.status-connection-refused {
+    background: rgba(207, 34, 46, 0.13);
+    color: var(--danger);
+}
+
 footer {
     color: var(--muted);
     padding: 0 2rem 2rem;

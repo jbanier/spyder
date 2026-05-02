@@ -44,6 +44,40 @@ pub struct NewDomainBlacklist<'a> {
     pub domain: &'a str,
 }
 
+#[derive(Selectable, Queryable, Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::host_ssh_observation)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct HostSshObservationRecord {
+    pub id: i32,
+    pub host: String,
+    pub port: i32,
+    pub status: String,
+    pub host_key_algorithm: Option<String>,
+    pub host_key: Option<String>,
+    pub host_key_fingerprint: Option<String>,
+    pub server_banner: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Insertable, Clone)]
+#[diesel(table_name = crate::schema::host_ssh_observation)]
+pub struct NewHostSshObservation {
+    pub host: String,
+    pub port: i32,
+    pub status: String,
+    pub host_key_algorithm: Option<String>,
+    pub host_key: Option<String>,
+    pub host_key_fingerprint: Option<String>,
+    pub server_banner: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+}
+
 #[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_classification)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -287,6 +321,12 @@ pub struct PageSnapshot {
     pub classification_signals: ClassificationSignals,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecentHostCandidate {
+    pub host: String,
+    pub last_scanned_at: String,
+}
+
 #[derive(Serialize, Clone, Debug, Eq, PartialEq)]
 #[serde(crate = "rocket::serde")]
 pub struct EmailObservation {
@@ -503,6 +543,44 @@ pub struct CryptoEntityDetail {
     pub asset_type: String,
     pub reference: String,
     pub pages: Vec<PageReference>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct SshHostKeySummary {
+    pub algorithm: String,
+    pub fingerprint: String,
+    pub host_count: usize,
+    pub endpoint_count: usize,
+    pub last_success_at: String,
+    pub detail_url: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct SshHostKeyDetail {
+    pub algorithm: String,
+    pub fingerprint: String,
+    pub host_count: usize,
+    pub endpoint_count: usize,
+    pub endpoints: Vec<SshHostKeyEndpoint>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct SshHostKeyEndpoint {
+    pub host: String,
+    pub port: i32,
+    pub status: String,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+    pub server_banner: Option<String>,
+    pub host_key: Option<String>,
+    pub site_category: Option<SiteCategoryBadge>,
+    pub source_page_id: Option<i32>,
+    pub source_page_title: Option<String>,
+    pub source_page_url: Option<String>,
 }
 
 #[derive(Serialize, Clone)]

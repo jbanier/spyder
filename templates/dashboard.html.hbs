@@ -108,6 +108,28 @@
 
     <section class="card">
         <div class="section-heading">
+            <h2>Shared SSH Host Keys</h2>
+            <a href="/entities/ssh" class="muted-link">All keys</a>
+        </div>
+        {{#if has_ssh_host_keys}}
+        <div class="compact-list">
+            {{#each ssh_host_keys}}
+            <a class="compact-row" href="{{detail_url}}">
+                <div class="table-cell-stack">
+                    <span class="compact-title">{{algorithm}}</span>
+                    <span class="compact-meta">{{fingerprint}}</span>
+                </div>
+                <span class="count-pill">{{host_count}} hosts</span>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No SSH host keys have been captured yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
             <h2>Site Relationships</h2>
             <a href="/relationships" class="muted-link">All relationships</a>
         </div>
