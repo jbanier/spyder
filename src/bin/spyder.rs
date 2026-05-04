@@ -477,7 +477,7 @@ fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
     );
     if outcome.skipped_blacklisted_count > 0 {
         println!(
-            "Skipped {} blacklisted discovered URLs",
+            "Skipped {} discovered URLs whose domains are blacklisted",
             outcome.skipped_blacklisted_count
         );
     }
@@ -561,7 +561,7 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
                         current,
                         total,
                         format!(
-                            "Skipped {} blacklisted discovered URLs",
+                            "Skipped {} discovered URLs whose domains are blacklisted",
                             discovery_outcome.skipped_blacklisted_count
                         ),
                     );
