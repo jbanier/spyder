@@ -6,9 +6,11 @@ use anyhow::{Context, Result};
 use diesel::connection::SimpleConnection;
 use diesel::deserialize::QueryableByName;
 use diesel::dsl::{count_star, sql};
+use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::{BigInt, Bool, Nullable, Text};
+use diesel::sqlite::SqliteConnection;
 use diesel::upsert::excluded;
 use dotenvy::dotenv;
 use models::*;
@@ -22,6 +24,7 @@ pub const STATUS_DONE: &str = "done";
 pub const STATUS_FAILED: &str = "failed";
 pub const SSH_STATUS_SUCCESS: &str = "success";
 pub const MAX_RETRY_ATTEMPTS: i32 = 5;
+#[cfg(test)]
 const SQLITE_BUSY_TIMEOUT_MS: i32 = 5_000;
 const DEFAULT_TOP_SITE_LIMIT: i64 = 25;
 const DEFAULT_PAGE_LIMIT: i64 = 50;
@@ -42,6 +45,28 @@ const CATEGORY_UNKNOWN: &str = "unknown";
 const CONFIDENCE_HIGH: &str = "high";
 const CONFIDENCE_MEDIUM: &str = "medium";
 const CONFIDENCE_LOW: &str = "low";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqlDialect {
+    Postgres,
+    Sqlite,
+}
+
+pub trait AppConnection: Connection + SimpleConnection {
+    const DIALECT: SqlDialect;
+
+    fn dialect(&self) -> SqlDialect {
+        Self::DIALECT
+    }
+}
+
+impl AppConnection for PgConnection {
+    const DIALECT: SqlDialect = SqlDialect::Postgres;
+}
+
+impl AppConnection for SqliteConnection {
+    const DIALECT: SqlDialect = SqlDialect::Sqlite;
+}
 
 #[derive(Clone)]
 struct ClassificationOutcome {
@@ -257,16 +282,22 @@ struct ScanObservationSet {
     crypto_refs: BTreeSet<(String, String)>,
 }
 
-pub fn establish_connection() -> Result<SqliteConnection> {
+pub fn establish_connection() -> Result<PgConnection> {
     dotenv().ok();
 
     let database_url = env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
-    let mut connection = SqliteConnection::establish(&database_url)
+    let mut connection = PgConnection::establish(&database_url)
         .with_context(|| format!("error connecting to {database_url}"))?;
-    configure_sqlite_connection(&mut connection, &database_url)?;
+    configure_postgres_connection(&mut connection)?;
     Ok(connection)
 }
 
+fn configure_postgres_connection(conn: &mut PgConnection) -> Result<()> {
+    conn.batch_execute("SET TIME ZONE 'UTC';")
+        .context("error configuring postgres connection")
+}
+
+#[cfg(test)]
 fn configure_sqlite_connection(conn: &mut SqliteConnection, database_url: &str) -> Result<()> {
     conn.batch_execute(&format!(
         "
@@ -289,6 +320,7 @@ fn configure_sqlite_connection(conn: &mut SqliteConnection, database_url: &str) 
     Ok(())
 }
 
+#[cfg(test)]
 fn is_file_backed_sqlite_database(database_url: &str) -> bool {
     let normalized = database_url.trim().to_ascii_lowercase();
     !(normalized == ":memory:"
@@ -405,7 +437,7 @@ pub fn find_matching_blacklist_domain(host: &str, blacklist_domains: &[String]) 
         .cloned()
 }
 
-pub fn list_forum_keyword_rules(conn: &mut SqliteConnection) -> Result<Vec<ForumKeywordRule>> {
+pub fn list_forum_keyword_rules(conn: &mut PgConnection) -> Result<Vec<ForumKeywordRule>> {
     use crate::schema::forum_keyword_rule::dsl as forum_keyword_rule_dsl;
 
     forum_keyword_rule_dsl::forum_keyword_rule
@@ -417,7 +449,7 @@ pub fn list_forum_keyword_rules(conn: &mut SqliteConnection) -> Result<Vec<Forum
 }
 
 pub fn add_forum_keyword_rule(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     raw_label: &str,
     raw_pattern: &str,
 ) -> Result<ForumKeywordRule> {
@@ -447,7 +479,7 @@ pub fn add_forum_keyword_rule(
 }
 
 pub fn remove_forum_keyword_rule(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     raw_label: &str,
     raw_pattern: &str,
 ) -> Result<Option<(String, String)>> {
@@ -466,9 +498,7 @@ pub fn remove_forum_keyword_rule(
     Ok((deleted > 0).then_some((label, pattern)))
 }
 
-pub fn list_domain_blacklist_rules(
-    conn: &mut SqliteConnection,
-) -> Result<Vec<DomainBlacklistRule>> {
+pub fn list_domain_blacklist_rules(conn: &mut PgConnection) -> Result<Vec<DomainBlacklistRule>> {
     use crate::schema::domain_blacklist::dsl as blacklist_dsl;
 
     blacklist_dsl::domain_blacklist
@@ -480,7 +510,7 @@ pub fn list_domain_blacklist_rules(
 }
 
 pub fn add_domain_blacklist_entry(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     raw_domain: &str,
 ) -> Result<DomainBlacklistRule> {
     use crate::schema::domain_blacklist::dsl as blacklist_dsl;
@@ -502,10 +532,7 @@ pub fn add_domain_blacklist_entry(
         .context("error loading saved blacklist domain")
 }
 
-pub fn remove_domain_blacklist_entry(
-    conn: &mut SqliteConnection,
-    raw_domain: &str,
-) -> Result<String> {
+pub fn remove_domain_blacklist_entry(conn: &mut PgConnection, raw_domain: &str) -> Result<String> {
     use crate::schema::domain_blacklist::dsl as blacklist_dsl;
 
     let normalized_domain = normalize_blacklist_domain(raw_domain)?;
@@ -519,7 +546,7 @@ pub fn remove_domain_blacklist_entry(
 }
 
 pub fn list_domain_blacklist_summaries(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
 ) -> Result<Vec<DomainBlacklistSummary>> {
     let rules = list_domain_blacklist_rules(conn)?;
     let blacklist_domains = rules
@@ -566,7 +593,7 @@ pub fn list_domain_blacklist_summaries(
 }
 
 pub fn list_site_profiles(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<SiteProfileSummary>> {
@@ -580,7 +607,7 @@ pub fn list_site_profiles(
         .select(count_star())
         .first(conn)
         .context("error counting site profiles")?;
-    let host_expr = sql_host_expr("p.url");
+    let host_expr = sql_host_expr("p.url", conn);
     let query = format!(
         "
         SELECT
@@ -625,7 +652,7 @@ pub fn list_site_profiles(
     })
 }
 
-pub fn create_work_unit(conn: &mut SqliteConnection, url: &str) -> Result<()> {
+pub fn create_work_unit(conn: &mut PgConnection, url: &str) -> Result<()> {
     let normalized_url = normalize_crawl_url(url);
     let work_unit = NewUnit {
         url: &normalized_url,
@@ -691,7 +718,7 @@ fn compute_page_keyword_tags(snapshot: &PageSnapshot, rules: &[ForumKeywordRule]
     tags
 }
 
-pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> Result<()> {
+pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Result<()> {
     use crate::schema::page::dsl::{
         coins as page_coins, emails as page_emails, language as page_language,
         last_scanned_at as page_last_scanned_at, links as page_links, title as page_title,
@@ -733,7 +760,7 @@ pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> R
                 page_emails.eq(excluded(page_emails)),
                 page_coins.eq(excluded(page_coins)),
                 page_language.eq(excluded(page_language)),
-                page_last_scanned_at.eq(sql::<Text>("CURRENT_TIMESTAMP")),
+                page_last_scanned_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
             ))
             .execute(conn)
             .context("error saving page")?;
@@ -899,7 +926,8 @@ pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> R
                     page_classification::confidence.eq(excluded(page_classification::confidence)),
                     page_classification::score.eq(excluded(page_classification::score)),
                     page_classification::evidence.eq(excluded(page_classification::evidence)),
-                    page_classification::last_classified_at.eq(sql::<Text>("CURRENT_TIMESTAMP")),
+                    page_classification::last_classified_at
+                        .eq(sql::<Text>(sql_current_timestamp_expr(conn))),
                 ))
                 .execute(conn)
                 .context("error saving page classification")?;
@@ -924,7 +952,8 @@ pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> R
                     site_profile::page_count.eq(excluded(site_profile::page_count)),
                     site_profile::evidence.eq(excluded(site_profile::evidence)),
                     site_profile::source_page_id.eq(excluded(site_profile::source_page_id)),
-                    site_profile::last_classified_at.eq(sql::<Text>("CURRENT_TIMESTAMP")),
+                    site_profile::last_classified_at
+                        .eq(sql::<Text>(sql_current_timestamp_expr(conn))),
                 ))
                 .execute(conn)
                 .context("error saving site profile")?;
@@ -936,14 +965,14 @@ pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> R
     Ok(())
 }
 
-pub fn mark_work_unit_as_done(conn: &mut SqliteConnection, work_unit_id: i32) -> Result<()> {
+pub fn mark_work_unit_as_done(conn: &mut PgConnection, work_unit_id: i32) -> Result<()> {
     use crate::schema::work_unit::dsl::*;
 
     diesel::update(crate::schema::work_unit::table.filter(id.eq(work_unit_id)))
         .set((
             status.eq(STATUS_DONE),
-            next_attempt_at.eq(sql::<Text>("CURRENT_TIMESTAMP")),
-            last_attempt_at.eq(sql::<Nullable<Text>>("CURRENT_TIMESTAMP")),
+            next_attempt_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+            last_attempt_at.eq(sql::<Nullable<Text>>(sql_current_timestamp_expr(conn))),
             last_error.eq::<Option<String>>(None),
         ))
         .execute(conn)
@@ -953,7 +982,7 @@ pub fn mark_work_unit_as_done(conn: &mut SqliteConnection, work_unit_id: i32) ->
 }
 
 pub fn record_work_unit_failure(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     work_unit_id: i32,
     error_message: &str,
     retriable: bool,
@@ -976,10 +1005,10 @@ pub fn record_work_unit_failure(
                 status.eq(STATUS_PENDING),
                 retry_count.eq(next_retry_count),
                 last_error.eq(Some(bounded_error)),
-                last_attempt_at.eq(sql::<Nullable<Text>>("CURRENT_TIMESTAMP")),
-                next_attempt_at.eq(sql::<Text>(&format!(
-                    "datetime(CURRENT_TIMESTAMP, '+{} minutes')",
-                    backoff_minutes
+                last_attempt_at.eq(sql::<Nullable<Text>>(sql_current_timestamp_expr(conn))),
+                next_attempt_at.eq(sql::<Text>(&sql_timestamp_plus_minutes_expr(
+                    conn,
+                    backoff_minutes,
                 ))),
             ))
             .execute(conn)
@@ -990,7 +1019,7 @@ pub fn record_work_unit_failure(
                 status.eq(STATUS_FAILED),
                 retry_count.eq(next_retry_count),
                 last_error.eq(Some(bounded_error)),
-                last_attempt_at.eq(sql::<Nullable<Text>>("CURRENT_TIMESTAMP")),
+                last_attempt_at.eq(sql::<Nullable<Text>>(sql_current_timestamp_expr(conn))),
             ))
             .execute(conn)
             .context("error marking work unit as failed")?;
@@ -999,12 +1028,15 @@ pub fn record_work_unit_failure(
     Ok(())
 }
 
-pub fn get_pending_work_units(conn: &mut SqliteConnection) -> Result<Vec<WorkUnit>> {
+pub fn get_pending_work_units(conn: &mut PgConnection) -> Result<Vec<WorkUnit>> {
     use crate::schema::work_unit::dsl::*;
 
     crate::schema::work_unit::table
         .filter(status.eq(STATUS_PENDING))
-        .filter(sql::<Bool>("next_attempt_at <= CURRENT_TIMESTAMP"))
+        .filter(sql::<Bool>(&sql_now_comparison_expr(
+            "next_attempt_at",
+            conn,
+        )))
         .order(next_attempt_at.asc())
         .then_order_by(id.asc())
         .select(WorkUnit::as_select())
@@ -1013,7 +1045,7 @@ pub fn get_pending_work_units(conn: &mut SqliteConnection) -> Result<Vec<WorkUni
 }
 
 pub fn list_work_units(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<WorkUnit>> {
@@ -1047,7 +1079,7 @@ pub fn list_work_units(
 }
 
 pub fn list_page_summaries(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<PageSummary>> {
@@ -1059,7 +1091,7 @@ pub fn list_page_summaries(
     );
     let total_count = scalar_count(conn, "SELECT COUNT(*) AS count FROM page")
         .context("error counting pages for summary")?;
-    let host_expr = sql_host_expr("p.url");
+    let host_expr = sql_host_expr("p.url", conn);
     let query = format!(
         "
         SELECT
@@ -1125,7 +1157,7 @@ pub fn list_page_summaries(
     })
 }
 
-pub fn get_page_detail(conn: &mut SqliteConnection, page_id: i32) -> Result<Option<PageDetail>> {
+pub fn get_page_detail(conn: &mut PgConnection, page_id: i32) -> Result<Option<PageDetail>> {
     use crate::schema::page::dsl as page_dsl;
     use crate::schema::page_crypto::dsl as crypto_dsl;
     use crate::schema::page_email::dsl as email_dsl;
@@ -1245,7 +1277,7 @@ pub fn get_page_detail(conn: &mut SqliteConnection, page_id: i32) -> Result<Opti
 }
 
 pub fn list_page_scan_summaries(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     page_id: i32,
 ) -> Result<Vec<PageScanSummary>> {
     let rows = sql_query(
@@ -1320,7 +1352,7 @@ pub fn list_page_scan_summaries(
 }
 
 pub fn get_page_scan_detail(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     page_id: i32,
     scan_id: i32,
 ) -> Result<Option<PageScanDetail>> {
@@ -1498,7 +1530,7 @@ pub fn get_page_scan_detail(
     }))
 }
 
-pub fn collect_stats(conn: &mut SqliteConnection) -> Result<Stats> {
+pub fn collect_stats(conn: &mut PgConnection) -> Result<Stats> {
     use crate::schema::work_unit::dsl as work_dsl;
 
     let total_pages =
@@ -1514,7 +1546,7 @@ pub fn collect_stats(conn: &mut SqliteConnection) -> Result<Stats> {
         .first(conn)
         .context("error counting failed work units")?;
 
-    let host_expr = sql_host_expr("url");
+    let host_expr = sql_host_expr("url", conn);
     let total_domains = scalar_count(
         conn,
         &format!(
@@ -1536,7 +1568,7 @@ pub fn collect_stats(conn: &mut SqliteConnection) -> Result<Stats> {
 }
 
 pub fn search_pages(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     query: &str,
     requested_limit: Option<i64>,
 ) -> Result<Vec<SearchResult>> {
@@ -1547,7 +1579,13 @@ pub fn search_pages(
 
     let limit = requested_limit.unwrap_or(10).clamp(1, 50);
     let pattern = format!("%{}%", escape_like(trimmed));
-    let host_expr = sql_host_expr("p.url");
+    let host_expr = sql_host_expr("p.url", conn);
+    let title_match = sql_case_insensitive_match_expr("p.title", conn);
+    let url_match = sql_case_insensitive_match_expr("p.url", conn);
+    let language_match = sql_case_insensitive_match_expr("p.language", conn);
+    let email_match = sql_case_insensitive_match_expr("pe.email", conn);
+    let crypto_match =
+        sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", conn);
     let sql = format!(
         "
         SELECT
@@ -1558,20 +1596,20 @@ pub fn search_pages(
             p.language,
             p.last_scanned_at AS scraped_at
         FROM page p
-        WHERE p.title LIKE ? ESCAPE '\\' COLLATE NOCASE
-            OR p.url LIKE ? ESCAPE '\\' COLLATE NOCASE
-            OR p.language LIKE ? ESCAPE '\\' COLLATE NOCASE
+        WHERE {title_match}
+            OR {url_match}
+            OR {language_match}
             OR EXISTS (
                 SELECT 1
                 FROM page_email pe
                 WHERE pe.page_id = p.id
-                    AND pe.email LIKE ? ESCAPE '\\' COLLATE NOCASE
+                    AND {email_match}
             )
             OR EXISTS (
                 SELECT 1
                 FROM page_crypto pc
                 WHERE pc.page_id = p.id
-                    AND (pc.asset_type || ':' || pc.reference) LIKE ? ESCAPE '\\' COLLATE NOCASE
+                    AND {crypto_match}
             )
         ORDER BY p.last_scanned_at DESC, p.id DESC
         LIMIT ?
@@ -1606,7 +1644,7 @@ pub fn search_pages(
 }
 
 pub fn list_email_entities(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<EmailEntitySummary>> {
@@ -1654,7 +1692,7 @@ pub fn list_email_entities(
 }
 
 pub fn get_email_entity_detail(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     value: &str,
 ) -> Result<Option<EmailEntityDetail>> {
     use crate::schema::page_email::dsl as email_dsl;
@@ -1686,7 +1724,7 @@ pub fn get_email_entity_detail(
 }
 
 pub fn list_crypto_entities(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<CryptoEntitySummary>> {
@@ -1742,7 +1780,7 @@ pub fn list_crypto_entities(
 }
 
 pub fn get_crypto_entity_detail(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     asset_type: &str,
     reference: &str,
 ) -> Result<Option<CryptoEntityDetail>> {
@@ -1777,13 +1815,14 @@ pub fn get_crypto_entity_detail(
 }
 
 pub fn list_recent_responding_hosts(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     recent_hours: i64,
     requested_limit: Option<i64>,
 ) -> Result<Vec<RecentHostCandidate>> {
     let recent_hours = recent_hours.clamp(1, 24 * 365);
     let limit = requested_limit.unwrap_or(200).clamp(1, 2_000);
-    let host_expr = sql_host_expr("p.url");
+    let host_expr = sql_host_expr("p.url", conn);
+    let recent_cutoff = sql_timestamp_minus_hours_expr(conn, recent_hours);
     let query = format!(
         "
         SELECT
@@ -1791,7 +1830,7 @@ pub fn list_recent_responding_hosts(
             MAX(p.last_scanned_at) AS last_scanned_at
         FROM page p
         WHERE {host_expr} != ''
-            AND p.last_scanned_at >= datetime(CURRENT_TIMESTAMP, '-{recent_hours} hours')
+            AND p.last_scanned_at >= {recent_cutoff}
         GROUP BY {host_expr}
         ORDER BY last_scanned_at DESC, host ASC
         LIMIT ?
@@ -1812,7 +1851,7 @@ pub fn list_recent_responding_hosts(
 }
 
 pub fn get_host_ssh_observation(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     host_value: &str,
     port_value: i32,
 ) -> Result<Option<HostSshObservationRecord>> {
@@ -1833,7 +1872,7 @@ pub fn get_host_ssh_observation(
 }
 
 pub fn save_host_ssh_observation(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     observation: &NewHostSshObservation,
 ) -> Result<()> {
     use crate::schema::host_ssh_observation::dsl as host_ssh_dsl;
@@ -1915,7 +1954,7 @@ pub fn save_host_ssh_observation(
 }
 
 pub fn list_ssh_host_keys(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<SshHostKeySummary>> {
@@ -1992,7 +2031,7 @@ pub fn list_ssh_host_keys(
 }
 
 pub fn get_ssh_host_key_detail(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     algorithm: &str,
     fingerprint: &str,
 ) -> Result<Option<SshHostKeyDetail>> {
@@ -2050,13 +2089,13 @@ pub fn get_ssh_host_key_detail(
 }
 
 pub fn list_top_sites_by_email_refs(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
 ) -> Result<Vec<TopSiteEntry>> {
     let limit = requested_limit
         .unwrap_or(DEFAULT_TOP_SITE_LIMIT)
         .clamp(1, MAX_PAGE_LIMIT);
-    let host_expr = sql_host_expr("p.url");
+    let host_expr = sql_host_expr("p.url", conn);
     let query = format!(
         "
         SELECT
@@ -2075,13 +2114,13 @@ pub fn list_top_sites_by_email_refs(
 }
 
 pub fn list_top_sites_by_crypto_refs(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
 ) -> Result<Vec<TopSiteEntry>> {
     let limit = requested_limit
         .unwrap_or(DEFAULT_TOP_SITE_LIMIT)
         .clamp(1, MAX_PAGE_LIMIT);
-    let host_expr = sql_host_expr("p.url");
+    let host_expr = sql_host_expr("p.url", conn);
     let query = format!(
         "
         SELECT
@@ -2100,13 +2139,13 @@ pub fn list_top_sites_by_crypto_refs(
 }
 
 pub fn list_top_sites_by_outgoing_links(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
 ) -> Result<Vec<TopSiteEntry>> {
     let limit = requested_limit
         .unwrap_or(DEFAULT_TOP_SITE_LIMIT)
         .clamp(1, MAX_PAGE_LIMIT);
-    let host_expr = sql_host_expr("p.url");
+    let host_expr = sql_host_expr("p.url", conn);
     let query = format!(
         "
         SELECT
@@ -2125,13 +2164,13 @@ pub fn list_top_sites_by_outgoing_links(
 }
 
 pub fn list_top_referenced_sites(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
 ) -> Result<Vec<TopSiteEntry>> {
     let limit = requested_limit
         .unwrap_or(DEFAULT_TOP_SITE_LIMIT)
         .clamp(1, MAX_PAGE_LIMIT);
-    let host_expr = sql_host_expr("p.url");
+    let host_expr = sql_host_expr("p.url", conn);
     let query = format!(
         "
         WITH target_recency AS (
@@ -2158,7 +2197,7 @@ pub fn list_top_referenced_sites(
 }
 
 pub fn list_site_relationships(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<SiteRelationship>> {
@@ -2168,7 +2207,7 @@ pub fn list_site_relationships(
         DEFAULT_PAGE_LIMIT,
         MAX_PAGE_LIMIT,
     );
-    let source_host_expr = sql_host_expr("p.url");
+    let source_host_expr = sql_host_expr("p.url", conn);
     let total_count = scalar_count(
         conn,
         &format!(
@@ -2319,7 +2358,7 @@ fn classify_page_snapshot(snapshot: &PageSnapshot) -> ClassificationOutcome {
 }
 
 fn recompute_site_profile_record(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     host_value: &str,
 ) -> Result<NewSiteProfile> {
     use crate::schema::page_classification::dsl as page_classification_dsl;
@@ -2402,14 +2441,14 @@ fn site_profile_record_from_row(row: SiteProfileListRow) -> SiteProfileRecord {
 }
 
 fn load_site_profile_by_host(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     host: &str,
 ) -> Result<Option<SiteProfileSummary>> {
     Ok(load_site_profiles_by_hosts(conn, &[host.to_string()])?.remove(host))
 }
 
 fn load_site_profile_badges_by_hosts(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     hosts: &[String],
 ) -> Result<HashMap<String, SiteCategoryBadge>> {
     Ok(load_site_profile_records_by_hosts(conn, hosts)?
@@ -2424,7 +2463,7 @@ fn load_site_profile_badges_by_hosts(
 }
 
 fn load_site_profiles_by_hosts(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     hosts: &[String],
 ) -> Result<HashMap<String, SiteProfileSummary>> {
     let records_by_host = load_site_profile_records_by_hosts(conn, hosts)?;
@@ -2437,7 +2476,7 @@ fn load_site_profiles_by_hosts(
 }
 
 fn load_site_profile_records_by_hosts(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     hosts: &[String],
 ) -> Result<HashMap<String, SiteProfileRecord>> {
     use crate::schema::site_profile::dsl as site_profile_dsl;
@@ -2464,7 +2503,7 @@ fn load_site_profile_records_by_hosts(
 }
 
 fn build_site_profile_summaries(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     records: &[SiteProfileRecord],
 ) -> Result<Vec<SiteProfileSummary>> {
     let keyword_tags_by_host = load_forum_keyword_tags_by_hosts(
@@ -2527,7 +2566,7 @@ fn build_site_profile_summaries(
 }
 
 fn load_top_site_entries_from_query(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     query: &str,
     limit: i64,
 ) -> Result<Vec<TopSiteEntry>> {
@@ -2539,7 +2578,7 @@ fn load_top_site_entries_from_query(
 }
 
 fn build_top_site_entries(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     rows: Vec<HostMetricSummaryRow>,
 ) -> Result<Vec<TopSiteEntry>> {
     let hosts = rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>();
@@ -2566,7 +2605,7 @@ fn build_top_site_entries(
 }
 
 fn load_host_page_contexts_by_hosts(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     hosts: &[String],
 ) -> Result<HashMap<String, HostPageContext>> {
     let unique_hosts = hosts
@@ -2580,7 +2619,7 @@ fn load_host_page_contexts_by_hosts(
         return Ok(HashMap::new());
     }
 
-    let host_expr = sql_host_expr("p.url");
+    let host_expr = sql_host_expr("p.url", conn);
     let host_literals = unique_hosts
         .iter()
         .map(|host| quote_sql_text_literal(host))
@@ -2631,7 +2670,7 @@ fn load_host_page_contexts_by_hosts(
 }
 
 fn load_forum_keyword_tags_by_hosts(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     hosts: &[String],
 ) -> Result<HashMap<String, Vec<String>>> {
     let unique_hosts = hosts
@@ -2645,7 +2684,7 @@ fn load_forum_keyword_tags_by_hosts(
         return Ok(HashMap::new());
     }
 
-    let host_expr = sql_host_expr("p.url");
+    let host_expr = sql_host_expr("p.url", conn);
     let host_literals = unique_hosts
         .iter()
         .map(|host| quote_sql_text_literal(host))
@@ -2673,7 +2712,7 @@ fn load_forum_keyword_tags_by_hosts(
     Ok(grouped)
 }
 
-fn load_page_by_id(conn: &mut SqliteConnection, page_id: i32) -> Result<Option<Page>> {
+fn load_page_by_id(conn: &mut PgConnection, page_id: i32) -> Result<Option<Page>> {
     use crate::schema::page::dsl as page_dsl;
 
     page_dsl::page
@@ -2685,7 +2724,7 @@ fn load_page_by_id(conn: &mut SqliteConnection, page_id: i32) -> Result<Option<P
 }
 
 fn load_scan_observation_sets(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     scan_ids: &[i32],
 ) -> Result<HashMap<i32, ScanObservationSet>> {
     let scan_links = load_scan_link_rows(conn, scan_ids)?;
@@ -2719,7 +2758,7 @@ fn load_scan_observation_sets(
 }
 
 fn load_scan_link_rows(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     scan_ids: &[i32],
 ) -> Result<HashMap<i32, Vec<PageScanLink>>> {
     use crate::schema::page_scan_link::dsl as scan_link_dsl;
@@ -2748,7 +2787,7 @@ fn load_scan_link_rows(
 }
 
 fn load_scan_email_rows(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     scan_ids: &[i32],
 ) -> Result<HashMap<i32, Vec<PageScanEmail>>> {
     use crate::schema::page_scan_email::dsl as scan_email_dsl;
@@ -2773,7 +2812,7 @@ fn load_scan_email_rows(
 }
 
 fn load_scan_crypto_rows(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     scan_ids: &[i32],
 ) -> Result<HashMap<i32, Vec<PageScanCrypto>>> {
     use crate::schema::page_scan_crypto::dsl as scan_crypto_dsl;
@@ -2858,7 +2897,7 @@ fn build_change_summary(
 }
 
 fn build_link_references(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     observations: Vec<LinkObservation>,
     blacklist_domains: &[String],
 ) -> Result<Vec<LinkReference>> {
@@ -2925,7 +2964,7 @@ fn build_crypto_observations(values: Vec<(String, String)>) -> Vec<CryptoObserva
     observations
 }
 
-fn load_blacklist_domains(conn: &mut SqliteConnection) -> Result<Vec<String>> {
+fn load_blacklist_domains(conn: &mut PgConnection) -> Result<Vec<String>> {
     Ok(list_domain_blacklist_rules(conn)?
         .into_iter()
         .map(|rule| rule.domain)
@@ -2933,7 +2972,7 @@ fn load_blacklist_domains(conn: &mut SqliteConnection) -> Result<Vec<String>> {
 }
 
 fn load_grouped_target_host_counts(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     query: &str,
 ) -> Result<Vec<TargetHostCountRow>> {
     sql_query(query)
@@ -2942,7 +2981,7 @@ fn load_grouped_target_host_counts(
 }
 
 fn load_known_targets_by_url(
-    conn: &mut SqliteConnection,
+    conn: &mut PgConnection,
     target_urls: &[String],
 ) -> Result<HashMap<String, Page>> {
     use crate::schema::page::dsl as page_dsl;
@@ -2982,7 +3021,7 @@ fn scan_link_like_page_link_to_observation(row: &PageLink) -> LinkObservation {
     }
 }
 
-fn load_pages_by_ids(conn: &mut SqliteConnection, page_ids: &[i32]) -> Result<Vec<Page>> {
+fn load_pages_by_ids(conn: &mut PgConnection, page_ids: &[i32]) -> Result<Vec<Page>> {
     use crate::schema::page::dsl as page_dsl;
 
     if page_ids.is_empty() {
@@ -3006,24 +3045,65 @@ fn page_reference_from_page(page: Page) -> PageReference {
     }
 }
 
-fn scalar_count(conn: &mut SqliteConnection, query: &str) -> Result<i64> {
+fn scalar_count(conn: &mut PgConnection, query: &str) -> Result<i64> {
     Ok(sql_query(query)
         .get_result::<CountRow>(conn)
         .context("error loading count result")?
         .count)
 }
 
-fn scalar_nullable_text(conn: &mut SqliteConnection, query: &str) -> Result<Option<String>> {
+fn scalar_nullable_text(conn: &mut PgConnection, query: &str) -> Result<Option<String>> {
     Ok(sql_query(query)
         .get_result::<NullableTextRow>(conn)
         .context("error loading text result")?
         .value)
 }
 
-fn current_timestamp_text(conn: &mut SqliteConnection) -> Result<String> {
-    scalar_nullable_text(conn, "SELECT CURRENT_TIMESTAMP AS value")
-        .context("error loading current timestamp")?
-        .context("current timestamp query returned no value")
+fn current_timestamp_text(conn: &mut PgConnection) -> Result<String> {
+    scalar_nullable_text(
+        conn,
+        &format!("SELECT {} AS value", sql_current_timestamp_expr(conn)),
+    )
+    .context("error loading current timestamp")?
+    .context("current timestamp query returned no value")
+}
+
+fn sql_current_timestamp_expr(conn: &impl AppConnection) -> &'static str {
+    match conn.dialect() {
+        SqlDialect::Postgres => "to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')",
+        SqlDialect::Sqlite => "CURRENT_TIMESTAMP",
+    }
+}
+
+fn sql_timestamp_plus_minutes_expr(conn: &impl AppConnection, minutes: i32) -> String {
+    match conn.dialect() {
+        SqlDialect::Postgres => format!(
+            "to_char(timezone('UTC', now()) + INTERVAL '{} minutes', 'YYYY-MM-DD HH24:MI:SS')",
+            minutes
+        ),
+        SqlDialect::Sqlite => format!("datetime(CURRENT_TIMESTAMP, '+{} minutes')", minutes),
+    }
+}
+
+fn sql_timestamp_minus_hours_expr(conn: &impl AppConnection, hours: i64) -> String {
+    match conn.dialect() {
+        SqlDialect::Postgres => format!(
+            "to_char(timezone('UTC', now()) - INTERVAL '{} hours', 'YYYY-MM-DD HH24:MI:SS')",
+            hours
+        ),
+        SqlDialect::Sqlite => format!("datetime(CURRENT_TIMESTAMP, '-{} hours')", hours),
+    }
+}
+
+fn sql_now_comparison_expr(column: &str, conn: &impl AppConnection) -> String {
+    format!("{column} <= {}", sql_current_timestamp_expr(conn))
+}
+
+fn sql_case_insensitive_match_expr(column: &str, conn: &impl AppConnection) -> String {
+    match conn.dialect() {
+        SqlDialect::Postgres => format!("{column} ILIKE ? ESCAPE '\\'"),
+        SqlDialect::Sqlite => format!("{column} LIKE ? ESCAPE '\\' COLLATE NOCASE"),
+    }
 }
 
 fn host_from_url(value: &str) -> String {
@@ -3165,24 +3245,35 @@ fn site_category_label(category: &str) -> &'static str {
     }
 }
 
-fn sql_host_expr(column: &str) -> String {
-    format!(
-        "
-        CASE
-            WHEN instr({column}, '://') > 0 THEN
-                CASE
-                    WHEN instr(substr({column}, instr({column}, '://') + 3), '/') > 0 THEN
-                        substr(
-                            substr({column}, instr({column}, '://') + 3),
-                            1,
-                            instr(substr({column}, instr({column}, '://') + 3), '/') - 1
-                        )
-                    ELSE substr({column}, instr({column}, '://') + 3)
-                END
-            ELSE ''
-        END
-        "
-    )
+fn sql_host_expr(column: &str, conn: &impl AppConnection) -> String {
+    match conn.dialect() {
+        SqlDialect::Postgres => format!(
+            "
+            CASE
+                WHEN position('://' IN {column}) > 0 THEN
+                    split_part(split_part({column}, '://', 2), '/', 1)
+                ELSE ''
+            END
+            "
+        ),
+        SqlDialect::Sqlite => format!(
+            "
+            CASE
+                WHEN instr({column}, '://') > 0 THEN
+                    CASE
+                        WHEN instr(substr({column}, instr({column}, '://') + 3), '/') > 0 THEN
+                            substr(
+                                substr({column}, instr({column}, '://') + 3),
+                                1,
+                                instr(substr({column}, instr({column}, '://') + 3), '/') - 1
+                            )
+                        ELSE substr({column}, instr({column}, '://') + 3)
+                    END
+                ELSE ''
+            END
+            "
+        ),
+    }
 }
 
 fn truncate(input: &str, max_len: usize) -> String {

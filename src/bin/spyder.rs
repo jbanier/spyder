@@ -1,17 +1,24 @@
 use anyhow::{Context, Result};
+use diesel::connection::SimpleConnection;
 use diesel::deserialize::QueryableByName;
-use diesel::RunQueryDsl;
+use diesel::pg::PgConnection;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use reqwest::blocking::Client;
 use reqwest::{Proxy, StatusCode};
 use spyder::extraction::extract_page_snapshot;
-use spyder::models::{HostSshObservationRecord, NewHostSshObservation};
+use spyder::models::{
+    DomainBlacklistRule, ForumKeywordRule, HostSshObservationRecord, NewHostSshObservation, Page,
+    PageClassificationRecord, PageCrypto, PageEmail, PageKeywordTag, PageLink, PageScan,
+    PageScanCrypto, PageScanEmail, PageScanLink, SiteProfileRecord, WorkUnit,
+};
 use spyder::{
     add_domain_blacklist_entry, add_forum_keyword_rule, create_work_unit, establish_connection,
     find_matching_blacklist_domain, get_host_ssh_observation, get_pending_work_units,
     list_domain_blacklist_rules, list_forum_keyword_rules, list_recent_responding_hosts,
     mark_work_unit_as_done, normalize_crawl_url, record_work_unit_failure,
     remove_domain_blacklist_entry, remove_forum_keyword_rule, save_host_ssh_observation,
-    save_page_info, SSH_STATUS_SUCCESS,
+    save_page_info, AppConnection, SqlDialect, SSH_STATUS_SUCCESS,
 };
 use ssh2::{HashType, HostKeyType, Session};
 use std::collections::HashSet;
@@ -19,6 +26,7 @@ use std::env;
 use std::fmt::Display;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::path::Path;
 use std::time::Duration;
 use url::Url;
 
@@ -70,12 +78,226 @@ struct NullableTextValueRow {
     value: Option<String>,
 }
 
+#[derive(QueryableByName)]
+struct TableNameRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    name: String,
+}
+
+#[derive(QueryableByName)]
+struct BigIntValueRow {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    value: i64,
+}
+
+#[derive(QueryableByName)]
+struct IntValueRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    value: i32,
+}
+
 const SSH_PORTS: [u16; 2] = [22, 2222];
 const DEFAULT_SSH_SCAN_RECENT_HOURS: i64 = 24 * 7;
 const DEFAULT_SSH_SCAN_STALE_HOURS: i64 = 24;
 const DEFAULT_SSH_SCAN_LIMIT: i64 = 200;
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_IO_TIMEOUT: Duration = Duration::from_secs(15);
+const IMPORT_BATCH_SIZE: i64 = 5_000;
+
+trait HasId {
+    fn id(&self) -> i32;
+}
+
+macro_rules! impl_has_id {
+    ($($ty:ty),+ $(,)?) => {
+        $(impl HasId for $ty {
+            fn id(&self) -> i32 {
+                self.id
+            }
+        })+
+    };
+}
+
+impl_has_id!(
+    WorkUnit,
+    Page,
+    PageScan,
+    PageScanLink,
+    PageScanEmail,
+    PageScanCrypto,
+    PageLink,
+    PageEmail,
+    PageCrypto,
+    PageClassificationRecord,
+    SiteProfileRecord,
+    DomainBlacklistRule,
+    HostSshObservationRecord,
+    ForumKeywordRule,
+    PageKeywordTag,
+);
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::work_unit)]
+struct ImportedWorkUnit {
+    id: i32,
+    url: String,
+    status: String,
+    retry_count: i32,
+    next_attempt_at: String,
+    last_attempt_at: Option<String>,
+    last_error: Option<String>,
+    created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::page)]
+struct ImportedPage {
+    id: i32,
+    title: String,
+    url: String,
+    links: String,
+    emails: String,
+    coins: String,
+    language: String,
+    last_scanned_at: String,
+    created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::page_scan)]
+struct ImportedPageScan {
+    id: i32,
+    page_id: i32,
+    title: String,
+    language: String,
+    scanned_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::page_scan_link)]
+struct ImportedPageScanLink {
+    id: i32,
+    scan_id: i32,
+    target_url: String,
+    target_host: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::page_scan_email)]
+struct ImportedPageScanEmail {
+    id: i32,
+    scan_id: i32,
+    email: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::page_scan_crypto)]
+struct ImportedPageScanCrypto {
+    id: i32,
+    scan_id: i32,
+    asset_type: String,
+    reference: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::page_link)]
+struct ImportedPageLink {
+    id: i32,
+    source_page_id: i32,
+    target_url: String,
+    target_host: String,
+    created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::page_email)]
+struct ImportedPageEmail {
+    id: i32,
+    page_id: i32,
+    email: String,
+    created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::page_crypto)]
+struct ImportedPageCrypto {
+    id: i32,
+    page_id: i32,
+    asset_type: String,
+    reference: String,
+    created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::page_classification)]
+struct ImportedPageClassification {
+    id: i32,
+    page_id: i32,
+    host: String,
+    category: String,
+    confidence: String,
+    score: i32,
+    evidence: String,
+    last_classified_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::site_profile)]
+struct ImportedSiteProfile {
+    id: i32,
+    host: String,
+    category: String,
+    confidence: String,
+    score: i32,
+    page_count: i32,
+    evidence: String,
+    source_page_id: Option<i32>,
+    last_classified_at: String,
+    created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::domain_blacklist)]
+struct ImportedDomainBlacklistRule {
+    id: i32,
+    domain: String,
+    created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::host_ssh_observation)]
+struct ImportedHostSshObservation {
+    id: i32,
+    host: String,
+    port: i32,
+    status: String,
+    host_key_algorithm: Option<String>,
+    host_key: Option<String>,
+    host_key_fingerprint: Option<String>,
+    server_banner: Option<String>,
+    last_error: Option<String>,
+    last_attempt_at: String,
+    last_success_at: Option<String>,
+    created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::forum_keyword_rule)]
+struct ImportedForumKeywordRule {
+    id: i32,
+    label: String,
+    pattern: String,
+    created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = spyder::schema::page_keyword_tag)]
+struct ImportedPageKeywordTag {
+    id: i32,
+    page_id: i32,
+    tag: String,
+    created_at: String,
+}
 
 impl Default for SshScanOptions {
     fn default() -> Self {
@@ -692,12 +914,16 @@ fn should_skip_ssh_attempt(
         .unwrap_or(false)
 }
 
-fn ssh_stale_cutoff_timestamp(
-    conn: &mut diesel::sqlite::SqliteConnection,
-    stale_hours: i64,
-) -> Result<String> {
+fn ssh_stale_cutoff_timestamp(conn: &mut PgConnection, stale_hours: i64) -> Result<String> {
     let stale_hours = stale_hours.clamp(1, 24 * 365);
-    let query = format!("SELECT datetime(CURRENT_TIMESTAMP, '-{stale_hours} hours') AS value");
+    let query = match conn.dialect() {
+        SqlDialect::Postgres => format!(
+            "SELECT to_char(timezone('UTC', now()) - INTERVAL '{stale_hours} hours', 'YYYY-MM-DD HH24:MI:SS') AS value"
+        ),
+        SqlDialect::Sqlite => {
+            format!("SELECT datetime(CURRENT_TIMESTAMP, '-{stale_hours} hours') AS value")
+        }
+    };
     diesel::sql_query(query)
         .get_result::<NullableTextValueRow>(conn)
         .context("error loading ssh stale cutoff timestamp")?
@@ -801,7 +1027,7 @@ fn url_targets_onion(url: &str) -> bool {
 }
 
 fn enqueue_discovered_links(
-    connection: &mut diesel::sqlite::SqliteConnection,
+    connection: &mut PgConnection,
     snapshot: &spyder::models::PageSnapshot,
 ) -> Result<DiscoveryEnqueueOutcome> {
     let blacklist_domains = list_domain_blacklist_rules(connection)?
@@ -896,6 +1122,610 @@ fn remove_forum_keyword(label: &str, pattern: &str) -> Result<()> {
     Ok(())
 }
 
+fn import_sqlite(sqlite_path: &str) -> Result<()> {
+    anyhow::ensure!(
+        !sqlite_path.trim().is_empty(),
+        "sqlite path must not be empty"
+    );
+    anyhow::ensure!(
+        sqlite_path.starts_with("file:")
+            || sqlite_path == ":memory:"
+            || Path::new(sqlite_path).exists(),
+        "sqlite database does not exist: {sqlite_path}"
+    );
+
+    let mut source = SqliteConnection::establish(sqlite_path)
+        .with_context(|| format!("error opening sqlite database {sqlite_path}"))?;
+    let mut target = establish_connection()?;
+    ensure_postgres_import_target_is_empty(&mut target)?;
+
+    let source_tables = load_sqlite_table_names(&mut source)?;
+    ensure_sqlite_source_looks_like_spyder_database(&source_tables)?;
+    print_status(format!("Importing SQLite data from {sqlite_path}"));
+
+    import_table_if_present(
+        "work_unit",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::work_unit::dsl as work_unit_dsl;
+
+            work_unit_dsl::work_unit
+                .filter(work_unit_dsl::id.gt(last_id))
+                .order(work_unit_dsl::id.asc())
+                .limit(limit)
+                .select(WorkUnit::as_select())
+                .load::<WorkUnit>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedWorkUnit {
+            id: row.id,
+            url: row.url,
+            status: row.status,
+            retry_count: row.retry_count,
+            next_attempt_at: row.next_attempt_at,
+            last_attempt_at: row.last_attempt_at,
+            last_error: row.last_error,
+            created_at: row.created_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::work_unit::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "page",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::page::dsl as page_dsl;
+
+            page_dsl::page
+                .filter(page_dsl::id.gt(last_id))
+                .order(page_dsl::id.asc())
+                .limit(limit)
+                .select(Page::as_select())
+                .load::<Page>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedPage {
+            id: row.id,
+            title: row.title,
+            url: row.url,
+            links: row.links,
+            emails: row.emails,
+            coins: row.coins,
+            language: row.language,
+            last_scanned_at: row.last_scanned_at,
+            created_at: row.created_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::page::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "page_scan",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::page_scan::dsl as page_scan_dsl;
+
+            page_scan_dsl::page_scan
+                .filter(page_scan_dsl::id.gt(last_id))
+                .order(page_scan_dsl::id.asc())
+                .limit(limit)
+                .select(PageScan::as_select())
+                .load::<PageScan>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedPageScan {
+            id: row.id,
+            page_id: row.page_id,
+            title: row.title,
+            language: row.language,
+            scanned_at: row.scanned_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::page_scan::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "page_scan_link",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::page_scan_link::dsl as page_scan_link_dsl;
+
+            page_scan_link_dsl::page_scan_link
+                .filter(page_scan_link_dsl::id.gt(last_id))
+                .order(page_scan_link_dsl::id.asc())
+                .limit(limit)
+                .select(PageScanLink::as_select())
+                .load::<PageScanLink>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedPageScanLink {
+            id: row.id,
+            scan_id: row.scan_id,
+            target_url: row.target_url,
+            target_host: row.target_host,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::page_scan_link::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "page_scan_email",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::page_scan_email::dsl as page_scan_email_dsl;
+
+            page_scan_email_dsl::page_scan_email
+                .filter(page_scan_email_dsl::id.gt(last_id))
+                .order(page_scan_email_dsl::id.asc())
+                .limit(limit)
+                .select(PageScanEmail::as_select())
+                .load::<PageScanEmail>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedPageScanEmail {
+            id: row.id,
+            scan_id: row.scan_id,
+            email: row.email,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::page_scan_email::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "page_scan_crypto",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::page_scan_crypto::dsl as page_scan_crypto_dsl;
+
+            page_scan_crypto_dsl::page_scan_crypto
+                .filter(page_scan_crypto_dsl::id.gt(last_id))
+                .order(page_scan_crypto_dsl::id.asc())
+                .limit(limit)
+                .select(PageScanCrypto::as_select())
+                .load::<PageScanCrypto>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedPageScanCrypto {
+            id: row.id,
+            scan_id: row.scan_id,
+            asset_type: row.asset_type,
+            reference: row.reference,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::page_scan_crypto::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "page_link",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::page_link::dsl as page_link_dsl;
+
+            page_link_dsl::page_link
+                .filter(page_link_dsl::id.gt(last_id))
+                .order(page_link_dsl::id.asc())
+                .limit(limit)
+                .select(PageLink::as_select())
+                .load::<PageLink>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedPageLink {
+            id: row.id,
+            source_page_id: row.source_page_id,
+            target_url: row.target_url,
+            target_host: row.target_host,
+            created_at: row.created_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::page_link::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "page_email",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::page_email::dsl as page_email_dsl;
+
+            page_email_dsl::page_email
+                .filter(page_email_dsl::id.gt(last_id))
+                .order(page_email_dsl::id.asc())
+                .limit(limit)
+                .select(PageEmail::as_select())
+                .load::<PageEmail>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedPageEmail {
+            id: row.id,
+            page_id: row.page_id,
+            email: row.email,
+            created_at: row.created_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::page_email::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "page_crypto",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::page_crypto::dsl as page_crypto_dsl;
+
+            page_crypto_dsl::page_crypto
+                .filter(page_crypto_dsl::id.gt(last_id))
+                .order(page_crypto_dsl::id.asc())
+                .limit(limit)
+                .select(PageCrypto::as_select())
+                .load::<PageCrypto>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedPageCrypto {
+            id: row.id,
+            page_id: row.page_id,
+            asset_type: row.asset_type,
+            reference: row.reference,
+            created_at: row.created_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::page_crypto::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "page_classification",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::page_classification::dsl as page_classification_dsl;
+
+            page_classification_dsl::page_classification
+                .filter(page_classification_dsl::id.gt(last_id))
+                .order(page_classification_dsl::id.asc())
+                .limit(limit)
+                .select(PageClassificationRecord::as_select())
+                .load::<PageClassificationRecord>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedPageClassification {
+            id: row.id,
+            page_id: row.page_id,
+            host: row.host,
+            category: row.category,
+            confidence: row.confidence,
+            score: row.score,
+            evidence: row.evidence,
+            last_classified_at: row.last_classified_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::page_classification::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "site_profile",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::site_profile::dsl as site_profile_dsl;
+
+            site_profile_dsl::site_profile
+                .filter(site_profile_dsl::id.gt(last_id))
+                .order(site_profile_dsl::id.asc())
+                .limit(limit)
+                .select(SiteProfileRecord::as_select())
+                .load::<SiteProfileRecord>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedSiteProfile {
+            id: row.id,
+            host: row.host,
+            category: row.category,
+            confidence: row.confidence,
+            score: row.score,
+            page_count: row.page_count,
+            evidence: row.evidence,
+            source_page_id: row.source_page_id,
+            last_classified_at: row.last_classified_at,
+            created_at: row.created_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::site_profile::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "domain_blacklist",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::domain_blacklist::dsl as domain_blacklist_dsl;
+
+            domain_blacklist_dsl::domain_blacklist
+                .filter(domain_blacklist_dsl::id.gt(last_id))
+                .order(domain_blacklist_dsl::id.asc())
+                .limit(limit)
+                .select(DomainBlacklistRule::as_select())
+                .load::<DomainBlacklistRule>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedDomainBlacklistRule {
+            id: row.id,
+            domain: row.domain,
+            created_at: row.created_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::domain_blacklist::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "host_ssh_observation",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::host_ssh_observation::dsl as host_ssh_observation_dsl;
+
+            host_ssh_observation_dsl::host_ssh_observation
+                .filter(host_ssh_observation_dsl::id.gt(last_id))
+                .order(host_ssh_observation_dsl::id.asc())
+                .limit(limit)
+                .select(HostSshObservationRecord::as_select())
+                .load::<HostSshObservationRecord>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedHostSshObservation {
+            id: row.id,
+            host: row.host,
+            port: row.port,
+            status: row.status,
+            host_key_algorithm: row.host_key_algorithm,
+            host_key: row.host_key,
+            host_key_fingerprint: row.host_key_fingerprint,
+            server_banner: row.server_banner,
+            last_error: row.last_error,
+            last_attempt_at: row.last_attempt_at,
+            last_success_at: row.last_success_at,
+            created_at: row.created_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::host_ssh_observation::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "forum_keyword_rule",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::forum_keyword_rule::dsl as forum_keyword_rule_dsl;
+
+            forum_keyword_rule_dsl::forum_keyword_rule
+                .filter(forum_keyword_rule_dsl::id.gt(last_id))
+                .order(forum_keyword_rule_dsl::id.asc())
+                .limit(limit)
+                .select(ForumKeywordRule::as_select())
+                .load::<ForumKeywordRule>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedForumKeywordRule {
+            id: row.id,
+            label: row.label,
+            pattern: row.pattern,
+            created_at: row.created_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::forum_keyword_rule::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+    import_table_if_present(
+        "page_keyword_tag",
+        &source_tables,
+        &mut source,
+        &mut target,
+        |conn, last_id, limit| {
+            use spyder::schema::page_keyword_tag::dsl as page_keyword_tag_dsl;
+
+            page_keyword_tag_dsl::page_keyword_tag
+                .filter(page_keyword_tag_dsl::id.gt(last_id))
+                .order(page_keyword_tag_dsl::id.asc())
+                .limit(limit)
+                .select(PageKeywordTag::as_select())
+                .load::<PageKeywordTag>(conn)
+                .map_err(Into::into)
+        },
+        |row| ImportedPageKeywordTag {
+            id: row.id,
+            page_id: row.page_id,
+            tag: row.tag,
+            created_at: row.created_at,
+        },
+        |conn, batch| {
+            diesel::insert_into(spyder::schema::page_keyword_tag::table)
+                .values(batch)
+                .execute(conn)?;
+            Ok(())
+        },
+    )?;
+
+    println!("SQLite import completed successfully");
+    Ok(())
+}
+
+fn load_sqlite_table_names(conn: &mut SqliteConnection) -> Result<HashSet<String>> {
+    Ok(diesel::sql_query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    )
+    .load::<TableNameRow>(conn)?
+    .into_iter()
+    .map(|row| row.name)
+    .collect())
+}
+
+fn ensure_sqlite_source_looks_like_spyder_database(source_tables: &HashSet<String>) -> Result<()> {
+    anyhow::ensure!(
+        source_tables.contains("work_unit") || source_tables.contains("page"),
+        "source sqlite database does not look like a spyder database"
+    );
+    Ok(())
+}
+
+fn ensure_postgres_import_target_is_empty(conn: &mut PgConnection) -> Result<()> {
+    let table_names = [
+        "work_unit",
+        "page",
+        "page_scan",
+        "page_scan_link",
+        "page_scan_email",
+        "page_scan_crypto",
+        "page_link",
+        "page_email",
+        "page_crypto",
+        "page_classification",
+        "site_profile",
+        "domain_blacklist",
+        "host_ssh_observation",
+        "forum_keyword_rule",
+        "page_keyword_tag",
+    ];
+    let existing_rows = table_names
+        .iter()
+        .map(|table_name| postgres_table_row_count(conn, table_name))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .sum::<i64>();
+    anyhow::ensure!(
+        existing_rows == 0,
+        "target PostgreSQL database is not empty; import-sqlite expects a fresh database"
+    );
+    Ok(())
+}
+
+fn postgres_table_row_count(conn: &mut PgConnection, table_name: &str) -> Result<i64> {
+    Ok(
+        diesel::sql_query(format!("SELECT COUNT(*) AS value FROM {table_name}"))
+            .get_result::<BigIntValueRow>(conn)?
+            .value,
+    )
+}
+
+fn reset_postgres_identity_sequence(conn: &mut PgConnection, table_name: &str) -> Result<()> {
+    let next_id = diesel::sql_query(format!(
+        "SELECT COALESCE(MAX(id), 0) + 1 AS value FROM {table_name}"
+    ))
+    .get_result::<IntValueRow>(conn)?
+    .value;
+    conn.batch_execute(&format!(
+        "ALTER TABLE {table_name} ALTER COLUMN id RESTART WITH {next_id}"
+    ))?;
+    Ok(())
+}
+
+fn import_table_if_present<SourceRow, TargetRow, LoadBatch, MapRow, InsertBatch>(
+    table_name: &str,
+    source_tables: &HashSet<String>,
+    source: &mut SqliteConnection,
+    target: &mut PgConnection,
+    load_batch: LoadBatch,
+    map_row: MapRow,
+    insert_batch: InsertBatch,
+) -> Result<usize>
+where
+    SourceRow: HasId,
+    LoadBatch: Fn(&mut SqliteConnection, i32, i64) -> Result<Vec<SourceRow>>,
+    MapRow: Fn(SourceRow) -> TargetRow,
+    InsertBatch: Fn(&mut PgConnection, &[TargetRow]) -> Result<()>,
+{
+    if !source_tables.contains(table_name) {
+        print_status(format!("Skipping missing source table {table_name}"));
+        return Ok(0);
+    }
+
+    print_status(format!("Importing {table_name}"));
+    let mut last_id = 0;
+    let mut total = 0usize;
+    let mut batches = 0usize;
+
+    loop {
+        let rows = load_batch(source, last_id, IMPORT_BATCH_SIZE)?;
+        if rows.is_empty() {
+            break;
+        }
+
+        last_id = rows.last().map(HasId::id).unwrap_or(last_id);
+        let mapped = rows.into_iter().map(&map_row).collect::<Vec<_>>();
+        insert_batch(target, &mapped)?;
+        total += mapped.len();
+        batches += 1;
+        if batches % 20 == 0 {
+            print_status(format!("Imported {total} rows into {table_name}"));
+        }
+    }
+
+    reset_postgres_identity_sequence(target, table_name)?;
+    println!("Imported {total} rows into {table_name}");
+    Ok(total)
+}
+
 fn usage(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
@@ -906,6 +1736,9 @@ fn usage(program: &str) {
     eprintln!("    forum-keywords list");
     eprintln!("    forum-keywords add <label> <pattern>");
     eprintln!("    forum-keywords remove <label> <pattern>");
+    eprintln!(
+        "    import-sqlite <sqlite_path> import an existing SQLite database into PostgreSQL."
+    );
     eprintln!(
         "    ssh-scan [--recent-hours N] [--stale-hours N] [--limit N] scan recent hosts for SSH host keys."
     );
@@ -1080,6 +1913,15 @@ fn main() {
                 usage(&program);
                 Err(anyhow::anyhow!(
                     "invalid or missing forum-keywords subcommand"
+                ))
+            }
+        },
+        Some("import-sqlite") => match args.next() {
+            Some(sqlite_path) => import_sqlite(&sqlite_path),
+            None => {
+                usage(&program);
+                Err(anyhow::anyhow!(
+                    "import-sqlite requires a path to the source sqlite database"
                 ))
             }
         },

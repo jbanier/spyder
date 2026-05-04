@@ -1,0 +1,15 @@
+DROP TABLE page_keyword_tag;
+DROP TABLE forum_keyword_rule;
+DROP TABLE host_ssh_observation;
+DROP TABLE domain_blacklist;
+DROP TABLE site_profile;
+DROP TABLE page_classification;
+DROP TABLE page_crypto;
+DROP TABLE page_email;
+DROP TABLE page_link;
+DROP TABLE page_scan_crypto;
+DROP TABLE page_scan_email;
+DROP TABLE page_scan_link;
+DROP TABLE page_scan;
+DROP TABLE page;
+DROP TABLE work_unit;

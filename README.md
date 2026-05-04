@@ -5,7 +5,7 @@ Spyder is a Rust crawler plus Rocket dashboard for collecting pages, links, and 
 It ships with two binaries:
 
 - `spyder`: CLI crawler and queue worker
-- `frontend`: web interface over the same SQLite database
+- `frontend`: web interface over the same PostgreSQL database
 
 ## What It Stores
 
@@ -35,16 +35,22 @@ That makes it possible to answer questions like:
 ## Requirements
 
 - Rust toolchain
-- SQLite
-- `diesel_cli` with SQLite support
+- PostgreSQL
+- `libpq` development headers
+- `diesel_cli` with PostgreSQL support
+
+On Ubuntu, install PostgreSQL and the client development package:
+
+```bash
+sudo apt update
+sudo apt install postgresql libpq-dev
+```
 
 Install Diesel CLI if needed:
 
 ```bash
-cargo install diesel_cli --no-default-features --features sqlite
+cargo install diesel_cli --no-default-features --features postgres
 ```
-
-If SQLite linking is a problem on your machine, the bundled SQLite dependency is already enabled in [Cargo.toml](/Users/jbanier/Documents/work/code/spyder/Cargo.toml).
 
 ## First Start
 
@@ -53,26 +59,34 @@ If SQLite linking is a problem on your machine, the bundled SQLite dependency is
 Create a `.env` file in the project root:
 
 ```bash
-printf 'DATABASE_URL=spyder.sqlite\n' > .env
+printf 'DATABASE_URL=postgres://localhost/spyder\n' > .env
 ```
 
-### 2. Create the SQLite database
+### 2. Create the PostgreSQL database
+
+If your local Unix user does not already have a matching PostgreSQL role, create one first:
 
 ```bash
+sudo -u postgres createuser --superuser "$USER"
+```
+
+Create the database:
+
+```bash
+createdb spyder
 diesel setup
 diesel migration run
 ```
 
-This applies:
+The shipped migration tree in [migrations_postgres](/Users/jbanier/Documents/work/code/spyder/migrations_postgres) creates the full PostgreSQL schema used by the crawler and frontend.
 
-- the base schema
-- the domain blacklist migration for blocking discovered-link queueing by host
-- the enrichment migration for language, scan timestamps, links, emails, and crypto observations
-- the retry/backfill migration that adds retry scheduling and preserves legacy intel in normalized tables
-- the page scan history migration that stores point-in-time snapshots and per-scan diffs
-- the site classification migration that stores host-level categories and supporting evidence
+If you already have an older SQLite database, back it up first, create a fresh PostgreSQL database with the migrations above, then import it with:
 
-If you already have an older database, `diesel migration run` upgrades it in place. Back it up first if the data matters.
+```bash
+cargo run --bin spyder -- import-sqlite /path/to/spyder.sqlite
+```
+
+The importer expects the target PostgreSQL database to be empty. It copies the current SQLite tables into the new PostgreSQL schema and preserves the existing integer ids so relationships remain intact.
 
 ### 3. Build the project
 
@@ -268,16 +282,17 @@ Source and target hosts also show category badges when the host has been classif
 
 ## Typical Local Session
 
-1. Create `.env` with `DATABASE_URL=spyder.sqlite`.
+1. Create `.env` with `DATABASE_URL=postgres://localhost/spyder`.
 2. Run `diesel setup`.
 3. Run `diesel migration run`.
-4. Seed one or more URLs with `cargo run --bin spyder -- add <url>`.
-5. Process pending work with `cargo run --bin spyder -- work`.
-6. Start the frontend with `cargo run --bin frontend`.
-7. Manage any blocked domains with `cargo run --bin spyder -- blacklist add <domain>`.
-8. Open `/pages`, `/blacklist`, `/relationships`, `/entities/emails`, and `/entities/crypto`.
-9. Open `/sites` to review the current host classifications.
-10. Open a page detail and use its history links to inspect stored scan diffs.
+4. If you are migrating an existing SQLite dataset, run `cargo run --bin spyder -- import-sqlite /path/to/spyder.sqlite`.
+5. Seed one or more URLs with `cargo run --bin spyder -- add <url>`.
+6. Process pending work with `cargo run --bin spyder -- work`.
+7. Start the frontend with `cargo run --bin frontend`.
+8. Manage any blocked domains with `cargo run --bin spyder -- blacklist add <domain>`.
+9. Open `/pages`, `/blacklist`, `/relationships`, `/entities/emails`, and `/entities/crypto`.
+10. Open `/sites` to review the current host classifications.
+11. Open a page detail and use its history links to inspect stored scan diffs.
 
 ## Useful Commands
 
@@ -285,11 +300,14 @@ Source and target hosts also show category badges when the host has been classif
 # build everything
 cargo build
 
-# run tests
-cargo test
+# type-check everything
+cargo check
 
 # re-run all migrations during development
 diesel migration redo
+
+# import an existing SQLite database into a fresh PostgreSQL database
+cargo run --bin spyder -- import-sqlite /path/to/spyder.sqlite
 
 # regenerate Diesel schema after schema changes
 diesel print-schema > src/schema.rs
@@ -310,9 +328,9 @@ diesel print-schema > src/schema.rs
 
 Set it in your shell or create the `.env` file shown above.
 
-### `error connecting to spyder.sqlite`
+### `error connecting to postgres://localhost/spyder`
 
-Run `diesel setup` and `diesel migration run` from the project root.
+Check that PostgreSQL is running, the `spyder` database exists, and your local PostgreSQL role matches the user in `DATABASE_URL`.
 
 ### `no such table`
 
@@ -321,6 +339,10 @@ Your database schema is missing or outdated. Run:
 ```bash
 diesel migration run
 ```
+
+### `target PostgreSQL database is not empty`
+
+The SQLite importer only runs against a fresh PostgreSQL database. Create a new database, run the PostgreSQL migrations, and retry the import there.
 
 ### `.onion` requests fail
 

@@ -4,7 +4,6 @@ use rocket::serde::Serialize;
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::page)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Page {
     pub id: i32,
     pub title: String,
@@ -31,7 +30,6 @@ pub struct NewPage {
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::domain_blacklist)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct DomainBlacklistRule {
     pub id: i32,
     pub domain: String,
@@ -47,7 +45,6 @@ pub struct NewDomainBlacklist<'a> {
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::forum_keyword_rule)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct ForumKeywordRule {
     pub id: i32,
     pub label: String,
@@ -65,7 +62,6 @@ pub struct NewForumKeywordRule<'a> {
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::host_ssh_observation)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct HostSshObservationRecord {
     pub id: i32,
     pub host: String,
@@ -98,7 +94,6 @@ pub struct NewHostSshObservation {
 
 #[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_classification)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PageClassificationRecord {
     pub id: i32,
     pub page_id: i32,
@@ -124,7 +119,6 @@ pub struct NewPageClassification {
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::site_profile)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct SiteProfileRecord {
     pub id: i32,
     pub host: String,
@@ -153,7 +147,6 @@ pub struct NewSiteProfile {
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::page_scan)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PageScan {
     pub id: i32,
     pub page_id: i32,
@@ -172,7 +165,6 @@ pub struct NewPageScan {
 
 #[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_link)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PageLink {
     pub id: i32,
     pub source_page_id: i32,
@@ -191,7 +183,6 @@ pub struct NewPageLink {
 
 #[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_scan_link)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PageScanLink {
     pub id: i32,
     pub scan_id: i32,
@@ -209,7 +200,6 @@ pub struct NewPageScanLink {
 
 #[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_email)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PageEmail {
     pub id: i32,
     pub page_id: i32,
@@ -226,7 +216,6 @@ pub struct NewPageEmail {
 
 #[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_keyword_tag)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PageKeywordTag {
     pub id: i32,
     pub page_id: i32,
@@ -243,7 +232,6 @@ pub struct NewPageKeywordTag {
 
 #[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_scan_email)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PageScanEmail {
     pub id: i32,
     pub scan_id: i32,
@@ -259,7 +247,6 @@ pub struct NewPageScanEmail {
 
 #[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_crypto)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PageCrypto {
     pub id: i32,
     pub page_id: i32,
@@ -278,7 +265,6 @@ pub struct NewPageCrypto {
 
 #[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_scan_crypto)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PageScanCrypto {
     pub id: i32,
     pub scan_id: i32,
@@ -297,7 +283,6 @@ pub struct NewPageScanCrypto {
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::work_unit)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct WorkUnit {
     pub id: i32,
     pub url: String,
