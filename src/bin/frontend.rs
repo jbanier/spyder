@@ -1,6 +1,9 @@
+use diesel::pg::PgConnection;
 use rocket::form::FromForm;
 use rocket::fs::{relative, FileServer};
 use rocket::http::Status;
+use rocket::request::Request;
+use rocket::response::{self, Responder};
 use rocket::serde::{json::Json, Serialize};
 use rocket::{get, launch, routes};
 use rocket_dyn_templates::{context, Template};
@@ -16,6 +19,59 @@ use spyder::{
 };
 use url::form_urlencoded;
 use url::Url;
+
+type HtmlResult = Result<Template, FrontendError>;
+
+#[derive(Debug)]
+struct FrontendError {
+    status: Status,
+    title: &'static str,
+    detail: String,
+}
+
+impl FrontendError {
+    fn internal(context: &'static str, error: anyhow::Error) -> Self {
+        let detail = format!("{context}: {error:#}");
+        eprintln!("FRONTEND ERROR: {detail}");
+        Self {
+            status: Status::InternalServerError,
+            title: "Internal Server Error",
+            detail,
+        }
+    }
+}
+
+impl<'r> Responder<'r, 'static> for FrontendError {
+    fn respond_to(self, request: &'r Request<'_>) -> response::Result<'static> {
+        let mut response = Template::render(
+            "error",
+            context! {
+                title: self.title,
+                description: "The frontend hit an internal error.",
+                status_code: self.status.code,
+                reason: self.status.reason_lossy(),
+                detail: self.detail,
+            },
+        )
+        .respond_to(request)?;
+        response.set_status(self.status);
+        Ok(response)
+    }
+}
+
+trait FrontendContext<T> {
+    fn frontend_context(self, context: &'static str) -> Result<T, FrontendError>;
+}
+
+impl<T> FrontendContext<T> for anyhow::Result<T> {
+    fn frontend_context(self, context: &'static str) -> Result<T, FrontendError> {
+        self.map_err(|error| FrontendError::internal(context, error))
+    }
+}
+
+fn open_connection() -> Result<PgConnection, FrontendError> {
+    establish_connection().frontend_context("opening database connection")
+}
 
 #[derive(Serialize)]
 #[serde(crate = "rocket::serde")]
@@ -86,18 +142,14 @@ struct SshQuery {
     offset: Option<i64>,
 }
 
-fn render_pages(
-    title: &str,
-    description: &str,
-    list_query: Option<ListQuery>,
-) -> Result<Template, Status> {
+fn render_pages(title: &str, description: &str, list_query: Option<ListQuery>) -> HtmlResult {
     let list_query = list_query.unwrap_or(ListQuery {
         limit: None,
         offset: None,
     });
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let mut connection = open_connection()?;
     let pages = list_page_summaries(&mut connection, list_query.limit, list_query.offset)
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading page summaries")?;
     let has_pages = !pages.items.is_empty();
     let pagination = pagination_context("/pages", &pages, &[]);
     let has_pagination = pagination.has_previous_page || pagination.has_next_page;
@@ -117,20 +169,20 @@ fn render_pages(
 }
 
 #[get("/")]
-fn index() -> Result<Template, Status> {
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
-    let stats = collect_stats(&mut connection).map_err(|_| Status::InternalServerError)?;
+fn index() -> HtmlResult {
+    let mut connection = open_connection()?;
+    let stats = collect_stats(&mut connection).frontend_context("loading dashboard stats")?;
 
     let pages = list_page_summaries(&mut connection, Some(8), Some(0))
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading dashboard pages")?;
     let email_entities = list_email_entities(&mut connection, Some(8), Some(0))
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading dashboard email entities")?;
     let crypto_entities = list_crypto_entities(&mut connection, Some(8), Some(0))
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading dashboard crypto entities")?;
     let relationships = list_site_relationships(&mut connection, Some(8), Some(0))
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading dashboard relationships")?;
     let ssh_host_keys = list_ssh_host_keys(&mut connection, Some(8), Some(0))
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading dashboard ssh host keys")?;
 
     Ok(Template::render(
         "dashboard",
@@ -153,7 +205,7 @@ fn index() -> Result<Template, Status> {
 }
 
 #[get("/data?<list_query..>")]
-fn data(list_query: Option<ListQuery>) -> Result<Template, Status> {
+fn data(list_query: Option<ListQuery>) -> HtmlResult {
     render_pages(
         "Scanned Pages",
         "Browse indexed pages with scan time, language, and extracted-entity counts.",
@@ -162,7 +214,7 @@ fn data(list_query: Option<ListQuery>) -> Result<Template, Status> {
 }
 
 #[get("/pages?<list_query..>")]
-fn pages(list_query: Option<ListQuery>) -> Result<Template, Status> {
+fn pages(list_query: Option<ListQuery>) -> HtmlResult {
     render_pages(
         "Scanned Pages",
         "Browse indexed pages with scan time, language, and extracted-entity counts.",
@@ -171,12 +223,15 @@ fn pages(list_query: Option<ListQuery>) -> Result<Template, Status> {
 }
 
 #[get("/pages/<page_id>")]
-fn page_detail(page_id: i32) -> Result<Template, Status> {
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
-    let page =
-        get_page_detail(&mut connection, page_id).map_err(|_| Status::InternalServerError)?;
+fn page_detail(page_id: i32) -> HtmlResult {
+    let mut connection = open_connection()?;
+    let page = get_page_detail(&mut connection, page_id).frontend_context("loading page detail")?;
     let Some(page) = page else {
-        return Err(Status::NotFound);
+        return Err(FrontendError {
+            status: Status::NotFound,
+            title: "Not Found",
+            detail: format!("page {page_id} was not found"),
+        });
     };
     let has_outgoing_links = !page.outgoing_links.is_empty();
     let has_incoming_links = !page.incoming_links.is_empty();
@@ -187,7 +242,7 @@ fn page_detail(page_id: i32) -> Result<Template, Status> {
     let email_count = page.emails.len();
     let crypto_ref_count = page.crypto_refs.len();
     let scan_history = list_page_scan_summaries(&mut connection, page_id)
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading page scan history")?;
     let recent_scans = scan_history.iter().take(5).cloned().collect::<Vec<_>>();
     let scan_count = scan_history.len();
     let has_scan_history = !recent_scans.is_empty();
@@ -224,15 +279,19 @@ fn page_detail(page_id: i32) -> Result<Template, Status> {
 }
 
 #[get("/pages/<page_id>/history")]
-fn page_history(page_id: i32) -> Result<Template, Status> {
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
-    let page =
-        get_page_detail(&mut connection, page_id).map_err(|_| Status::InternalServerError)?;
+fn page_history(page_id: i32) -> HtmlResult {
+    let mut connection = open_connection()?;
+    let page = get_page_detail(&mut connection, page_id)
+        .frontend_context("loading page history detail")?;
     let Some(page) = page else {
-        return Err(Status::NotFound);
+        return Err(FrontendError {
+            status: Status::NotFound,
+            title: "Not Found",
+            detail: format!("page {page_id} was not found"),
+        });
     };
     let scans = list_page_scan_summaries(&mut connection, page_id)
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading page history scans")?;
     let latest_scan_url = scans.first().map(|scan| scan.detail_url.clone());
     let has_scans = !scans.is_empty();
     let scan_count = scans.len();
@@ -252,12 +311,16 @@ fn page_history(page_id: i32) -> Result<Template, Status> {
 }
 
 #[get("/pages/<page_id>/history/<scan_id>")]
-fn page_scan_detail(page_id: i32, scan_id: i32) -> Result<Template, Status> {
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+fn page_scan_detail(page_id: i32, scan_id: i32) -> HtmlResult {
+    let mut connection = open_connection()?;
     let detail = get_page_scan_detail(&mut connection, page_id, scan_id)
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading page scan detail")?;
     let Some(detail) = detail else {
-        return Err(Status::NotFound);
+        return Err(FrontendError {
+            status: Status::NotFound,
+            title: "Not Found",
+            detail: format!("page scan {scan_id} for page {page_id} was not found"),
+        });
     };
     let has_previous_scan = detail.diff.has_previous_scan;
     let has_added_links = !detail.diff.added_links.is_empty();
@@ -295,16 +358,16 @@ fn page_scan_detail(page_id: i32, scan_id: i32) -> Result<Template, Status> {
 }
 
 #[get("/work?<list_query..>")]
-fn list_work(list_query: Option<ListQuery>) -> Result<Template, Status> {
+fn list_work(list_query: Option<ListQuery>) -> HtmlResult {
     let list_query = list_query.unwrap_or(ListQuery {
         limit: None,
         offset: None,
     });
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let mut connection = open_connection()?;
     let workunits = list_work_units(&mut connection, list_query.limit, list_query.offset)
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading work queue")?;
     let blacklist_domains = list_domain_blacklist_rules(&mut connection)
-        .map_err(|_| Status::InternalServerError)?
+        .frontend_context("loading blacklist rules")?
         .into_iter()
         .map(|rule| rule.domain)
         .collect::<Vec<_>>();
@@ -332,10 +395,10 @@ fn list_work(list_query: Option<ListQuery>) -> Result<Template, Status> {
 }
 
 #[get("/blacklist")]
-fn blacklist() -> Result<Template, Status> {
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+fn blacklist() -> HtmlResult {
+    let mut connection = open_connection()?;
     let entries = list_domain_blacklist_summaries(&mut connection)
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading blacklist summaries")?;
     let has_entries = !entries.is_empty();
     let entry_count = entries.len();
 
@@ -352,15 +415,15 @@ fn blacklist() -> Result<Template, Status> {
 }
 
 #[get("/top")]
-fn top() -> Result<Template, Status> {
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+fn top() -> HtmlResult {
+    let mut connection = open_connection()?;
     let sections = vec![
         TopSiteSection {
             title: "Most Email Refs".to_string(),
             description: "Hosts with the most current email references.".to_string(),
             count_label: "emails".to_string(),
             items: list_top_sites_by_email_refs(&mut connection, Some(25))
-                .map_err(|_| Status::InternalServerError)?,
+                .frontend_context("loading top sites section: most email refs")?,
             has_items: false,
         },
         TopSiteSection {
@@ -368,7 +431,7 @@ fn top() -> Result<Template, Status> {
             description: "Hosts with the most current crypto references.".to_string(),
             count_label: "crypto refs".to_string(),
             items: list_top_sites_by_crypto_refs(&mut connection, Some(25))
-                .map_err(|_| Status::InternalServerError)?,
+                .frontend_context("loading top sites section: most crypto refs")?,
             has_items: false,
         },
         TopSiteSection {
@@ -376,7 +439,7 @@ fn top() -> Result<Template, Status> {
             description: "Hosts linking out to the most destinations.".to_string(),
             count_label: "links".to_string(),
             items: list_top_sites_by_outgoing_links(&mut connection, Some(25))
-                .map_err(|_| Status::InternalServerError)?,
+                .frontend_context("loading top sites section: most outgoing links")?,
             has_items: false,
         },
         TopSiteSection {
@@ -384,7 +447,7 @@ fn top() -> Result<Template, Status> {
             description: "Hosts receiving the most inbound link observations.".to_string(),
             count_label: "inbound refs".to_string(),
             items: list_top_referenced_sites(&mut connection, Some(25))
-                .map_err(|_| Status::InternalServerError)?,
+                .frontend_context("loading top sites section: most referenced sites")?,
             has_items: false,
         },
     ]
@@ -408,14 +471,14 @@ fn top() -> Result<Template, Status> {
 }
 
 #[get("/sites?<list_query..>")]
-fn sites(list_query: Option<ListQuery>) -> Result<Template, Status> {
+fn sites(list_query: Option<ListQuery>) -> HtmlResult {
     let list_query = list_query.unwrap_or(ListQuery {
         limit: None,
         offset: None,
     });
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let mut connection = open_connection()?;
     let sites = list_site_profiles(&mut connection, list_query.limit, list_query.offset)
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading site profiles")?;
     let has_sites = !sites.items.is_empty();
     let pagination = pagination_context("/sites", &sites, &[]);
     let has_pagination = pagination.has_previous_page || pagination.has_next_page;
@@ -435,15 +498,15 @@ fn sites(list_query: Option<ListQuery>) -> Result<Template, Status> {
 }
 
 #[get("/relationships?<list_query..>")]
-fn relationships(list_query: Option<ListQuery>) -> Result<Template, Status> {
+fn relationships(list_query: Option<ListQuery>) -> HtmlResult {
     let list_query = list_query.unwrap_or(ListQuery {
         limit: None,
         offset: None,
     });
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let mut connection = open_connection()?;
     let relationships =
         list_site_relationships(&mut connection, list_query.limit, list_query.offset)
-            .map_err(|_| Status::InternalServerError)?;
+            .frontend_context("loading site relationships")?;
     let has_relationships = !relationships.items.is_empty();
     let pagination = pagination_context("/relationships", &relationships, &[]);
     let has_pagination = pagination.has_previous_page || pagination.has_next_page;
@@ -463,18 +526,18 @@ fn relationships(list_query: Option<ListQuery>) -> Result<Template, Status> {
 }
 
 #[get("/entities/emails?<query..>")]
-fn email_entities(query: Option<EmailQuery>) -> Result<Template, Status> {
+fn email_entities(query: Option<EmailQuery>) -> HtmlResult {
     let query = query.unwrap_or(EmailQuery {
         value: None,
         limit: None,
         offset: None,
     });
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let mut connection = open_connection()?;
     let entities = list_email_entities(&mut connection, query.limit, query.offset)
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading email entities")?;
     let selected = match query.value.clone() {
         Some(value) => get_email_entity_detail(&mut connection, &value)
-            .map_err(|_| Status::InternalServerError)?,
+            .frontend_context("loading email entity detail")?,
         None => None,
     };
     let has_entities = !entities.items.is_empty();
@@ -506,20 +569,20 @@ fn email_entities(query: Option<EmailQuery>) -> Result<Template, Status> {
 }
 
 #[get("/entities/crypto?<query..>")]
-fn crypto_entities(query: Option<CryptoQuery>) -> Result<Template, Status> {
+fn crypto_entities(query: Option<CryptoQuery>) -> HtmlResult {
     let query = query.unwrap_or(CryptoQuery {
         asset_type: None,
         reference: None,
         limit: None,
         offset: None,
     });
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let mut connection = open_connection()?;
     let entities = list_crypto_entities(&mut connection, query.limit, query.offset)
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading crypto entities")?;
     let selected = match (query.asset_type.clone(), query.reference.clone()) {
         (Some(asset_type), Some(reference)) => {
             get_crypto_entity_detail(&mut connection, &asset_type, &reference)
-                .map_err(|_| Status::InternalServerError)?
+                .frontend_context("loading crypto entity detail")?
         }
         _ => None,
     };
@@ -554,20 +617,20 @@ fn crypto_entities(query: Option<CryptoQuery>) -> Result<Template, Status> {
 }
 
 #[get("/entities/ssh?<query..>")]
-fn ssh_entities(query: Option<SshQuery>) -> Result<Template, Status> {
+fn ssh_entities(query: Option<SshQuery>) -> HtmlResult {
     let query = query.unwrap_or(SshQuery {
         algorithm: None,
         fingerprint: None,
         limit: None,
         offset: None,
     });
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let mut connection = open_connection()?;
     let entities = list_ssh_host_keys(&mut connection, query.limit, query.offset)
-        .map_err(|_| Status::InternalServerError)?;
+        .frontend_context("loading ssh host key entities")?;
     let selected = match (query.algorithm.clone(), query.fingerprint.clone()) {
         (Some(algorithm), Some(fingerprint)) => {
             get_ssh_host_key_detail(&mut connection, &algorithm, &fingerprint)
-                .map_err(|_| Status::InternalServerError)?
+                .frontend_context("loading ssh host key detail")?
         }
         _ => None,
     };
@@ -607,7 +670,7 @@ fn ssh_entities(query: Option<SshQuery>) -> Result<Template, Status> {
 }
 
 #[get("/search?<search..>")]
-fn search_page(search: Option<SearchQuery>) -> Result<Template, Status> {
+fn search_page(search: Option<SearchQuery>) -> HtmlResult {
     let search = search.unwrap_or(SearchQuery {
         query: None,
         limit: None,
@@ -615,12 +678,11 @@ fn search_page(search: Option<SearchQuery>) -> Result<Template, Status> {
     let query = search.query.unwrap_or_default();
     let limit = search.limit.unwrap_or(20).clamp(1, 50);
 
-    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let mut connection = open_connection()?;
     let results = if query.trim().is_empty() {
         Vec::new()
     } else {
-        search_pages(&mut connection, &query, Some(limit))
-            .map_err(|_| Status::InternalServerError)?
+        search_pages(&mut connection, &query, Some(limit)).frontend_context("searching pages")?
     };
     let has_query = !query.trim().is_empty();
     let has_results = !results.is_empty();

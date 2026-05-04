@@ -1,0 +1,19 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Error {{status_code}}</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <div class="table-cell-stack">
+            <h2>{{reason}}</h2>
+            <span class="muted">Developer-oriented error details</span>
+        </div>
+    </div>
+    <pre class="code-block">{{detail}}</pre>
+</section>
+{{/inline}}
+
+{{> base}}
