@@ -135,10 +135,11 @@ struct ListQuery {
     offset: Option<i64>,
 }
 
-#[derive(FromForm)]
+#[derive(FromForm, Clone)]
 struct SearchQuery {
     query: Option<String>,
     limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(FromForm, Clone)]
@@ -865,19 +866,29 @@ fn search_page(search: Option<SearchQuery>) -> HtmlResult {
     let search = search.unwrap_or(SearchQuery {
         query: None,
         limit: None,
+        offset: None,
     });
     let query = search.query.unwrap_or_default();
     let limit = search.limit.unwrap_or(20).clamp(1, 50);
+    let offset = search.offset.unwrap_or(0).max(0);
 
     let mut connection = open_connection()?;
     let results = if query.trim().is_empty() {
-        Vec::new()
+        PaginatedResult {
+            items: Vec::new(),
+            total_count: 0,
+            limit,
+            offset,
+        }
     } else {
-        search_pages(&mut connection, &query, Some(limit)).frontend_context("searching pages")?
+        search_pages(&mut connection, &query, Some(limit), Some(offset))
+            .frontend_context("searching pages")?
     };
     let has_query = !query.trim().is_empty();
-    let has_results = !results.is_empty();
-    let result_count = results.len();
+    let has_results = !results.items.is_empty();
+    let result_count = results.total_count;
+    let pagination = pagination_context("/search", &results, &[("query", query.trim())]);
+    let has_pagination = pagination.has_previous_page || pagination.has_next_page;
 
     Ok(Template::render(
         "search",
@@ -886,10 +897,12 @@ fn search_page(search: Option<SearchQuery>) -> HtmlResult {
             description: "Search titles, URLs, languages, emails, crypto references, and keyword-tagged sites.",
             query: query.trim(),
             limit: limit,
-            results: results,
+            results: results.items,
             has_query: has_query,
             has_results: has_results,
             result_count: result_count,
+            pagination: pagination,
+            has_pagination: has_pagination,
         },
     ))
 }
@@ -908,14 +921,15 @@ fn api_stats() -> Result<Json<ApiResponse<spyder::models::Stats>>, Status> {
 #[get("/api/search?<search..>")]
 fn api_search(
     search: Option<SearchQuery>,
-) -> Result<Json<ApiResponse<Vec<spyder::models::SearchResult>>>, Status> {
+) -> Result<Json<ApiResponse<PaginatedResult<spyder::models::SearchResult>>>, Status> {
     let search = search.unwrap_or(SearchQuery {
         query: None,
         limit: None,
+        offset: None,
     });
     let query = search.query.unwrap_or_default();
     let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
-    let results = search_pages(&mut connection, &query, search.limit)
+    let results = search_pages(&mut connection, &query, search.limit, search.offset)
         .map_err(|_| Status::InternalServerError)?;
 
     Ok(Json(ApiResponse {
@@ -1700,6 +1714,50 @@ mod tests {
         assert!(body.contains("Beta Forum"));
         assert!(body.contains("beta.onion"));
         assert!(body.contains("keyword:cisco"));
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn search_page_renders_pagination_controls() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client
+            .get("/search?query=onion&limit=1&offset=0")
+            .dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        let body = response.into_string().expect("response body");
+        assert!(body.contains("3 matches"));
+        assert!(body.contains("href=\"/search?limit=1&amp;offset=1&amp;query=onion\""));
+        assert!(!body.contains("href=\"/search?limit=1&amp;offset=-1&amp;query=onion\""));
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn pages_page_renders_pagination_controls() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client.get("/pages?limit=1&offset=1").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        let body = response.into_string().expect("response body");
+        assert!(body.contains("3 records"));
+        assert!(body.contains("href=\"/pages?limit=1&amp;offset=0\""));
+        assert!(body.contains("href=\"/pages?limit=1&amp;offset=2\""));
 
         fs::remove_file(&database_url).expect("remove test database");
     }

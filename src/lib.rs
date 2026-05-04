@@ -1616,15 +1616,22 @@ pub fn search_pages(
     conn: &mut PgConnection,
     query: &str,
     requested_limit: Option<i64>,
-) -> Result<Vec<SearchResult>> {
+    requested_offset: Option<i64>,
+) -> Result<PaginatedResult<SearchResult>> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return Ok(Vec::new());
+        let pagination = normalize_pagination(requested_limit, requested_offset, 10, 50);
+        return Ok(PaginatedResult {
+            items: Vec::new(),
+            total_count: 0,
+            limit: pagination.limit,
+            offset: pagination.offset,
+        });
     }
 
-    let limit = requested_limit.unwrap_or(10).clamp(1, 50);
+    let pagination = normalize_pagination(requested_limit, requested_offset, 10, 50);
     if let Some(keyword_query) = parse_keyword_search_query(trimmed) {
-        return search_sites_by_keyword_tag(conn, &keyword_query, limit);
+        return search_sites_by_keyword_tag(conn, &keyword_query, pagination);
     }
 
     let pattern = format!("%{}%", escape_like(trimmed));
@@ -1635,6 +1642,36 @@ pub fn search_pages(
     let email_match = sql_case_insensitive_match_expr("pe.email", "$4", conn);
     let crypto_match =
         sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", "$5", conn);
+    let count_sql = format!(
+        "
+        SELECT COUNT(*) AS count
+        FROM page p
+        WHERE {title_match}
+            OR {url_match}
+            OR {language_match}
+            OR EXISTS (
+                SELECT 1
+                FROM page_email pe
+                WHERE pe.page_id = p.id
+                    AND {email_match}
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM page_crypto pc
+                WHERE pc.page_id = p.id
+                    AND {crypto_match}
+            )
+        "
+    );
+    let total_count = sql_query(count_sql)
+        .bind::<Text, _>(&pattern)
+        .bind::<Text, _>(&pattern)
+        .bind::<Text, _>(&pattern)
+        .bind::<Text, _>(&pattern)
+        .bind::<Text, _>(&pattern)
+        .get_result::<CountRow>(conn)
+        .context("error counting search results")?
+        .count;
     let sql = format!(
         "
         SELECT
@@ -1661,7 +1698,7 @@ pub fn search_pages(
                     AND {crypto_match}
             )
         ORDER BY p.last_scanned_at DESC, p.id DESC
-        LIMIT $6
+        LIMIT $6 OFFSET $7
     "
     );
     let rows = sql_query(sql)
@@ -1670,7 +1707,8 @@ pub fn search_pages(
         .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
-        .bind::<BigInt, _>(limit)
+        .bind::<BigInt, _>(pagination.limit)
+        .bind::<BigInt, _>(pagination.offset)
         .load::<SearchResultRow>(conn)
         .context("error searching pages")?;
     let site_profiles = load_site_profile_badges_by_hosts(
@@ -1678,18 +1716,23 @@ pub fn search_pages(
         &rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>(),
     )?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| SearchResult {
-            page_id: row.page_id,
-            title: row.title,
-            url: row.url,
-            host: row.host.clone(),
-            language: row.language,
-            scraped_at: row.scraped_at,
-            site_category: site_profiles.get(&row.host).cloned(),
-        })
-        .collect())
+    Ok(PaginatedResult {
+        items: rows
+            .into_iter()
+            .map(|row| SearchResult {
+                page_id: row.page_id,
+                title: row.title,
+                url: row.url,
+                host: row.host.clone(),
+                language: row.language,
+                scraped_at: row.scraped_at,
+                site_category: site_profiles.get(&row.host).cloned(),
+            })
+            .collect(),
+        total_count,
+        limit: pagination.limit,
+        offset: pagination.offset,
+    })
 }
 
 fn parse_keyword_search_query(query: &str) -> Option<String> {
@@ -1710,11 +1753,30 @@ fn parse_keyword_search_query(query: &str) -> Option<String> {
 fn search_sites_by_keyword_tag(
     conn: &mut PgConnection,
     keyword_query: &str,
-    limit: i64,
-) -> Result<Vec<SearchResult>> {
+    pagination: PaginationInput,
+) -> Result<PaginatedResult<SearchResult>> {
     let tag_pattern = format!("%keyword:{}%", escape_like(keyword_query));
     let host_expr = sql_host_expr("p.url", conn);
     let tag_match = sql_case_insensitive_match_expr("pkt.tag", "$1", conn);
+    let count_sql = format!(
+        "
+        SELECT COUNT(*) AS count
+        FROM (
+            SELECT DISTINCT {host_expr} AS host
+            FROM page_keyword_tag pkt
+            JOIN page p ON p.id = pkt.page_id
+            JOIN site_profile sp ON sp.host = {host_expr}
+            WHERE sp.category = 'forum'
+                AND {host_expr} != ''
+                AND {tag_match}
+        ) AS matching_hosts
+        "
+    );
+    let total_count = sql_query(count_sql)
+        .bind::<Text, _>(&tag_pattern)
+        .get_result::<CountRow>(conn)
+        .context("error counting keyword-tagged site search results")?
+        .count;
     let sql = format!(
         "
         WITH matching_hosts AS (
@@ -1751,12 +1813,13 @@ fn search_sites_by_keyword_tag(
         FROM ranked_pages
         WHERE row_number = 1
         ORDER BY scraped_at DESC, host ASC
-        LIMIT $2
+        LIMIT $2 OFFSET $3
         "
     );
     let rows = sql_query(sql)
         .bind::<Text, _>(&tag_pattern)
-        .bind::<BigInt, _>(limit)
+        .bind::<BigInt, _>(pagination.limit)
+        .bind::<BigInt, _>(pagination.offset)
         .load::<SearchResultRow>(conn)
         .context("error searching sites by keyword tag")?;
     let site_profiles = load_site_profile_badges_by_hosts(
@@ -1764,18 +1827,23 @@ fn search_sites_by_keyword_tag(
         &rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>(),
     )?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| SearchResult {
-            page_id: row.page_id,
-            title: row.title,
-            url: row.url,
-            host: row.host.clone(),
-            language: row.language,
-            scraped_at: row.scraped_at,
-            site_category: site_profiles.get(&row.host).cloned(),
-        })
-        .collect())
+    Ok(PaginatedResult {
+        items: rows
+            .into_iter()
+            .map(|row| SearchResult {
+                page_id: row.page_id,
+                title: row.title,
+                url: row.url,
+                host: row.host.clone(),
+                language: row.language,
+                scraped_at: row.scraped_at,
+                site_category: site_profiles.get(&row.host).cloned(),
+            })
+            .collect(),
+        total_count,
+        limit: pagination.limit,
+        offset: pagination.offset,
+    })
 }
 
 pub fn list_email_entities(
@@ -4709,30 +4777,40 @@ mod tests {
             &mut conn,
             "0x2222222222222222222222222222222222222222",
             Some(5),
+            Some(0),
         )
         .expect("search pages");
-        assert_eq!(search_results.len(), 1);
-        assert_eq!(search_results[0].title, "Beta Forum");
+        assert_eq!(search_results.total_count, 1);
+        assert_eq!(search_results.items.len(), 1);
+        assert_eq!(search_results.items[0].title, "Beta Forum");
         assert_eq!(
-            search_results[0]
+            search_results.items[0]
                 .site_category
                 .as_ref()
                 .map(|badge| badge.category.as_str()),
             Some(CATEGORY_FORUM)
         );
 
-        let keyword_search_results =
-            search_pages(&mut conn, "keyword:acme", Some(5)).expect("keyword search pages");
-        assert_eq!(keyword_search_results.len(), 1);
-        assert_eq!(keyword_search_results[0].host, "beta.onion");
-        assert_eq!(keyword_search_results[0].title, "Beta Forum");
+        let keyword_search_results = search_pages(&mut conn, "keyword:acme", Some(5), Some(0))
+            .expect("keyword search pages");
+        assert_eq!(keyword_search_results.total_count, 1);
+        assert_eq!(keyword_search_results.items.len(), 1);
+        assert_eq!(keyword_search_results.items[0].host, "beta.onion");
+        assert_eq!(keyword_search_results.items[0].title, "Beta Forum");
         assert_eq!(
-            keyword_search_results[0]
+            keyword_search_results.items[0]
                 .site_category
                 .as_ref()
                 .map(|badge| badge.category.as_str()),
             Some(CATEGORY_FORUM)
         );
+
+        let paginated_search_results =
+            search_pages(&mut conn, "shared.test", Some(1), Some(1)).expect("paginated search");
+        assert_eq!(paginated_search_results.total_count, 2);
+        assert_eq!(paginated_search_results.limit, 1);
+        assert_eq!(paginated_search_results.offset, 1);
+        assert_eq!(paginated_search_results.items.len(), 1);
     }
 
     #[test]

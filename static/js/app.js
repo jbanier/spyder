@@ -21,13 +21,41 @@ function renderSiteCategoryBadge(siteCategory) {
     `;
 }
 
-function renderSearchResults(query, results) {
+function buildSearchPageUrl(query, limit, offset) {
+    const params = new URLSearchParams();
+    params.set("query", query);
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
+    return `/search?${params.toString()}`;
+}
+
+function renderSearchPagination(query, page) {
+    const hasPreviousPage = page.offset > 0;
+    const hasNextPage = page.offset + page.limit < page.total_count;
+    if (!hasPreviousPage && !hasNextPage) {
+        return "";
+    }
+
+    const previousOffset = Math.max(0, page.offset - page.limit);
+    const nextOffset = page.offset + page.limit;
+
+    return `
+        <section class="pagination-bar">
+            ${hasPreviousPage ? `<a class="btn btn-secondary" href="${escapeHtml(buildSearchPageUrl(query, page.limit, previousOffset))}">Previous</a>` : ""}
+            ${hasNextPage ? `<a class="btn btn-secondary" href="${escapeHtml(buildSearchPageUrl(query, page.limit, nextOffset))}">Next</a>` : ""}
+        </section>
+    `;
+}
+
+function renderSearchResults(query, page) {
+    const results = page.items ?? [];
     if (!results.length) {
         return `
             <section class="empty-state">
                 <h2>No results</h2>
-                <p>No indexed page matched <strong>${escapeHtml(query)}</strong>.</p>
+                <p>No indexed page or tagged site matched <strong>${escapeHtml(query)}</strong>.</p>
             </section>
+            ${renderSearchPagination(query, page)}
         `;
     }
 
@@ -52,12 +80,13 @@ function renderSearchResults(query, results) {
         <section class="card">
             <div class="section-heading">
                 <h2>Results</h2>
-                <span class="muted">${results.length} matches</span>
+                <span class="muted">${escapeHtml(page.total_count)} matches</span>
             </div>
             <div class="search-results-grid">
                 ${cards}
             </div>
         </section>
+        ${renderSearchPagination(query, page)}
     `;
 }
 
@@ -83,18 +112,18 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
 
-            const searchPath = `/search?query=${encodeURIComponent(query)}&limit=${limit}`;
+            const searchPath = buildSearchPageUrl(query, limit, 0);
             window.history.replaceState({}, "", searchPath);
             resultsContainer.innerHTML = `
                 <section class="empty-state">
                     <h2>Searching...</h2>
-                    <p>Looking for indexed pages that match <strong>${escapeHtml(query)}</strong>.</p>
+                    <p>Looking for indexed pages and tagged sites that match <strong>${escapeHtml(query)}</strong>.</p>
                 </section>
             `;
 
             try {
                 const response = await fetch(
-                    `/api/search?query=${encodeURIComponent(query)}&limit=${limit}`,
+                    `/api/search?query=${encodeURIComponent(query)}&limit=${limit}&offset=0`,
                 );
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}`);
@@ -103,11 +132,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 const payload = await response.json();
                 if (!payload.success) {
                     throw new Error("Search response was not successful");
-                }
-
-                if (!payload.data.length) {
-                    resultsContainer.innerHTML = renderSearchResults(query, []);
-                    return;
                 }
 
                 resultsContainer.innerHTML = renderSearchResults(query, payload.data);

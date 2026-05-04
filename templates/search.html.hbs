@@ -65,6 +65,16 @@
         <p>No indexed page or tagged site matched <strong>{{query}}</strong>.</p>
     </section>
     {{/if}}
+    {{#if has_pagination}}
+    <section class="pagination-bar">
+        {{#if pagination.has_previous_page}}
+        <a class="btn btn-secondary" href="{{pagination.previous_page_url}}">Previous</a>
+        {{/if}}
+        {{#if pagination.has_next_page}}
+        <a class="btn btn-secondary" href="{{pagination.next_page_url}}">Next</a>
+        {{/if}}
+    </section>
+    {{/if}}
 {{else}}
 <section class="empty-state">
     <h2>Search the dataset</h2>
