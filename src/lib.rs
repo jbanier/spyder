@@ -293,6 +293,13 @@ struct HostPageContext {
     last_scanned_at: String,
 }
 
+#[derive(Clone)]
+struct UrlEndpoint {
+    host: String,
+    scheme: String,
+    port: i32,
+}
+
 #[derive(Default)]
 struct ScanObservationSet {
     links: BTreeSet<(String, String)>,
@@ -1277,6 +1284,12 @@ pub fn get_page_detail(conn: &mut PgConnection, page_id: i32) -> Result<Option<P
             .cmp(&right.asset_type)
             .then_with(|| left.reference.cmp(&right.reference))
     });
+    let host_http_observation = match endpoint_from_url(&page.url) {
+        Some(endpoint) => {
+            get_host_http_observation_detail(conn, &endpoint.host, &endpoint.scheme, endpoint.port)?
+        }
+        None => None,
+    };
 
     Ok(Some(PageDetail {
         id: page.id,
@@ -1291,6 +1304,7 @@ pub fn get_page_detail(conn: &mut PgConnection, page_id: i32) -> Result<Option<P
         emails,
         crypto_refs,
         site_profile,
+        host_http_observation,
     }))
 }
 
@@ -1866,6 +1880,454 @@ pub fn list_recent_responding_hosts(
             last_scanned_at: row.last_scanned_at,
         })
         .collect())
+}
+
+fn normalize_observed_host(host_value: &str) -> String {
+    host_value.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+pub fn get_host_http_observation(
+    conn: &mut PgConnection,
+    host_value: &str,
+    scheme_value: &str,
+    port_value: i32,
+) -> Result<Option<HostHttpObservationRecord>> {
+    use crate::schema::host_http_observation::dsl as host_http_dsl;
+
+    let normalized_host = normalize_observed_host(host_value);
+    let normalized_scheme = scheme_value.trim().to_ascii_lowercase();
+    if normalized_host.is_empty() || normalized_scheme.is_empty() {
+        return Ok(None);
+    }
+
+    host_http_dsl::host_http_observation
+        .filter(host_http_dsl::host.eq(normalized_host))
+        .filter(host_http_dsl::scheme.eq(normalized_scheme))
+        .filter(host_http_dsl::port.eq(port_value))
+        .select(HostHttpObservationRecord::as_select())
+        .first::<HostHttpObservationRecord>(conn)
+        .optional()
+        .context("error loading host http observation")
+}
+
+pub fn save_host_http_observation(
+    conn: &mut PgConnection,
+    observation: &NewHostHttpObservation,
+) -> Result<()> {
+    use crate::schema::host_http_observation::dsl as host_http_dsl;
+
+    let normalized_host = normalize_observed_host(&observation.host);
+    let normalized_scheme = observation.scheme.trim().to_ascii_lowercase();
+    anyhow::ensure!(
+        !normalized_host.is_empty(),
+        "host http observation host must not be empty"
+    );
+    anyhow::ensure!(
+        !normalized_scheme.is_empty(),
+        "host http observation scheme must not be empty"
+    );
+
+    let existing =
+        get_host_http_observation(conn, &normalized_host, &normalized_scheme, observation.port)?;
+    let current_timestamp = current_timestamp_text(conn)?;
+    let next_is_success = observation.status == SSH_STATUS_SUCCESS;
+    let persisted = NewHostHttpObservation {
+        host: normalized_host,
+        scheme: normalized_scheme,
+        port: observation.port,
+        status: observation.status.clone(),
+        http_status_code: if next_is_success {
+            observation.http_status_code
+        } else {
+            observation
+                .http_status_code
+                .or(existing.as_ref().and_then(|row| row.http_status_code))
+        },
+        final_url: if next_is_success {
+            observation.final_url.clone()
+        } else {
+            observation
+                .final_url
+                .clone()
+                .or_else(|| existing.as_ref().and_then(|row| row.final_url.clone()))
+        },
+        server_header: if next_is_success {
+            observation.server_header.clone()
+        } else {
+            observation
+                .server_header
+                .clone()
+                .or_else(|| existing.as_ref().and_then(|row| row.server_header.clone()))
+        },
+        powered_by_header: if next_is_success {
+            observation.powered_by_header.clone()
+        } else {
+            observation.powered_by_header.clone().or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.powered_by_header.clone())
+            })
+        },
+        content_type_header: if next_is_success {
+            observation.content_type_header.clone()
+        } else {
+            observation.content_type_header.clone().or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.content_type_header.clone())
+            })
+        },
+        location_header: if next_is_success {
+            observation.location_header.clone()
+        } else {
+            observation.location_header.clone().or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.location_header.clone())
+            })
+        },
+        via_header: if next_is_success {
+            observation.via_header.clone()
+        } else {
+            observation
+                .via_header
+                .clone()
+                .or_else(|| existing.as_ref().and_then(|row| row.via_header.clone()))
+        },
+        alt_svc_header: if next_is_success {
+            observation.alt_svc_header.clone()
+        } else {
+            observation
+                .alt_svc_header
+                .clone()
+                .or_else(|| existing.as_ref().and_then(|row| row.alt_svc_header.clone()))
+        },
+        www_authenticate_header: if next_is_success {
+            observation.www_authenticate_header.clone()
+        } else {
+            observation.www_authenticate_header.clone().or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.www_authenticate_header.clone())
+            })
+        },
+        set_cookie_names: if next_is_success {
+            observation.set_cookie_names.clone()
+        } else {
+            observation.set_cookie_names.clone().or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.set_cookie_names.clone())
+            })
+        },
+        response_headers: if next_is_success {
+            observation.response_headers.clone()
+        } else {
+            observation.response_headers.clone().or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.response_headers.clone())
+            })
+        },
+        header_fingerprint: if next_is_success {
+            observation.header_fingerprint.clone()
+        } else {
+            observation.header_fingerprint.clone().or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.header_fingerprint.clone())
+            })
+        },
+        favicon_url: if next_is_success {
+            observation.favicon_url.clone()
+        } else {
+            observation
+                .favicon_url
+                .clone()
+                .or_else(|| existing.as_ref().and_then(|row| row.favicon_url.clone()))
+        },
+        favicon_hash: if next_is_success {
+            observation.favicon_hash.clone()
+        } else {
+            observation
+                .favicon_hash
+                .clone()
+                .or_else(|| existing.as_ref().and_then(|row| row.favicon_hash.clone()))
+        },
+        last_error: observation.last_error.clone(),
+        last_attempt_at: current_timestamp.clone(),
+        last_success_at: if next_is_success {
+            Some(current_timestamp.clone())
+        } else {
+            existing.and_then(|row| row.last_success_at)
+        },
+    };
+
+    diesel::insert_into(host_http_dsl::host_http_observation)
+        .values(&persisted)
+        .on_conflict((
+            host_http_dsl::host,
+            host_http_dsl::scheme,
+            host_http_dsl::port,
+        ))
+        .do_update()
+        .set((
+            host_http_dsl::status.eq(persisted.status.clone()),
+            host_http_dsl::http_status_code.eq(persisted.http_status_code),
+            host_http_dsl::final_url.eq(persisted.final_url.clone()),
+            host_http_dsl::server_header.eq(persisted.server_header.clone()),
+            host_http_dsl::powered_by_header.eq(persisted.powered_by_header.clone()),
+            host_http_dsl::content_type_header.eq(persisted.content_type_header.clone()),
+            host_http_dsl::location_header.eq(persisted.location_header.clone()),
+            host_http_dsl::via_header.eq(persisted.via_header.clone()),
+            host_http_dsl::alt_svc_header.eq(persisted.alt_svc_header.clone()),
+            host_http_dsl::www_authenticate_header.eq(persisted.www_authenticate_header.clone()),
+            host_http_dsl::set_cookie_names.eq(persisted.set_cookie_names.clone()),
+            host_http_dsl::response_headers.eq(persisted.response_headers.clone()),
+            host_http_dsl::header_fingerprint.eq(persisted.header_fingerprint.clone()),
+            host_http_dsl::favicon_url.eq(persisted.favicon_url.clone()),
+            host_http_dsl::favicon_hash.eq(persisted.favicon_hash.clone()),
+            host_http_dsl::last_error.eq(persisted.last_error.clone()),
+            host_http_dsl::last_attempt_at.eq(persisted.last_attempt_at.clone()),
+            host_http_dsl::last_success_at.eq(persisted.last_success_at.clone()),
+        ))
+        .execute(conn)
+        .context("error saving host http observation")?;
+
+    Ok(())
+}
+
+pub fn get_host_tls_observation(
+    conn: &mut PgConnection,
+    host_value: &str,
+    port_value: i32,
+) -> Result<Option<HostTlsObservationRecord>> {
+    use crate::schema::host_tls_observation::dsl as host_tls_dsl;
+
+    let normalized_host = normalize_observed_host(host_value);
+    if normalized_host.is_empty() {
+        return Ok(None);
+    }
+
+    host_tls_dsl::host_tls_observation
+        .filter(host_tls_dsl::host.eq(normalized_host))
+        .filter(host_tls_dsl::port.eq(port_value))
+        .select(HostTlsObservationRecord::as_select())
+        .first::<HostTlsObservationRecord>(conn)
+        .optional()
+        .context("error loading host tls observation")
+}
+
+pub fn save_host_tls_observation(
+    conn: &mut PgConnection,
+    observation: &NewHostTlsObservation,
+) -> Result<()> {
+    use crate::schema::host_tls_observation::dsl as host_tls_dsl;
+
+    let normalized_host = normalize_observed_host(&observation.host);
+    anyhow::ensure!(
+        !normalized_host.is_empty(),
+        "host tls observation host must not be empty"
+    );
+
+    let existing = get_host_tls_observation(conn, &normalized_host, observation.port)?;
+    let current_timestamp = current_timestamp_text(conn)?;
+    let next_is_success = observation.status == SSH_STATUS_SUCCESS;
+    let persisted = NewHostTlsObservation {
+        host: normalized_host,
+        port: observation.port,
+        status: observation.status.clone(),
+        certificate_sha256: if next_is_success {
+            observation.certificate_sha256.clone()
+        } else {
+            observation.certificate_sha256.clone().or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.certificate_sha256.clone())
+            })
+        },
+        last_error: observation.last_error.clone(),
+        last_attempt_at: current_timestamp.clone(),
+        last_success_at: if next_is_success {
+            Some(current_timestamp.clone())
+        } else {
+            existing.and_then(|row| row.last_success_at)
+        },
+    };
+
+    diesel::insert_into(host_tls_dsl::host_tls_observation)
+        .values(&persisted)
+        .on_conflict((host_tls_dsl::host, host_tls_dsl::port))
+        .do_update()
+        .set((
+            host_tls_dsl::status.eq(persisted.status.clone()),
+            host_tls_dsl::certificate_sha256.eq(persisted.certificate_sha256.clone()),
+            host_tls_dsl::last_error.eq(persisted.last_error.clone()),
+            host_tls_dsl::last_attempt_at.eq(persisted.last_attempt_at.clone()),
+            host_tls_dsl::last_success_at.eq(persisted.last_success_at.clone()),
+        ))
+        .execute(conn)
+        .context("error saving host tls observation")?;
+
+    Ok(())
+}
+
+pub fn list_host_http_observations(
+    conn: &mut PgConnection,
+    requested_limit: Option<i64>,
+    requested_offset: Option<i64>,
+) -> Result<PaginatedResult<HostHttpObservationSummary>> {
+    use crate::schema::host_http_observation::dsl as host_http_dsl;
+
+    let pagination = normalize_pagination(
+        requested_limit,
+        requested_offset,
+        DEFAULT_PAGE_LIMIT,
+        MAX_PAGE_LIMIT,
+    );
+    let total_count = host_http_dsl::host_http_observation
+        .select(count_star())
+        .first::<i64>(conn)
+        .context("error counting host http observations")?;
+    let rows = host_http_dsl::host_http_observation
+        .order(host_http_dsl::last_success_at.desc().nulls_last())
+        .then_order_by(host_http_dsl::last_attempt_at.desc())
+        .then_order_by(host_http_dsl::host.asc())
+        .then_order_by(host_http_dsl::scheme.asc())
+        .then_order_by(host_http_dsl::port.asc())
+        .limit(pagination.limit)
+        .offset(pagination.offset)
+        .select(HostHttpObservationRecord::as_select())
+        .load::<HostHttpObservationRecord>(conn)
+        .context("error loading host http observations")?;
+    let hosts = rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>();
+    let host_contexts = load_host_page_contexts_by_hosts(conn, &hosts)?;
+    let site_categories = load_site_profile_badges_by_hosts(conn, &hosts)?;
+    let items = rows
+        .into_iter()
+        .map(|row| {
+            let port = row.port.to_string();
+            let endpoint_url = format_endpoint_url(&row.scheme, &row.host, row.port);
+            let detail_url = build_query_url(
+                "/entities/http",
+                &[
+                    ("host", &row.host),
+                    ("scheme", &row.scheme),
+                    ("port", &port),
+                ],
+            );
+            let host_context = host_contexts.get(&row.host);
+            HostHttpObservationSummary {
+                host: row.host.clone(),
+                scheme: row.scheme,
+                port: row.port,
+                endpoint_url,
+                status: row.status,
+                http_status_code: row.http_status_code,
+                final_url: row.final_url,
+                server_header: row.server_header,
+                header_fingerprint: row.header_fingerprint,
+                favicon_hash: row.favicon_hash,
+                last_success_at: row.last_success_at,
+                detail_url,
+                site_category: site_categories.get(&row.host).cloned(),
+                source_page_id: host_context.map(|context| context.page_id),
+                source_page_title: host_context.map(|context| context.page_title.clone()),
+                source_page_url: host_context.map(|context| context.page_url.clone()),
+            }
+        })
+        .collect();
+
+    Ok(PaginatedResult {
+        items,
+        total_count,
+        limit: pagination.limit,
+        offset: pagination.offset,
+    })
+}
+
+pub fn get_host_http_observation_detail(
+    conn: &mut PgConnection,
+    host: &str,
+    scheme: &str,
+    port: i32,
+) -> Result<Option<HostHttpObservationDetail>> {
+    let Some(record) = get_host_http_observation(conn, host, scheme, port)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(build_host_http_observation_detail(conn, &record)?))
+}
+
+fn build_host_http_observation_detail(
+    conn: &mut PgConnection,
+    record: &HostHttpObservationRecord,
+) -> Result<HostHttpObservationDetail> {
+    let host_context =
+        load_host_page_contexts_by_hosts(conn, &[record.host.clone()])?.remove(&record.host);
+    let site_category =
+        load_site_profile_badges_by_hosts(conn, &[record.host.clone()])?.remove(&record.host);
+    let (tls_endpoint_url, tls_observation) = match record
+        .final_url
+        .as_deref()
+        .and_then(endpoint_from_url)
+        .filter(|endpoint| endpoint.scheme == "https")
+    {
+        Some(endpoint) => (
+            Some(format_endpoint_url(
+                &endpoint.scheme,
+                &endpoint.host,
+                endpoint.port,
+            )),
+            get_host_tls_observation(conn, &endpoint.host, endpoint.port)?,
+        ),
+        None => (None, None),
+    };
+    let port = record.port.to_string();
+    let detail_url = build_query_url(
+        "/entities/http",
+        &[
+            ("host", &record.host),
+            ("scheme", &record.scheme),
+            ("port", &port),
+        ],
+    );
+
+    Ok(HostHttpObservationDetail {
+        host: record.host.clone(),
+        scheme: record.scheme.clone(),
+        port: record.port,
+        endpoint_url: format_endpoint_url(&record.scheme, &record.host, record.port),
+        status: record.status.clone(),
+        http_status_code: record.http_status_code,
+        final_url: record.final_url.clone(),
+        server_header: record.server_header.clone(),
+        powered_by_header: record.powered_by_header.clone(),
+        content_type_header: record.content_type_header.clone(),
+        location_header: record.location_header.clone(),
+        via_header: record.via_header.clone(),
+        alt_svc_header: record.alt_svc_header.clone(),
+        www_authenticate_header: record.www_authenticate_header.clone(),
+        set_cookie_names: record.set_cookie_names.clone(),
+        response_headers: record.response_headers.clone(),
+        header_fingerprint: record.header_fingerprint.clone(),
+        favicon_url: record.favicon_url.clone(),
+        favicon_hash: record.favicon_hash.clone(),
+        last_error: record.last_error.clone(),
+        last_attempt_at: record.last_attempt_at.clone(),
+        last_success_at: record.last_success_at.clone(),
+        detail_url,
+        site_category,
+        source_page_id: host_context.as_ref().map(|context| context.page_id),
+        source_page_title: host_context
+            .as_ref()
+            .map(|context| context.page_title.clone()),
+        source_page_url: host_context
+            .as_ref()
+            .map(|context| context.page_url.clone()),
+        tls_endpoint_url,
+        tls_observation,
+    })
 }
 
 pub fn get_host_ssh_observation(
@@ -3198,6 +3660,33 @@ fn host_from_url(value: &str) -> String {
         .ok()
         .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
         .unwrap_or_default()
+}
+
+fn endpoint_from_url(value: &str) -> Option<UrlEndpoint> {
+    let parsed = Url::parse(value).ok()?;
+    let host = parsed
+        .host_str()?
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    let port = i32::from(parsed.port_or_known_default()?);
+
+    Some(UrlEndpoint { host, scheme, port })
+}
+
+fn format_endpoint_url(scheme: &str, host: &str, port: i32) -> String {
+    let mut output = format!("{scheme}://{host}");
+    let is_default_port = (scheme == "http" && port == 80) || (scheme == "https" && port == 443);
+    if !is_default_port {
+        output.push(':');
+        output.push_str(&port.to_string());
+    }
+    output
 }
 
 fn build_page_scan_detail_url(page_id: i32, scan_id: i32) -> String {

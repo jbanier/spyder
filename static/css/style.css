@@ -489,6 +489,10 @@ a:hover {
     margin-bottom: 1.35rem;
 }
 
+.card-nested {
+    margin-top: 1rem;
+}
+
 .site-evidence-list {
     display: flex;
     flex-wrap: wrap;
@@ -657,6 +661,20 @@ a:hover {
 
 .hero .site-category-badge {
     border-color: rgba(255, 255, 255, 0.18);
+}
+
+.detail-code-block {
+    background: rgba(23, 33, 31, 0.04);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.88rem;
+    line-height: 1.45;
+    margin: 0;
+    overflow-x: auto;
+    padding: 1rem;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 .empty-state {

@@ -35,6 +35,48 @@ diesel::table! {
 }
 
 diesel::table! {
+    host_http_observation (id) {
+        id -> Int4,
+        host -> Text,
+        scheme -> Text,
+        port -> Int4,
+        status -> Text,
+        http_status_code -> Nullable<Int4>,
+        final_url -> Nullable<Text>,
+        server_header -> Nullable<Text>,
+        powered_by_header -> Nullable<Text>,
+        content_type_header -> Nullable<Text>,
+        location_header -> Nullable<Text>,
+        via_header -> Nullable<Text>,
+        alt_svc_header -> Nullable<Text>,
+        www_authenticate_header -> Nullable<Text>,
+        set_cookie_names -> Nullable<Text>,
+        response_headers -> Nullable<Text>,
+        header_fingerprint -> Nullable<Text>,
+        favicon_url -> Nullable<Text>,
+        favicon_hash -> Nullable<Text>,
+        last_error -> Nullable<Text>,
+        last_attempt_at -> Text,
+        last_success_at -> Nullable<Text>,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
+    host_tls_observation (id) {
+        id -> Int4,
+        host -> Text,
+        port -> Int4,
+        status -> Text,
+        certificate_sha256 -> Nullable<Text>,
+        last_error -> Nullable<Text>,
+        last_attempt_at -> Text,
+        last_success_at -> Nullable<Text>,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
     page (id) {
         id -> Int4,
         title -> Text,
@@ -177,7 +219,9 @@ diesel::joinable!(site_profile -> page (source_page_id));
 diesel::allow_tables_to_appear_in_same_query!(
     domain_blacklist,
     forum_keyword_rule,
+    host_http_observation,
     host_ssh_observation,
+    host_tls_observation,
     page,
     page_classification,
     page_crypto,

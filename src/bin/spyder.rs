@@ -4,24 +4,29 @@ use diesel::deserialize::QueryableByName;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
+use native_tls::TlsConnector;
 use reqwest::blocking::Client;
+use reqwest::header::HeaderMap;
 use reqwest::{Proxy, StatusCode};
-use spyder::extraction::extract_page_snapshot;
+use sha2::{Digest, Sha256};
+use spyder::extraction::{extract_favicon_url, extract_page_snapshot};
 use spyder::models::{
-    DomainBlacklistRule, ForumKeywordRule, HostSshObservationRecord, NewHostSshObservation, Page,
-    PageClassificationRecord, PageCrypto, PageEmail, PageKeywordTag, PageLink, PageScan,
-    PageScanCrypto, PageScanEmail, PageScanLink, SiteProfileRecord, WorkUnit,
+    DomainBlacklistRule, ForumKeywordRule, HostSshObservationRecord, NewHostHttpObservation,
+    NewHostSshObservation, NewHostTlsObservation, Page, PageClassificationRecord, PageCrypto,
+    PageEmail, PageKeywordTag, PageLink, PageScan, PageScanCrypto, PageScanEmail, PageScanLink,
+    PageSnapshot, SiteProfileRecord, WorkUnit,
 };
 use spyder::{
     add_domain_blacklist_entry, add_forum_keyword_rule, create_work_unit, establish_connection,
     find_matching_blacklist_domain, get_host_ssh_observation, get_pending_work_units,
     list_domain_blacklist_rules, list_forum_keyword_rules, list_recent_responding_hosts,
     mark_work_unit_as_done, normalize_crawl_url, record_work_unit_failure,
-    remove_domain_blacklist_entry, remove_forum_keyword_rule, save_host_ssh_observation,
-    save_page_info, AppConnection, SqlDialect, SSH_STATUS_SUCCESS,
+    remove_domain_blacklist_entry, remove_forum_keyword_rule, save_host_http_observation,
+    save_host_ssh_observation, save_host_tls_observation, save_page_info, AppConnection,
+    SqlDialect, SSH_STATUS_SUCCESS,
 };
 use ssh2::{HashType, HostKeyType, Session};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::env;
 use std::fmt::Display;
 use std::io::{Read, Write};
@@ -70,6 +75,19 @@ struct SshHandshakeCapture {
     host_key: String,
     fingerprint: String,
     server_banner: Option<String>,
+}
+
+struct HttpEndpointCapture {
+    snapshot: PageSnapshot,
+    http_observation: NewHostHttpObservation,
+    tls_observation: Option<NewHostTlsObservation>,
+}
+
+#[derive(Clone)]
+struct UrlEndpoint {
+    host: String,
+    scheme: String,
+    port: i32,
 }
 
 #[derive(QueryableByName)]
@@ -377,16 +395,14 @@ fn failure_kind_label(kind: FailureKind) -> &'static str {
     }
 }
 
-fn fetch_page_snapshot(
+fn fetch_page_capture(
     client: &Client,
     url: &str,
-) -> std::result::Result<spyder::models::PageSnapshot, CrawlFailure> {
-    let body = fetch_body(client, url)?;
-    extract_page_snapshot(url, &body)
-        .map_err(|error| CrawlFailure::permanent(error.context(format!("failed to parse {url}"))))
-}
-
-fn fetch_body(client: &Client, url: &str) -> std::result::Result<String, CrawlFailure> {
+    tls_proxy: Option<&SocksProxyConfig>,
+) -> std::result::Result<HttpEndpointCapture, CrawlFailure> {
+    let requested_endpoint = endpoint_from_url(url).ok_or_else(|| {
+        CrawlFailure::permanent(anyhow::anyhow!("invalid observed endpoint url: {url}"))
+    })?;
     let response = client.get(url).send().map_err(|error| {
         let wrapped = anyhow::Error::new(error).context(format!("request failed for {url}"));
         if is_retriable_request_error(&wrapped) {
@@ -404,28 +420,57 @@ fn fetch_body(client: &Client, url: &str) -> std::result::Result<String, CrawlFa
             Err(CrawlFailure::permanent(error))
         };
     }
-
-    response.text().map_err(|error| {
+    let final_url = response.url().as_str().to_string();
+    let headers = response.headers().clone();
+    let body = response.text().map_err(|error| {
         let wrapped =
             anyhow::Error::new(error).context(format!("failed to read response body for {url}"));
         CrawlFailure::retriable(wrapped)
+    })?;
+    let snapshot = extract_page_snapshot(url, &body).map_err(|error| {
+        CrawlFailure::permanent(error.context(format!("failed to parse {url}")))
+    })?;
+    let http_observation = build_http_observation(
+        client,
+        &requested_endpoint,
+        status,
+        &final_url,
+        &headers,
+        &body,
+    );
+    let tls_observation = build_tls_observation(tls_proxy, &final_url);
+
+    Ok(HttpEndpointCapture {
+        snapshot,
+        http_observation,
+        tls_observation,
     })
 }
 
 fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
     let normalized_url = normalize_crawl_url(url);
+    let tls_proxy = load_best_effort_tls_proxy_config();
     let mut connection = establish_connection()?;
     print_status(format!("Queueing seed URL {normalized_url}"));
     create_work_unit(&mut connection, &normalized_url)?;
 
     Url::parse(&normalized_url).with_context(|| format!("invalid url: {normalized_url}"))?;
     print_status(format!("Fetching seed page {normalized_url}"));
-    let snapshot = fetch_page_snapshot(client, &normalized_url)
+    let capture = fetch_page_capture(client, &normalized_url, tls_proxy.as_ref())
         .map_err(|failure| failure.error)
         .with_context(|| format!("unable to discover links for seed {normalized_url}"))?;
-    print_status(format!("Extracted {}", summarize_page_snapshot(&snapshot)));
+    print_status(format!(
+        "Extracted {}",
+        summarize_page_snapshot(&capture.snapshot)
+    ));
+    save_host_http_observation(&mut connection, &capture.http_observation)
+        .context("saving seed http fingerprint")?;
+    if let Some(tls_observation) = capture.tls_observation.as_ref() {
+        save_host_tls_observation(&mut connection, tls_observation)
+            .context("saving seed tls fingerprint")?;
+    }
     print_status("Queueing discovered links from the seed page");
-    let outcome = enqueue_discovered_links(&mut connection, &snapshot)?;
+    let outcome = enqueue_discovered_links(&mut connection, &capture.snapshot)?;
     println!(
         "Queued {} discovered URLs from the seed page",
         outcome.queued_count
@@ -442,6 +487,7 @@ fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
 
 fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
     let mut connection = establish_connection()?;
+    let tls_proxy = load_best_effort_tls_proxy_config();
     print_status("Loading pending work units");
     let pending_work_units = get_pending_work_units(&mut connection)?;
     let pending_count = pending_work_units.len();
@@ -486,15 +532,20 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
 
         print_progress(current, total, format!("Fetching {crawl_url}"));
 
-        match fetch_page_snapshot(client, &crawl_url) {
-            Ok(page_snapshot) => {
+        match fetch_page_capture(client, &crawl_url, tls_proxy.as_ref()) {
+            Ok(capture) => {
                 print_progress(
                     current,
                     total,
-                    format!("Extracted {}", summarize_page_snapshot(&page_snapshot)),
+                    format!("Extracted {}", summarize_page_snapshot(&capture.snapshot)),
                 );
-                save_page_info(&mut connection, &page_snapshot)?;
-                let discovery_outcome = enqueue_discovered_links(&mut connection, &page_snapshot)?;
+                save_page_info(&mut connection, &capture.snapshot)?;
+                save_host_http_observation(&mut connection, &capture.http_observation)?;
+                if let Some(tls_observation) = capture.tls_observation.as_ref() {
+                    save_host_tls_observation(&mut connection, tls_observation)?;
+                }
+                let discovery_outcome =
+                    enqueue_discovered_links(&mut connection, &capture.snapshot)?;
                 mark_work_unit_as_done(&mut connection, work_unit.id)?;
                 processed_urls.insert(crawl_url.clone());
                 print_progress(
@@ -659,6 +710,16 @@ fn load_socks_proxy_config() -> Result<Option<SocksProxyConfig>> {
         .transpose()
 }
 
+fn load_best_effort_tls_proxy_config() -> Option<SocksProxyConfig> {
+    match load_socks_proxy_config() {
+        Ok(proxy) => proxy,
+        Err(error) => {
+            eprintln!("WARNING: TLS fingerprint probe disabled: {error:#}");
+            None
+        }
+    }
+}
+
 fn parse_socks_proxy_config(proxy_url: &str) -> Result<SocksProxyConfig> {
     let parsed =
         Url::parse(proxy_url).with_context(|| format!("invalid proxy url: {proxy_url}"))?;
@@ -687,6 +748,284 @@ fn parse_socks_proxy_config(proxy_url: &str) -> Result<SocksProxyConfig> {
         username,
         password: parsed.password().map(|value| value.to_string()),
     })
+}
+
+fn endpoint_from_url(url: &str) -> Option<UrlEndpoint> {
+    let parsed = Url::parse(url).ok()?;
+    let host = parsed
+        .host_str()?
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    let port = i32::from(parsed.port_or_known_default()?);
+    Some(UrlEndpoint { host, scheme, port })
+}
+
+fn headers_by_name(headers: &HeaderMap) -> BTreeMap<String, Vec<String>> {
+    let mut grouped = BTreeMap::new();
+    for (name, value) in headers {
+        let rendered = normalize_header_value(value);
+        if rendered.is_empty() {
+            continue;
+        }
+
+        grouped
+            .entry(name.as_str().to_ascii_lowercase())
+            .or_insert_with(Vec::new)
+            .push(rendered);
+    }
+
+    for values in grouped.values_mut() {
+        values.sort();
+        values.dedup();
+    }
+
+    grouped
+}
+
+fn normalize_header_value(value: &reqwest::header::HeaderValue) -> String {
+    String::from_utf8_lossy(value.as_bytes())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn first_header_value(headers: &BTreeMap<String, Vec<String>>, name: &str) -> Option<String> {
+    headers.get(name).and_then(|values| values.first()).cloned()
+}
+
+fn collect_set_cookie_names(headers: &BTreeMap<String, Vec<String>>) -> Option<String> {
+    let values = headers.get("set-cookie")?;
+    let mut names = values
+        .iter()
+        .filter_map(|value| {
+            value
+                .split(';')
+                .next()
+                .and_then(|pair| pair.split_once('='))
+                .map(|(name, _)| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        None
+    } else {
+        names.sort();
+        Some(names.join(", "))
+    }
+}
+
+fn render_response_headers(headers: &BTreeMap<String, Vec<String>>) -> Option<String> {
+    let rendered = headers
+        .iter()
+        .map(|(name, values)| format!("{name}: {}", values.join(" | ")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if rendered.is_empty() {
+        None
+    } else {
+        Some(truncate_for_storage(&rendered, 12_000))
+    }
+}
+
+fn build_header_fingerprint(headers: &BTreeMap<String, Vec<String>>) -> Option<String> {
+    const EXCLUDED_HEADERS: &[&str] = &[
+        "cf-ray",
+        "content-length",
+        "date",
+        "etag",
+        "last-modified",
+        "request-id",
+        "server-timing",
+        "set-cookie",
+        "traceparent",
+        "x-amz-cf-id",
+        "x-amzn-requestid",
+        "x-request-id",
+    ];
+
+    let stable_lines = headers
+        .iter()
+        .filter(|(name, _)| !EXCLUDED_HEADERS.contains(&name.as_str()))
+        .map(|(name, values)| format!("{name}: {}", values.join(" | ")))
+        .collect::<Vec<_>>();
+    if stable_lines.is_empty() {
+        return None;
+    }
+
+    let digest = Sha256::digest(stable_lines.join("\n").as_bytes());
+    Some(format!("sha256:{}", hex_encode(digest.as_slice())))
+}
+
+fn favicon_hash_for_page(
+    client: &Client,
+    final_url: &str,
+    body: &str,
+) -> (Option<String>, Option<String>) {
+    let Some(favicon_url) = extract_favicon_url(final_url, body) else {
+        return (None, None);
+    };
+    let same_host = match (Url::parse(final_url).ok(), Url::parse(&favicon_url).ok()) {
+        (Some(page_url), Some(icon_url)) => page_url.host_str() == icon_url.host_str(),
+        _ => false,
+    };
+    if !same_host {
+        return (Some(favicon_url), None);
+    }
+
+    let response = match client.get(&favicon_url).send() {
+        Ok(response) => response,
+        Err(_) => return (Some(favicon_url), None),
+    };
+    if !response.status().is_success() {
+        return (Some(favicon_url), None);
+    }
+
+    let bytes = match response.bytes() {
+        Ok(bytes) => bytes,
+        Err(_) => return (Some(favicon_url), None),
+    };
+    if bytes.is_empty() {
+        return (Some(favicon_url), None);
+    }
+
+    let digest = Sha256::digest(&bytes);
+    (
+        Some(favicon_url),
+        Some(format!("sha256:{}", hex_encode(digest.as_slice()))),
+    )
+}
+
+fn build_http_observation(
+    client: &Client,
+    requested_endpoint: &UrlEndpoint,
+    status: StatusCode,
+    final_url: &str,
+    headers: &HeaderMap,
+    body: &str,
+) -> NewHostHttpObservation {
+    let normalized_headers = headers_by_name(headers);
+    let (favicon_url, favicon_hash) = favicon_hash_for_page(client, final_url, body);
+
+    NewHostHttpObservation {
+        host: requested_endpoint.host.clone(),
+        scheme: requested_endpoint.scheme.clone(),
+        port: requested_endpoint.port,
+        status: SSH_STATUS_SUCCESS.to_string(),
+        http_status_code: Some(i32::from(status.as_u16())),
+        final_url: Some(final_url.to_string()),
+        server_header: first_header_value(&normalized_headers, "server"),
+        powered_by_header: first_header_value(&normalized_headers, "x-powered-by"),
+        content_type_header: first_header_value(&normalized_headers, "content-type"),
+        location_header: first_header_value(&normalized_headers, "location"),
+        via_header: first_header_value(&normalized_headers, "via"),
+        alt_svc_header: first_header_value(&normalized_headers, "alt-svc"),
+        www_authenticate_header: first_header_value(&normalized_headers, "www-authenticate"),
+        set_cookie_names: collect_set_cookie_names(&normalized_headers),
+        response_headers: render_response_headers(&normalized_headers),
+        header_fingerprint: build_header_fingerprint(&normalized_headers),
+        favicon_url,
+        favicon_hash,
+        last_error: None,
+        last_attempt_at: String::new(),
+        last_success_at: None,
+    }
+}
+
+fn build_tls_observation(
+    tls_proxy: Option<&SocksProxyConfig>,
+    final_url: &str,
+) -> Option<NewHostTlsObservation> {
+    let endpoint = endpoint_from_url(final_url)?;
+    if endpoint.scheme != "https" {
+        return None;
+    }
+
+    match probe_tls_certificate(tls_proxy, &endpoint.host, endpoint.port as u16) {
+        Ok(fingerprint) => Some(NewHostTlsObservation {
+            host: endpoint.host,
+            port: endpoint.port,
+            status: SSH_STATUS_SUCCESS.to_string(),
+            certificate_sha256: Some(fingerprint),
+            last_error: None,
+            last_attempt_at: String::new(),
+            last_success_at: None,
+        }),
+        Err(error) => Some(NewHostTlsObservation {
+            host: endpoint.host,
+            port: endpoint.port,
+            status: classify_tls_probe_error(&error).to_string(),
+            certificate_sha256: None,
+            last_error: Some(truncate_for_storage(&error.to_string(), 500)),
+            last_attempt_at: String::new(),
+            last_success_at: None,
+        }),
+    }
+}
+
+fn probe_tls_certificate(
+    proxy: Option<&SocksProxyConfig>,
+    host: &str,
+    port: u16,
+) -> Result<String> {
+    let stream = connect_tcp_endpoint(proxy, host, port)?;
+    let connector = TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_hostnames(true)
+        .build()
+        .context("failed to build tls connector")?;
+    let tls_stream = connector
+        .connect(host, stream)
+        .with_context(|| format!("tls handshake failed for {host}:{port}"))?;
+    let certificate = tls_stream
+        .peer_certificate()
+        .context("failed to read peer certificate")?
+        .context("peer completed tls handshake without a certificate")?;
+    let der = certificate
+        .to_der()
+        .context("failed to serialize peer certificate")?;
+    let digest = Sha256::digest(&der);
+    Ok(format!("sha256:{}", hex_encode(digest.as_slice())))
+}
+
+fn classify_tls_probe_error(error: &anyhow::Error) -> &'static str {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(|io_error| io_error.kind() == std::io::ErrorKind::TimedOut)
+            .unwrap_or(false)
+    }) {
+        return "timeout";
+    }
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(|io_error| io_error.kind() == std::io::ErrorKind::ConnectionRefused)
+            .unwrap_or(false)
+    }) {
+        return "connection-refused";
+    }
+
+    let rendered = error.to_string().to_ascii_lowercase();
+    if rendered.contains("without a certificate") {
+        "no-certificate"
+    } else if rendered.contains("socks") || rendered.contains("proxy") {
+        "proxy-error"
+    } else if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<native_tls::Error>().is_some())
+    {
+        "tls-handshake-failed"
+    } else {
+        "network-error"
+    }
 }
 
 fn probe_ssh_endpoint(

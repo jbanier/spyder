@@ -12,9 +12,10 @@ use spyder::models::{
 };
 use spyder::{
     collect_stats, establish_connection, find_matching_blacklist_domain, get_crypto_entity_detail,
-    get_email_entity_detail, get_page_detail, get_page_scan_detail, get_ssh_host_key_detail,
-    list_crypto_entities, list_domain_blacklist_rules, list_domain_blacklist_summaries,
-    list_email_entities, list_page_scan_summaries, list_page_summaries,
+    get_email_entity_detail, get_host_http_observation_detail, get_page_detail,
+    get_page_scan_detail, get_ssh_host_key_detail, list_crypto_entities,
+    list_domain_blacklist_rules, list_domain_blacklist_summaries, list_email_entities,
+    list_host_http_observations, list_page_scan_summaries, list_page_summaries,
     list_site_category_distribution, list_site_category_timeline, list_site_profiles,
     list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
     list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
@@ -159,6 +160,15 @@ struct CryptoQuery {
 struct SshQuery {
     algorithm: Option<String>,
     fingerprint: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(FromForm, Clone)]
+struct HttpQuery {
+    host: Option<String>,
+    scheme: Option<String>,
+    port: Option<i32>,
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -751,6 +761,57 @@ fn ssh_entities(query: Option<SshQuery>) -> HtmlResult {
     ))
 }
 
+#[get("/entities/http?<query..>")]
+fn http_entities(query: Option<HttpQuery>) -> HtmlResult {
+    let query = query.unwrap_or(HttpQuery {
+        host: None,
+        scheme: None,
+        port: None,
+        limit: None,
+        offset: None,
+    });
+    let mut connection = open_connection()?;
+    let entities = list_host_http_observations(&mut connection, query.limit, query.offset)
+        .frontend_context("loading host http observations")?;
+    let selected = match (query.host.clone(), query.scheme.clone(), query.port) {
+        (Some(host), Some(scheme), Some(port)) => {
+            get_host_http_observation_detail(&mut connection, &host, &scheme, port)
+                .frontend_context("loading host http observation detail")?
+        }
+        _ => None,
+    };
+    let has_entities = !entities.items.is_empty();
+    let has_selected = selected.is_some();
+    let mut extra_params = Vec::new();
+    if let Some(host) = query.host.as_ref() {
+        extra_params.push(("host", host.as_str()));
+    }
+    if let Some(scheme) = query.scheme.as_ref() {
+        extra_params.push(("scheme", scheme.as_str()));
+    }
+    let port_param = query.port.map(|value| value.to_string());
+    if let Some(port) = port_param.as_deref() {
+        extra_params.push(("port", port));
+    }
+    let pagination = pagination_context("/entities/http", &entities, &extra_params);
+    let has_pagination = pagination.has_previous_page || pagination.has_next_page;
+
+    Ok(Template::render(
+        "http",
+        context! {
+            title: "HTTP Fingerprints",
+            description: "Inspect host-level HTTP headers, favicon hashes, redirect targets, and any captured TLS certificate fingerprints.",
+            entities: entities.items,
+            selected: selected,
+            has_entities: has_entities,
+            has_selected: has_selected,
+            entity_count: entities.total_count,
+            pagination: pagination,
+            has_pagination: has_pagination,
+        },
+    ))
+}
+
 #[get("/search?<search..>")]
 fn search_page(search: Option<SearchQuery>) -> HtmlResult {
     let search = search.unwrap_or(SearchQuery {
@@ -1215,6 +1276,7 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 relationships,
                 email_entities,
                 crypto_entities,
+                http_entities,
                 ssh_entities,
                 search_page,
                 api_stats,

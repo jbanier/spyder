@@ -92,6 +92,88 @@ pub struct NewHostSshObservation {
     pub last_success_at: Option<String>,
 }
 
+#[derive(Selectable, Queryable, Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::host_http_observation)]
+pub struct HostHttpObservationRecord {
+    pub id: i32,
+    pub host: String,
+    pub scheme: String,
+    pub port: i32,
+    pub status: String,
+    pub http_status_code: Option<i32>,
+    pub final_url: Option<String>,
+    pub server_header: Option<String>,
+    pub powered_by_header: Option<String>,
+    pub content_type_header: Option<String>,
+    pub location_header: Option<String>,
+    pub via_header: Option<String>,
+    pub alt_svc_header: Option<String>,
+    pub www_authenticate_header: Option<String>,
+    pub set_cookie_names: Option<String>,
+    pub response_headers: Option<String>,
+    pub header_fingerprint: Option<String>,
+    pub favicon_url: Option<String>,
+    pub favicon_hash: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Insertable, Clone)]
+#[diesel(table_name = crate::schema::host_http_observation)]
+pub struct NewHostHttpObservation {
+    pub host: String,
+    pub scheme: String,
+    pub port: i32,
+    pub status: String,
+    pub http_status_code: Option<i32>,
+    pub final_url: Option<String>,
+    pub server_header: Option<String>,
+    pub powered_by_header: Option<String>,
+    pub content_type_header: Option<String>,
+    pub location_header: Option<String>,
+    pub via_header: Option<String>,
+    pub alt_svc_header: Option<String>,
+    pub www_authenticate_header: Option<String>,
+    pub set_cookie_names: Option<String>,
+    pub response_headers: Option<String>,
+    pub header_fingerprint: Option<String>,
+    pub favicon_url: Option<String>,
+    pub favicon_hash: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+}
+
+#[derive(Selectable, Queryable, Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::host_tls_observation)]
+pub struct HostTlsObservationRecord {
+    pub id: i32,
+    pub host: String,
+    pub port: i32,
+    pub status: String,
+    pub certificate_sha256: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Insertable, Clone)]
+#[diesel(table_name = crate::schema::host_tls_observation)]
+pub struct NewHostTlsObservation {
+    pub host: String,
+    pub port: i32,
+    pub status: String,
+    pub certificate_sha256: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+}
+
 #[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_classification)]
 pub struct PageClassificationRecord {
@@ -445,6 +527,7 @@ pub struct PageDetail {
     pub emails: Vec<EmailObservation>,
     pub crypto_refs: Vec<CryptoObservation>,
     pub site_profile: Option<SiteProfileSummary>,
+    pub host_http_observation: Option<HostHttpObservationDetail>,
 }
 
 #[derive(Serialize, Clone, Debug, Default, Eq, PartialEq)]
@@ -534,6 +617,61 @@ pub struct SiteProfileSummary {
     pub source_page_url: Option<String>,
     pub last_scanned_at: String,
     pub last_classified_at: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct HostHttpObservationSummary {
+    pub host: String,
+    pub scheme: String,
+    pub port: i32,
+    pub endpoint_url: String,
+    pub status: String,
+    pub http_status_code: Option<i32>,
+    pub final_url: Option<String>,
+    pub server_header: Option<String>,
+    pub header_fingerprint: Option<String>,
+    pub favicon_hash: Option<String>,
+    pub last_success_at: Option<String>,
+    pub detail_url: String,
+    pub site_category: Option<SiteCategoryBadge>,
+    pub source_page_id: Option<i32>,
+    pub source_page_title: Option<String>,
+    pub source_page_url: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct HostHttpObservationDetail {
+    pub host: String,
+    pub scheme: String,
+    pub port: i32,
+    pub endpoint_url: String,
+    pub status: String,
+    pub http_status_code: Option<i32>,
+    pub final_url: Option<String>,
+    pub server_header: Option<String>,
+    pub powered_by_header: Option<String>,
+    pub content_type_header: Option<String>,
+    pub location_header: Option<String>,
+    pub via_header: Option<String>,
+    pub alt_svc_header: Option<String>,
+    pub www_authenticate_header: Option<String>,
+    pub set_cookie_names: Option<String>,
+    pub response_headers: Option<String>,
+    pub header_fingerprint: Option<String>,
+    pub favicon_url: Option<String>,
+    pub favicon_hash: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+    pub detail_url: String,
+    pub site_category: Option<SiteCategoryBadge>,
+    pub source_page_id: Option<i32>,
+    pub source_page_title: Option<String>,
+    pub source_page_url: Option<String>,
+    pub tls_endpoint_url: Option<String>,
+    pub tls_observation: Option<HostTlsObservationRecord>,
 }
 
 #[derive(Serialize, Clone)]

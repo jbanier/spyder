@@ -33,6 +33,41 @@ pub fn extract_page_snapshot(url: &str, body: &str) -> Result<PageSnapshot> {
     })
 }
 
+pub fn extract_favicon_url(url: &str, body: &str) -> Option<String> {
+    let document = Html::parse_document(body);
+    let base_url = Url::parse(&crate::strip_url_fragment(url)).ok()?;
+    let selector = Selector::parse("link[rel][href]").expect("valid selector");
+
+    for element in document.select(&selector) {
+        let rel = element
+            .value()
+            .attr("rel")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !rel.contains("icon") {
+            continue;
+        }
+
+        let href = element.value().attr("href")?;
+        if href.starts_with("data:") {
+            continue;
+        }
+
+        if let Ok(favicon_url) = base_url.join(href) {
+            return Some(favicon_url.to_string());
+        }
+    }
+
+    let host = base_url.host_str()?;
+    let mut fallback = format!("{}://{}", base_url.scheme(), host);
+    if let Some(port) = base_url.port() {
+        fallback.push(':');
+        fallback.push_str(&port.to_string());
+    }
+    fallback.push_str("/favicon.ico");
+    Some(fallback)
+}
+
 fn extract_title(document: &Html) -> String {
     let selector = Selector::parse("title").expect("valid selector");
     document

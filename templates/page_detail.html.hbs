@@ -50,6 +50,62 @@
 </section>
 {{/if}}
 
+{{#if page.host_http_observation}}
+<section class="card site-profile-card">
+    <div class="section-heading">
+        <h2>Host Fingerprint</h2>
+        <a class="muted-link" href="{{page.host_http_observation.detail_url}}">Open HTTP Intel</a>
+    </div>
+    <div class="inline-badges">
+        <span class="status-pill status-{{page.host_http_observation.status}}">{{page.host_http_observation.status}}</span>
+        {{#if page.host_http_observation.http_status_code}}
+        <span class="count-pill">{{page.host_http_observation.http_status_code}}</span>
+        {{/if}}
+        {{#if page.host_http_observation.site_category}}
+        <span class="site-category-badge site-confidence-{{page.host_http_observation.site_category.confidence}}">{{page.host_http_observation.site_category.label}} · {{page.host_http_observation.site_category.confidence}}</span>
+        {{/if}}
+    </div>
+    <p class="detail-reference">{{page.host_http_observation.endpoint_url}}</p>
+    {{#if page.host_http_observation.final_url}}
+    <p class="detail-reference">Final URL: {{page.host_http_observation.final_url}}</p>
+    {{/if}}
+    <div class="metric-grid">
+        {{#if page.host_http_observation.server_header}}
+        <article class="metric-item">
+            <span class="metric-label">Server</span>
+            <strong>{{page.host_http_observation.server_header}}</strong>
+        </article>
+        {{/if}}
+        {{#if page.host_http_observation.powered_by_header}}
+        <article class="metric-item">
+            <span class="metric-label">Powered By</span>
+            <strong>{{page.host_http_observation.powered_by_header}}</strong>
+        </article>
+        {{/if}}
+        {{#if page.host_http_observation.favicon_hash}}
+        <article class="metric-item">
+            <span class="metric-label">Favicon Hash</span>
+            <strong>{{page.host_http_observation.favicon_hash}}</strong>
+        </article>
+        {{/if}}
+        {{#if page.host_http_observation.header_fingerprint}}
+        <article class="metric-item">
+            <span class="metric-label">Header Fingerprint</span>
+            <strong>{{page.host_http_observation.header_fingerprint}}</strong>
+        </article>
+        {{/if}}
+    </div>
+    {{#if page.host_http_observation.tls_observation}}
+    <div class="site-evidence-list">
+        <span class="tag">TLS {{page.host_http_observation.tls_observation.status}}</span>
+        {{#if page.host_http_observation.tls_observation.certificate_sha256}}
+        <span class="tag">{{page.host_http_observation.tls_observation.certificate_sha256}}</span>
+        {{/if}}
+    </div>
+    {{/if}}
+</section>
+{{/if}}
+
 <section class="card">
     <div class="section-heading">
         <h2>Scan History</h2>
