@@ -2189,7 +2189,7 @@ pub fn list_top_referenced_sites(
         LEFT JOIN target_recency ON target_recency.host = pl.target_host
         WHERE pl.target_host != ''
         GROUP BY pl.target_host
-        ORDER BY count DESC, COALESCE(last_scanned_at, '') DESC, host ASC
+        ORDER BY count DESC, COALESCE(MAX(target_recency.last_scanned_at), '') DESC, pl.target_host ASC
         LIMIT $1
         "
     );
