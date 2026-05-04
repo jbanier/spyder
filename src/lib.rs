@@ -631,7 +631,7 @@ pub fn list_site_profiles(
             GROUP BY {host_expr}
         ) recent_pages ON recent_pages.host = sp.host
         ORDER BY COALESCE(recent_pages.last_scanned_at, '') DESC, sp.host ASC
-        LIMIT ? OFFSET ?
+        LIMIT $1 OFFSET $2
         "
     );
     let records = sql_query(query)
@@ -1121,7 +1121,7 @@ pub fn list_page_summaries(
             GROUP BY page_id
         ) pc ON pc.page_id = p.id
         ORDER BY p.last_scanned_at DESC, p.id DESC
-        LIMIT ? OFFSET ?
+        LIMIT $1 OFFSET $2
         "
     );
     let rows = sql_query(query)
@@ -1307,7 +1307,7 @@ pub fn list_page_scan_summaries(
             FROM page_scan_crypto
             GROUP BY scan_id
         ) psc ON psc.scan_id = ps.id
-        WHERE ps.page_id = ?
+        WHERE ps.page_id = $1
         ORDER BY ps.scanned_at DESC, ps.id DESC
         ",
     )
@@ -1550,7 +1550,7 @@ pub fn collect_stats(conn: &mut PgConnection) -> Result<Stats> {
     let total_domains = scalar_count(
         conn,
         &format!(
-            "SELECT COUNT(*) AS count FROM (SELECT DISTINCT {host_expr} AS host FROM page WHERE {host_expr} != '')"
+            "SELECT COUNT(*) AS count FROM (SELECT DISTINCT {host_expr} AS host FROM page WHERE {host_expr} != '') AS distinct_hosts"
         ),
     )
     .context("error counting distinct domains")?;
@@ -1580,12 +1580,12 @@ pub fn search_pages(
     let limit = requested_limit.unwrap_or(10).clamp(1, 50);
     let pattern = format!("%{}%", escape_like(trimmed));
     let host_expr = sql_host_expr("p.url", conn);
-    let title_match = sql_case_insensitive_match_expr("p.title", conn);
-    let url_match = sql_case_insensitive_match_expr("p.url", conn);
-    let language_match = sql_case_insensitive_match_expr("p.language", conn);
-    let email_match = sql_case_insensitive_match_expr("pe.email", conn);
+    let title_match = sql_case_insensitive_match_expr("p.title", "$1", conn);
+    let url_match = sql_case_insensitive_match_expr("p.url", "$2", conn);
+    let language_match = sql_case_insensitive_match_expr("p.language", "$3", conn);
+    let email_match = sql_case_insensitive_match_expr("pe.email", "$4", conn);
     let crypto_match =
-        sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", conn);
+        sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", "$5", conn);
     let sql = format!(
         "
         SELECT
@@ -1612,7 +1612,7 @@ pub fn search_pages(
                     AND {crypto_match}
             )
         ORDER BY p.last_scanned_at DESC, p.id DESC
-        LIMIT ?
+        LIMIT $6
     "
     );
     let rows = sql_query(sql)
@@ -1656,7 +1656,7 @@ pub fn list_email_entities(
     );
     let total_count = scalar_count(
         conn,
-        "SELECT COUNT(*) AS count FROM (SELECT email FROM page_email GROUP BY email)",
+        "SELECT COUNT(*) AS count FROM (SELECT email FROM page_email GROUP BY email) AS email_entities",
     )
     .context("error counting email entities")?;
     let rows = sql_query(
@@ -1667,7 +1667,7 @@ pub fn list_email_entities(
         FROM page_email
         GROUP BY email
         ORDER BY page_count DESC, value ASC
-        LIMIT ? OFFSET ?
+        LIMIT $1 OFFSET $2
         ",
     )
     .bind::<BigInt, _>(pagination.limit)
@@ -1736,7 +1736,7 @@ pub fn list_crypto_entities(
     );
     let total_count = scalar_count(
         conn,
-        "SELECT COUNT(*) AS count FROM (SELECT asset_type, reference FROM page_crypto GROUP BY asset_type, reference)",
+        "SELECT COUNT(*) AS count FROM (SELECT asset_type, reference FROM page_crypto GROUP BY asset_type, reference) AS crypto_entities",
     )
     .context("error counting crypto entities")?;
     let rows = sql_query(
@@ -1748,7 +1748,7 @@ pub fn list_crypto_entities(
         FROM page_crypto
         GROUP BY asset_type, reference
         ORDER BY page_count DESC, asset_type ASC, reference ASC
-        LIMIT ? OFFSET ?
+        LIMIT $1 OFFSET $2
         ",
     )
     .bind::<BigInt, _>(pagination.limit)
@@ -1833,7 +1833,7 @@ pub fn list_recent_responding_hosts(
             AND p.last_scanned_at >= {recent_cutoff}
         GROUP BY {host_expr}
         ORDER BY last_scanned_at DESC, host ASC
-        LIMIT ?
+        LIMIT $1
         "
     );
     let rows = sql_query(query)
@@ -1977,7 +1977,7 @@ pub fn list_ssh_host_keys(
                 AND host_key_fingerprint != ''
                 AND last_success_at IS NOT NULL
             GROUP BY host_key_algorithm, host_key_fingerprint
-        )
+        ) AS ssh_host_keys
         ",
     )
     .context("error counting ssh host keys")?;
@@ -1997,7 +1997,7 @@ pub fn list_ssh_host_keys(
             AND last_success_at IS NOT NULL
         GROUP BY host_key_algorithm, host_key_fingerprint
         ORDER BY host_count DESC, endpoint_count DESC, last_success_at DESC, algorithm ASC, fingerprint ASC
-        LIMIT ? OFFSET ?
+        LIMIT $1 OFFSET $2
         ",
     )
     .bind::<BigInt, _>(pagination.limit)
@@ -2107,7 +2107,7 @@ pub fn list_top_sites_by_email_refs(
         WHERE {host_expr} != ''
         GROUP BY {host_expr}
         ORDER BY count DESC, last_scanned_at DESC, host ASC
-        LIMIT ?
+        LIMIT $1
         "
     );
     load_top_site_entries_from_query(conn, &query, limit)
@@ -2132,7 +2132,7 @@ pub fn list_top_sites_by_crypto_refs(
         WHERE {host_expr} != ''
         GROUP BY {host_expr}
         ORDER BY count DESC, last_scanned_at DESC, host ASC
-        LIMIT ?
+        LIMIT $1
         "
     );
     load_top_site_entries_from_query(conn, &query, limit)
@@ -2157,7 +2157,7 @@ pub fn list_top_sites_by_outgoing_links(
         WHERE {host_expr} != ''
         GROUP BY {host_expr}
         ORDER BY count DESC, last_scanned_at DESC, host ASC
-        LIMIT ?
+        LIMIT $1
         "
     );
     load_top_site_entries_from_query(conn, &query, limit)
@@ -2184,13 +2184,13 @@ pub fn list_top_referenced_sites(
         SELECT
             pl.target_host AS host,
             COUNT(*) AS count,
-            target_recency.last_scanned_at
+            MAX(target_recency.last_scanned_at) AS last_scanned_at
         FROM page_link pl
         LEFT JOIN target_recency ON target_recency.host = pl.target_host
         WHERE pl.target_host != ''
         GROUP BY pl.target_host
-        ORDER BY count DESC, COALESCE(target_recency.last_scanned_at, '') DESC, pl.target_host ASC
-        LIMIT ?
+        ORDER BY count DESC, COALESCE(last_scanned_at, '') DESC, host ASC
+        LIMIT $1
         "
     );
     load_top_site_entries_from_query(conn, &query, limit)
@@ -2221,7 +2221,7 @@ pub fn list_site_relationships(
                     AND {source_host_expr} != ''
                     AND {source_host_expr} != pl.target_host
                 GROUP BY {source_host_expr}, pl.target_host
-            )
+            ) AS site_relationships
             "
         ),
     )
@@ -2239,7 +2239,7 @@ pub fn list_site_relationships(
             AND {source_host_expr} != pl.target_host
         GROUP BY {source_host_expr}, pl.target_host
         ORDER BY reference_count DESC, source_host ASC, pl.target_host ASC
-        LIMIT ? OFFSET ?
+        LIMIT $1 OFFSET $2
         "
     );
     let rows = sql_query(query)
@@ -3099,10 +3099,16 @@ fn sql_now_comparison_expr(column: &str, conn: &impl AppConnection) -> String {
     format!("{column} <= {}", sql_current_timestamp_expr(conn))
 }
 
-fn sql_case_insensitive_match_expr(column: &str, conn: &impl AppConnection) -> String {
+fn sql_case_insensitive_match_expr(
+    column: &str,
+    placeholder: &str,
+    conn: &impl AppConnection,
+) -> String {
     match conn.dialect() {
-        SqlDialect::Postgres => format!("{column} ILIKE ? ESCAPE '\\'"),
-        SqlDialect::Sqlite => format!("{column} LIKE ? ESCAPE '\\' COLLATE NOCASE"),
+        SqlDialect::Postgres => format!("{column} ILIKE {placeholder} ESCAPE '\\'"),
+        SqlDialect::Sqlite => {
+            format!("{column} LIKE {placeholder} ESCAPE '\\' COLLATE NOCASE")
+        }
     }
 }
 
