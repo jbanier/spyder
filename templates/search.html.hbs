@@ -18,7 +18,7 @@
             type="text"
             name="query"
             value="{{query}}"
-            placeholder="Title, URL, language, email, wallet"
+            placeholder="Title, URL, language, email, wallet, keyword:cisco"
         >
         <input
             class="search-limit"
@@ -62,13 +62,13 @@
     {{else}}
     <section class="empty-state">
         <h2>No results</h2>
-        <p>No indexed page matched <strong>{{query}}</strong>.</p>
+        <p>No indexed page or tagged site matched <strong>{{query}}</strong>.</p>
     </section>
     {{/if}}
 {{else}}
 <section class="empty-state">
     <h2>Search the dataset</h2>
-    <p>Use the form above to search titles, URLs, languages, email addresses, and crypto references.</p>
+    <p>Use the form above to search titles, URLs, languages, email addresses, crypto references, or site tags such as <code>keyword:cisco</code>.</p>
 </section>
 {{/if}}
 </div>

@@ -1623,6 +1623,10 @@ pub fn search_pages(
     }
 
     let limit = requested_limit.unwrap_or(10).clamp(1, 50);
+    if let Some(keyword_query) = parse_keyword_search_query(trimmed) {
+        return search_sites_by_keyword_tag(conn, &keyword_query, limit);
+    }
+
     let pattern = format!("%{}%", escape_like(trimmed));
     let host_expr = sql_host_expr("p.url", conn);
     let title_match = sql_case_insensitive_match_expr("p.title", "$1", conn);
@@ -1669,6 +1673,92 @@ pub fn search_pages(
         .bind::<BigInt, _>(limit)
         .load::<SearchResultRow>(conn)
         .context("error searching pages")?;
+    let site_profiles = load_site_profile_badges_by_hosts(
+        conn,
+        &rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>(),
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| SearchResult {
+            page_id: row.page_id,
+            title: row.title,
+            url: row.url,
+            host: row.host.clone(),
+            language: row.language,
+            scraped_at: row.scraped_at,
+            site_category: site_profiles.get(&row.host).cloned(),
+        })
+        .collect())
+}
+
+fn parse_keyword_search_query(query: &str) -> Option<String> {
+    let trimmed = query.trim();
+    let (prefix, remainder) = trimmed.split_once(':')?;
+    if !prefix.eq_ignore_ascii_case("keyword") {
+        return None;
+    }
+
+    let normalized = remainder.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn search_sites_by_keyword_tag(
+    conn: &mut PgConnection,
+    keyword_query: &str,
+    limit: i64,
+) -> Result<Vec<SearchResult>> {
+    let tag_pattern = format!("%keyword:{}%", escape_like(keyword_query));
+    let host_expr = sql_host_expr("p.url", conn);
+    let tag_match = sql_case_insensitive_match_expr("pkt.tag", "$1", conn);
+    let sql = format!(
+        "
+        WITH matching_hosts AS (
+            SELECT DISTINCT {host_expr} AS host
+            FROM page_keyword_tag pkt
+            JOIN page p ON p.id = pkt.page_id
+            JOIN site_profile sp ON sp.host = {host_expr}
+            WHERE sp.category = 'forum'
+                AND {host_expr} != ''
+                AND {tag_match}
+        ),
+        ranked_pages AS (
+            SELECT
+                p.id AS page_id,
+                p.title,
+                p.url,
+                {host_expr} AS host,
+                p.language,
+                p.last_scanned_at AS scraped_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY {host_expr}
+                    ORDER BY p.last_scanned_at DESC, p.id DESC
+                ) AS row_number
+            FROM page p
+            JOIN matching_hosts mh ON mh.host = {host_expr}
+        )
+        SELECT
+            page_id,
+            title,
+            url,
+            host,
+            language,
+            scraped_at
+        FROM ranked_pages
+        WHERE row_number = 1
+        ORDER BY scraped_at DESC, host ASC
+        LIMIT $2
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<Text, _>(&tag_pattern)
+        .bind::<BigInt, _>(limit)
+        .load::<SearchResultRow>(conn)
+        .context("error searching sites by keyword tag")?;
     let site_profiles = load_site_profile_badges_by_hosts(
         conn,
         &rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>(),
@@ -4625,6 +4715,19 @@ mod tests {
         assert_eq!(search_results[0].title, "Beta Forum");
         assert_eq!(
             search_results[0]
+                .site_category
+                .as_ref()
+                .map(|badge| badge.category.as_str()),
+            Some(CATEGORY_FORUM)
+        );
+
+        let keyword_search_results =
+            search_pages(&mut conn, "keyword:acme", Some(5)).expect("keyword search pages");
+        assert_eq!(keyword_search_results.len(), 1);
+        assert_eq!(keyword_search_results[0].host, "beta.onion");
+        assert_eq!(keyword_search_results[0].title, "Beta Forum");
+        assert_eq!(
+            keyword_search_results[0]
                 .site_category
                 .as_ref()
                 .map(|badge| badge.category.as_str()),

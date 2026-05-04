@@ -883,7 +883,7 @@ fn search_page(search: Option<SearchQuery>) -> HtmlResult {
         "search",
         context! {
             title: "Search",
-            description: "Search titles, URLs, languages, emails, and crypto references.",
+            description: "Search titles, URLs, languages, emails, crypto references, and keyword-tagged sites.",
             query: query.trim(),
             limit: limit,
             results: results,
@@ -1679,6 +1679,27 @@ mod tests {
         assert!(body.contains("id=\"search-results\""));
         assert!(body.contains("Beta Forum"));
         assert!(body.contains("search-results-grid"));
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn search_page_supports_keyword_tag_queries() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client.get("/search?query=keyword:acme&limit=5").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        let body = response.into_string().expect("response body");
+        assert!(body.contains("Beta Forum"));
+        assert!(body.contains("beta.onion"));
+        assert!(body.contains("keyword:cisco"));
 
         fs::remove_file(&database_url).expect("remove test database");
     }
