@@ -2,7 +2,7 @@
 
 diesel::table! {
     domain_blacklist (id) {
-        id -> Integer,
+        id -> Int4,
         domain -> Text,
         created_at -> Text,
     }
@@ -10,7 +10,7 @@ diesel::table! {
 
 diesel::table! {
     forum_keyword_rule (id) {
-        id -> Integer,
+        id -> Int4,
         label -> Text,
         pattern -> Text,
         created_at -> Text,
@@ -19,9 +19,9 @@ diesel::table! {
 
 diesel::table! {
     host_ssh_observation (id) {
-        id -> Integer,
+        id -> Int4,
         host -> Text,
-        port -> Integer,
+        port -> Int4,
         status -> Text,
         host_key_algorithm -> Nullable<Text>,
         host_key -> Nullable<Text>,
@@ -36,7 +36,7 @@ diesel::table! {
 
 diesel::table! {
     page (id) {
-        id -> Integer,
+        id -> Int4,
         title -> Text,
         url -> Text,
         links -> Text,
@@ -50,12 +50,12 @@ diesel::table! {
 
 diesel::table! {
     page_classification (id) {
-        id -> Integer,
-        page_id -> Integer,
+        id -> Int4,
+        page_id -> Int4,
         host -> Text,
         category -> Text,
         confidence -> Text,
-        score -> Integer,
+        score -> Int4,
         evidence -> Text,
         last_classified_at -> Text,
     }
@@ -63,8 +63,8 @@ diesel::table! {
 
 diesel::table! {
     page_crypto (id) {
-        id -> Integer,
-        page_id -> Integer,
+        id -> Int4,
+        page_id -> Int4,
         asset_type -> Text,
         reference -> Text,
         created_at -> Text,
@@ -73,8 +73,8 @@ diesel::table! {
 
 diesel::table! {
     page_email (id) {
-        id -> Integer,
-        page_id -> Integer,
+        id -> Int4,
+        page_id -> Int4,
         email -> Text,
         created_at -> Text,
     }
@@ -82,8 +82,8 @@ diesel::table! {
 
 diesel::table! {
     page_keyword_tag (id) {
-        id -> Integer,
-        page_id -> Integer,
+        id -> Int4,
+        page_id -> Int4,
         tag -> Text,
         created_at -> Text,
     }
@@ -91,8 +91,8 @@ diesel::table! {
 
 diesel::table! {
     page_link (id) {
-        id -> Integer,
-        source_page_id -> Integer,
+        id -> Int4,
+        source_page_id -> Int4,
         target_url -> Text,
         target_host -> Text,
         created_at -> Text,
@@ -101,8 +101,8 @@ diesel::table! {
 
 diesel::table! {
     page_scan (id) {
-        id -> Integer,
-        page_id -> Integer,
+        id -> Int4,
+        page_id -> Int4,
         title -> Text,
         language -> Text,
         scanned_at -> Text,
@@ -111,8 +111,8 @@ diesel::table! {
 
 diesel::table! {
     page_scan_crypto (id) {
-        id -> Integer,
-        scan_id -> Integer,
+        id -> Int4,
+        scan_id -> Int4,
         asset_type -> Text,
         reference -> Text,
     }
@@ -120,16 +120,16 @@ diesel::table! {
 
 diesel::table! {
     page_scan_email (id) {
-        id -> Integer,
-        scan_id -> Integer,
+        id -> Int4,
+        scan_id -> Int4,
         email -> Text,
     }
 }
 
 diesel::table! {
     page_scan_link (id) {
-        id -> Integer,
-        scan_id -> Integer,
+        id -> Int4,
+        scan_id -> Int4,
         target_url -> Text,
         target_host -> Text,
     }
@@ -137,14 +137,14 @@ diesel::table! {
 
 diesel::table! {
     site_profile (id) {
-        id -> Integer,
+        id -> Int4,
         host -> Text,
         category -> Text,
         confidence -> Text,
-        score -> Integer,
-        page_count -> Integer,
+        score -> Int4,
+        page_count -> Int4,
         evidence -> Text,
-        source_page_id -> Nullable<Integer>,
+        source_page_id -> Nullable<Int4>,
         last_classified_at -> Text,
         created_at -> Text,
     }
@@ -152,10 +152,10 @@ diesel::table! {
 
 diesel::table! {
     work_unit (id) {
-        id -> Integer,
+        id -> Int4,
         url -> Text,
         status -> Text,
-        retry_count -> Integer,
+        retry_count -> Int4,
         next_attempt_at -> Text,
         last_attempt_at -> Nullable<Text>,
         last_error -> Nullable<Text>,
