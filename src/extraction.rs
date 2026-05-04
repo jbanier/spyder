@@ -19,11 +19,13 @@ pub fn extract_page_snapshot(url: &str, body: &str) -> Result<PageSnapshot> {
     let links = extract_links(&document, &base_url);
     let classification_signals =
         extract_classification_signals(&document, &base_url, &title, &text, &links);
+    let keyword_corpus = build_keyword_corpus(&normalized_url, &title, &text, &links);
 
     Ok(PageSnapshot {
         title,
         url: normalized_url,
         language: detect_primary_language(&text),
+        keyword_corpus,
         links,
         emails: extract_emails(body),
         crypto_refs: extract_crypto_refs(body),
@@ -44,6 +46,12 @@ fn extract_title(document: &Html) -> String {
 
 fn extract_document_text(document: &Html) -> String {
     document.root_element().text().collect::<Vec<_>>().join(" ")
+}
+
+fn build_keyword_corpus(url: &str, title: &str, text: &str, links: &[LinkObservation]) -> String {
+    let mut segments = vec![url.to_string(), title.to_string(), text.to_string()];
+    segments.extend(links.iter().map(|link| link.target_url.clone()));
+    segments.join("\n")
 }
 
 fn extract_links(document: &Html, base_url: &Url) -> Vec<LinkObservation> {

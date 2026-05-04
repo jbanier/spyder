@@ -6,11 +6,12 @@ use reqwest::{Proxy, StatusCode};
 use spyder::extraction::extract_page_snapshot;
 use spyder::models::{HostSshObservationRecord, NewHostSshObservation};
 use spyder::{
-    add_domain_blacklist_entry, create_work_unit, establish_connection,
+    add_domain_blacklist_entry, add_forum_keyword_rule, create_work_unit, establish_connection,
     find_matching_blacklist_domain, get_host_ssh_observation, get_pending_work_units,
-    list_domain_blacklist_rules, list_recent_responding_hosts, mark_work_unit_as_done,
-    normalize_crawl_url, record_work_unit_failure, remove_domain_blacklist_entry,
-    save_host_ssh_observation, save_page_info, SSH_STATUS_SUCCESS,
+    list_domain_blacklist_rules, list_forum_keyword_rules, list_recent_responding_hosts,
+    mark_work_unit_as_done, normalize_crawl_url, record_work_unit_failure,
+    remove_domain_blacklist_entry, remove_forum_keyword_rule, save_host_ssh_observation,
+    save_page_info, SSH_STATUS_SUCCESS,
 };
 use ssh2::{HashType, HostKeyType, Session};
 use std::collections::HashSet;
@@ -863,6 +864,38 @@ fn remove_blacklist_domain(raw_domain: &str) -> Result<()> {
     Ok(())
 }
 
+fn list_forum_keywords() -> Result<()> {
+    let mut connection = establish_connection()?;
+    let rules = list_forum_keyword_rules(&mut connection)?;
+
+    if rules.is_empty() {
+        println!("No forum keyword rules configured");
+        return Ok(());
+    }
+
+    for rule in rules {
+        println!("keyword:{} => {}", rule.label, rule.pattern);
+    }
+    Ok(())
+}
+
+fn add_forum_keyword(label: &str, pattern: &str) -> Result<()> {
+    let mut connection = establish_connection()?;
+    let rule = add_forum_keyword_rule(&mut connection, label, pattern)?;
+    println!("Added keyword:{} => {}", rule.label, rule.pattern);
+    Ok(())
+}
+
+fn remove_forum_keyword(label: &str, pattern: &str) -> Result<()> {
+    let mut connection = establish_connection()?;
+    let removed = remove_forum_keyword_rule(&mut connection, label, pattern)?;
+    match removed {
+        Some((label, pattern)) => println!("Removed keyword:{} => {}", label, pattern),
+        None => println!("No matching forum keyword rule found"),
+    }
+    Ok(())
+}
+
 fn usage(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
@@ -870,6 +903,9 @@ fn usage(program: &str) {
     eprintln!("    blacklist list");
     eprintln!("    blacklist add <domain>");
     eprintln!("    blacklist remove <domain>");
+    eprintln!("    forum-keywords list");
+    eprintln!("    forum-keywords add <label> <pattern>");
+    eprintln!("    forum-keywords remove <label> <pattern>");
     eprintln!(
         "    ssh-scan [--recent-hours N] [--stale-hours N] [--limit N] scan recent hosts for SSH host keys."
     );
@@ -1020,6 +1056,33 @@ fn main() {
                 Err(anyhow::anyhow!("invalid or missing blacklist subcommand"))
             }
         },
+        Some("forum-keywords") => match args.next().as_deref() {
+            Some("list") => list_forum_keywords(),
+            Some("add") => match (args.next(), args.next()) {
+                (Some(label), Some(pattern)) => add_forum_keyword(&label, &pattern),
+                _ => {
+                    usage(&program);
+                    Err(anyhow::anyhow!(
+                        "forum-keywords add requires <label> <pattern>"
+                    ))
+                }
+            },
+            Some("remove") => match (args.next(), args.next()) {
+                (Some(label), Some(pattern)) => remove_forum_keyword(&label, &pattern),
+                _ => {
+                    usage(&program);
+                    Err(anyhow::anyhow!(
+                        "forum-keywords remove requires <label> <pattern>"
+                    ))
+                }
+            },
+            Some(_) | None => {
+                usage(&program);
+                Err(anyhow::anyhow!(
+                    "invalid or missing forum-keywords subcommand"
+                ))
+            }
+        },
         Some("ssh-scan") => match parse_ssh_scan_options(args) {
             Ok(options) => ssh_scan_hosts(options),
             Err(error) => {
@@ -1118,6 +1181,7 @@ mod tests {
             title: "Alpha Market".to_string(),
             url: "http://alpha.onion".to_string(),
             language: "English".to_string(),
+            keyword_corpus: "http://alpha.onion\nAlpha Market".to_string(),
             links: vec![spyder::models::LinkObservation {
                 target_url: "http://beta.onion".to_string(),
                 target_host: "beta.onion".to_string(),
@@ -1207,6 +1271,7 @@ mod tests {
             title: "Seed".to_string(),
             url: "http://seed.onion".to_string(),
             language: "English".to_string(),
+            keyword_corpus: "http://seed.onion\nSeed".to_string(),
             links: vec![
                 spyder::models::LinkObservation {
                     target_url: "http://allowed.onion".to_string(),
@@ -1239,6 +1304,7 @@ mod tests {
             title: "Seed".to_string(),
             url: "http://seed.onion".to_string(),
             language: "English".to_string(),
+            keyword_corpus: "http://seed.onion\nSeed".to_string(),
             links: vec![
                 spyder::models::LinkObservation {
                     target_url: "http://allowed.onion/docs#faq".to_string(),

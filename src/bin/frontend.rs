@@ -4,13 +4,15 @@ use rocket::http::Status;
 use rocket::serde::{json::Json, Serialize};
 use rocket::{get, launch, routes};
 use rocket_dyn_templates::{context, Template};
-use spyder::models::PaginatedResult;
+use spyder::models::{PaginatedResult, TopSiteSection};
 use spyder::{
     collect_stats, establish_connection, find_matching_blacklist_domain, get_crypto_entity_detail,
     get_email_entity_detail, get_page_detail, get_page_scan_detail, get_ssh_host_key_detail,
     list_crypto_entities, list_domain_blacklist_rules, list_domain_blacklist_summaries,
     list_email_entities, list_page_scan_summaries, list_page_summaries, list_site_profiles,
-    list_site_relationships, list_ssh_host_keys, list_work_units, search_pages,
+    list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
+    list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
+    list_work_units, search_pages,
 };
 use url::form_urlencoded;
 use url::Url;
@@ -345,6 +347,62 @@ fn blacklist() -> Result<Template, Status> {
             entries: entries,
             has_entries: has_entries,
             entry_count: entry_count,
+        },
+    ))
+}
+
+#[get("/top")]
+fn top() -> Result<Template, Status> {
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let sections = vec![
+        TopSiteSection {
+            title: "Most Email Refs".to_string(),
+            description: "Hosts with the most current email references.".to_string(),
+            count_label: "emails".to_string(),
+            items: list_top_sites_by_email_refs(&mut connection, Some(25))
+                .map_err(|_| Status::InternalServerError)?,
+            has_items: false,
+        },
+        TopSiteSection {
+            title: "Most Crypto Refs".to_string(),
+            description: "Hosts with the most current crypto references.".to_string(),
+            count_label: "crypto refs".to_string(),
+            items: list_top_sites_by_crypto_refs(&mut connection, Some(25))
+                .map_err(|_| Status::InternalServerError)?,
+            has_items: false,
+        },
+        TopSiteSection {
+            title: "Most Outgoing Links".to_string(),
+            description: "Hosts linking out to the most destinations.".to_string(),
+            count_label: "links".to_string(),
+            items: list_top_sites_by_outgoing_links(&mut connection, Some(25))
+                .map_err(|_| Status::InternalServerError)?,
+            has_items: false,
+        },
+        TopSiteSection {
+            title: "Most Referenced Sites".to_string(),
+            description: "Hosts receiving the most inbound link observations.".to_string(),
+            count_label: "inbound refs".to_string(),
+            items: list_top_referenced_sites(&mut connection, Some(25))
+                .map_err(|_| Status::InternalServerError)?,
+            has_items: false,
+        },
+    ]
+    .into_iter()
+    .map(|mut section| {
+        section.has_items = !section.items.is_empty();
+        section
+    })
+    .collect::<Vec<_>>();
+    let has_sections = sections.iter().any(|section| section.has_items);
+
+    Ok(Template::render(
+        "top",
+        context! {
+            title: "Top Sites",
+            description: "Host-level leaderboards for the most active and most referenced sites in the current index.",
+            sections: sections,
+            has_sections: has_sections,
         },
     ))
 }
@@ -760,6 +818,7 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 page_scan_detail,
                 list_work,
                 blacklist,
+                top,
                 sites,
                 relationships,
                 email_entities,
@@ -788,7 +847,9 @@ mod tests {
         CategoryHint, ClassificationSignals, CryptoReference, LinkObservation,
         NewHostSshObservation, PageSnapshot,
     };
-    use spyder::{save_host_ssh_observation, save_page_info, SSH_STATUS_SUCCESS};
+    use spyder::{
+        add_forum_keyword_rule, save_host_ssh_observation, save_page_info, SSH_STATUS_SUCCESS,
+    };
     use std::env;
     use std::fs;
     use std::process;
@@ -825,6 +886,13 @@ mod tests {
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               domain VARCHAR NOT NULL UNIQUE,
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE forum_keyword_rule(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              label VARCHAR NOT NULL,
+              pattern VARCHAR NOT NULL,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(label, pattern)
             );
             CREATE TABLE host_ssh_observation(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
@@ -904,6 +972,13 @@ mod tests {
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(page_id, email)
             );
+            CREATE TABLE page_keyword_tag(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              page_id INTEGER NOT NULL,
+              tag VARCHAR NOT NULL,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(page_id, tag)
+            );
             CREATE TABLE page_crypto(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               page_id INTEGER NOT NULL,
@@ -927,11 +1002,37 @@ mod tests {
             ",
         )
         .expect("schema setup");
+        add_forum_keyword_rule(&mut conn, "Acme Corp", "acme corp").expect("seed keyword rule");
 
+        let market_snapshot = PageSnapshot {
+            title: "Alpha Market".to_string(),
+            url: "http://alpha.onion".to_string(),
+            language: "English".to_string(),
+            keyword_corpus: "http://alpha.onion\nAlpha Market\nmarketplace listings".to_string(),
+            links: vec![LinkObservation {
+                target_url: "http://beta.onion".to_string(),
+                target_host: "beta.onion".to_string(),
+            }],
+            emails: vec!["ops@alpha.onion".to_string()],
+            crypto_refs: vec![CryptoReference {
+                asset_type: "bitcoin".to_string(),
+                reference: "bc1qalpha000000000000000000000000000000000".to_string(),
+            }],
+            classification_signals: ClassificationSignals {
+                word_count: 180,
+                hints: vec![CategoryHint {
+                    category: "market".to_string(),
+                    evidence: "title:market".to_string(),
+                    weight: 6,
+                }],
+                ..ClassificationSignals::default()
+            },
+        };
         let forum_snapshot = PageSnapshot {
             title: "Beta Forum".to_string(),
             url: "http://beta.onion".to_string(),
             language: "French".to_string(),
+            keyword_corpus: "http://beta.onion\nBeta Forum\nthread about acme corp".to_string(),
             links: vec![LinkObservation {
                 target_url: "http://alpha.onion".to_string(),
                 target_host: "alpha.onion".to_string(),
@@ -959,7 +1060,50 @@ mod tests {
                 ..ClassificationSignals::default()
             },
         };
-        save_page_info(&mut conn, &forum_snapshot).expect("seed page");
+        let directory_snapshot = PageSnapshot {
+            title: "Gamma Directory".to_string(),
+            url: "http://gamma.onion".to_string(),
+            language: "German".to_string(),
+            keyword_corpus: "http://gamma.onion\nGamma Directory\nresource directory".to_string(),
+            links: vec![
+                LinkObservation {
+                    target_url: "http://beta.onion".to_string(),
+                    target_host: "beta.onion".to_string(),
+                },
+                LinkObservation {
+                    target_url: "http://alpha.onion".to_string(),
+                    target_host: "alpha.onion".to_string(),
+                },
+            ],
+            emails: vec![
+                "ops@gamma.onion".to_string(),
+                "sales@gamma.onion".to_string(),
+            ],
+            crypto_refs: vec![CryptoReference {
+                asset_type: "monero".to_string(),
+                reference: "84A1gammaExampleAddress".to_string(),
+            }],
+            classification_signals: ClassificationSignals {
+                word_count: 200,
+                hints: vec![CategoryHint {
+                    category: "directory".to_string(),
+                    evidence: "title:directory".to_string(),
+                    weight: 6,
+                }],
+                ..ClassificationSignals::default()
+            },
+        };
+        save_page_info(&mut conn, &market_snapshot).expect("seed alpha page");
+        save_page_info(&mut conn, &forum_snapshot).expect("seed beta page");
+        save_page_info(&mut conn, &directory_snapshot).expect("seed gamma page");
+        conn.batch_execute(
+            "
+            UPDATE page SET last_scanned_at = '2026-05-02 08:00:00' WHERE url = 'http://alpha.onion';
+            UPDATE page SET last_scanned_at = '2026-05-03 09:00:00' WHERE url = 'http://beta.onion';
+            UPDATE page SET last_scanned_at = '2026-05-01 07:00:00' WHERE url = 'http://gamma.onion';
+            ",
+        )
+        .expect("update page recency");
         save_host_ssh_observation(
             &mut conn,
             &NewHostSshObservation {
@@ -1022,6 +1166,82 @@ mod tests {
         assert!(body.contains("Shared SSH Host Keys"));
         assert!(body.contains("sha256:feedbeef"));
         assert!(body.contains("beta.onion:22"));
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn top_page_renders_all_leaderboard_sections() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client.get("/top").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        let body = response.into_string().expect("response body");
+        assert!(body.contains("Most Email Refs"));
+        assert!(body.contains("Most Crypto Refs"));
+        assert!(body.contains("Most Outgoing Links"));
+        assert!(body.contains("Most Referenced Sites"));
+        assert!(body.contains("gamma.onion"));
+        assert!(body.contains("beta.onion"));
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn sites_page_renders_recent_first_with_last_scan_column() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client.get("/sites").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        let body = response.into_string().expect("response body");
+        assert!(body.contains("<th>Last Scan</th>"));
+        assert!(body.contains("keyword:acme corp"));
+
+        let beta_index = body.find("beta.onion").expect("beta host present");
+        let alpha_index = body.find("alpha.onion").expect("alpha host present");
+        let gamma_index = body.find("gamma.onion").expect("gamma host present");
+        assert!(beta_index < alpha_index);
+        assert!(alpha_index < gamma_index);
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn page_detail_and_scan_detail_render_forum_keyword_tags() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+
+        let page_response = client.get("/pages/2").dispatch();
+        assert_eq!(page_response.status(), Status::Ok);
+        let page_body = page_response.into_string().expect("page detail body");
+        assert!(page_body.contains("Site Classification"));
+        assert!(page_body.contains("keyword:acme corp"));
+
+        let scan_response = client.get("/pages/2/history/2").dispatch();
+        assert_eq!(scan_response.status(), Status::Ok);
+        let scan_body = scan_response.into_string().expect("scan detail body");
+        assert!(scan_body.contains("Site Classification"));
+        assert!(scan_body.contains("keyword:acme corp"));
 
         fs::remove_file(&database_url).expect("remove test database");
     }

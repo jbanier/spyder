@@ -17,7 +17,9 @@
                 <tr>
                     <th>Host</th>
                     <th>Category</th>
+                    <th>Tags</th>
                     <th>Pages</th>
+                    <th>Last Scan</th>
                     <th>Evidence</th>
                     <th>Evidence Source</th>
                     <th>Last Classified</th>
@@ -30,7 +32,19 @@
                     <td>
                         <span class="site-category-badge site-confidence-{{confidence}}">{{label}} · {{confidence}}</span>
                     </td>
+                    <td>
+                        {{#if keyword_tags}}
+                        <div class="site-evidence-list">
+                            {{#each keyword_tags}}
+                            <span class="tag">{{this}}</span>
+                            {{/each}}
+                        </div>
+                        {{else}}
+                        <span class="muted">None</span>
+                        {{/if}}
+                    </td>
                     <td><span class="count-pill">{{page_count}}</span></td>
+                    <td>{{last_scanned_at}}</td>
                     <td>
                         <div class="site-evidence-list">
                             {{#each evidence}}

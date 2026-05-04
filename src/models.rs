@@ -46,6 +46,24 @@ pub struct NewDomainBlacklist<'a> {
 
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::forum_keyword_rule)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct ForumKeywordRule {
+    pub id: i32,
+    pub label: String,
+    pub pattern: String,
+    pub created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = crate::schema::forum_keyword_rule)]
+pub struct NewForumKeywordRule<'a> {
+    pub label: &'a str,
+    pub pattern: &'a str,
+}
+
+#[derive(Selectable, Queryable, Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::host_ssh_observation)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct HostSshObservationRecord {
@@ -207,6 +225,23 @@ pub struct NewPageEmail {
 }
 
 #[derive(Selectable, Queryable, Clone)]
+#[diesel(table_name = crate::schema::page_keyword_tag)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct PageKeywordTag {
+    pub id: i32,
+    pub page_id: i32,
+    pub tag: String,
+    pub created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = crate::schema::page_keyword_tag)]
+pub struct NewPageKeywordTag {
+    pub page_id: i32,
+    pub tag: String,
+}
+
+#[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_scan_email)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PageScanEmail {
@@ -315,6 +350,7 @@ pub struct PageSnapshot {
     pub title: String,
     pub url: String,
     pub language: String,
+    pub keyword_corpus: String,
     pub links: Vec<LinkObservation>,
     pub emails: Vec<String>,
     pub crypto_refs: Vec<CryptoReference>,
@@ -506,11 +542,35 @@ pub struct SiteProfileSummary {
     pub label: String,
     pub confidence: String,
     pub evidence: Vec<String>,
+    pub keyword_tags: Vec<String>,
     pub page_count: usize,
     pub source_page_id: Option<i32>,
     pub source_page_title: Option<String>,
     pub source_page_url: Option<String>,
+    pub last_scanned_at: String,
     pub last_classified_at: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct TopSiteEntry {
+    pub host: String,
+    pub count: usize,
+    pub last_scanned_at: Option<String>,
+    pub page_id: Option<i32>,
+    pub page_title: Option<String>,
+    pub page_url: Option<String>,
+    pub site_category: Option<SiteCategoryBadge>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct TopSiteSection {
+    pub title: String,
+    pub description: String,
+    pub count_label: String,
+    pub has_items: bool,
+    pub items: Vec<TopSiteEntry>,
 }
 
 #[derive(Serialize, Clone)]

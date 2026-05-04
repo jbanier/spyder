@@ -21,6 +21,7 @@ pub const STATUS_DONE: &str = "done";
 pub const STATUS_FAILED: &str = "failed";
 pub const SSH_STATUS_SUCCESS: &str = "success";
 pub const MAX_RETRY_ATTEMPTS: i32 = 5;
+const DEFAULT_TOP_SITE_LIMIT: i64 = 25;
 const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 200;
 const CATEGORY_SEARCH_ENGINE: &str = "search-engine";
@@ -177,10 +178,74 @@ struct SshHostKeySummaryRow {
     last_success_at: String,
 }
 
+#[derive(QueryableByName)]
+struct HostTagRow {
+    #[diesel(sql_type = Text)]
+    host: String,
+    #[diesel(sql_type = Text)]
+    tag: String,
+}
+
+#[derive(QueryableByName)]
+struct HostMetricSummaryRow {
+    #[diesel(sql_type = Text)]
+    host: String,
+    #[diesel(sql_type = BigInt)]
+    count: i64,
+    #[diesel(sql_type = Nullable<Text>)]
+    last_scanned_at: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct HostPageContextRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    page_id: i32,
+    #[diesel(sql_type = Text)]
+    page_title: String,
+    #[diesel(sql_type = Text)]
+    page_url: String,
+    #[diesel(sql_type = Text)]
+    host: String,
+    #[diesel(sql_type = Text)]
+    last_scanned_at: String,
+}
+
+#[derive(QueryableByName)]
+struct SiteProfileListRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    id: i32,
+    #[diesel(sql_type = Text)]
+    host: String,
+    #[diesel(sql_type = Text)]
+    category: String,
+    #[diesel(sql_type = Text)]
+    confidence: String,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    score: i32,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    page_count: i32,
+    #[diesel(sql_type = Text)]
+    evidence: String,
+    #[diesel(sql_type = Nullable<diesel::sql_types::Integer>)]
+    source_page_id: Option<i32>,
+    #[diesel(sql_type = Text)]
+    last_classified_at: String,
+    #[diesel(sql_type = Text)]
+    created_at: String,
+}
+
 #[derive(Clone, Copy)]
 struct PaginationInput {
     limit: i64,
     offset: i64,
+}
+
+#[derive(Clone)]
+struct HostPageContext {
+    page_id: i32,
+    page_title: String,
+    page_url: String,
+    last_scanned_at: String,
 }
 
 #[derive(Default)]
@@ -271,6 +336,29 @@ pub fn normalize_blacklist_domain(raw_domain: &str) -> Result<String> {
     Ok(host)
 }
 
+pub fn normalize_forum_keyword_label(raw_label: &str) -> Result<String> {
+    let normalized = raw_label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_ascii_lowercase();
+    anyhow::ensure!(
+        !normalized.is_empty(),
+        "forum keyword label must not be empty"
+    );
+    Ok(normalized)
+}
+
+pub fn normalize_forum_keyword_pattern(raw_pattern: &str) -> Result<String> {
+    let normalized = raw_pattern.trim().to_ascii_lowercase();
+    anyhow::ensure!(
+        !normalized.is_empty(),
+        "forum keyword pattern must not be empty"
+    );
+    Ok(normalized)
+}
+
 pub fn find_matching_blacklist_domain(host: &str, blacklist_domains: &[String]) -> Option<String> {
     let normalized_host = host.trim().trim_end_matches('.').to_ascii_lowercase();
     if normalized_host.is_empty() {
@@ -282,6 +370,67 @@ pub fn find_matching_blacklist_domain(host: &str, blacklist_domains: &[String]) 
         .filter(|domain| host_matches_blacklist_domain(&normalized_host, domain))
         .max_by_key(|domain| domain.len())
         .cloned()
+}
+
+pub fn list_forum_keyword_rules(conn: &mut SqliteConnection) -> Result<Vec<ForumKeywordRule>> {
+    use crate::schema::forum_keyword_rule::dsl as forum_keyword_rule_dsl;
+
+    forum_keyword_rule_dsl::forum_keyword_rule
+        .order(forum_keyword_rule_dsl::label.asc())
+        .then_order_by(forum_keyword_rule_dsl::pattern.asc())
+        .select(ForumKeywordRule::as_select())
+        .load::<ForumKeywordRule>(conn)
+        .context("error loading forum keyword rules")
+}
+
+pub fn add_forum_keyword_rule(
+    conn: &mut SqliteConnection,
+    raw_label: &str,
+    raw_pattern: &str,
+) -> Result<ForumKeywordRule> {
+    use crate::schema::forum_keyword_rule::dsl as forum_keyword_rule_dsl;
+
+    let label = normalize_forum_keyword_label(raw_label)?;
+    let pattern = normalize_forum_keyword_pattern(raw_pattern)?;
+    diesel::insert_into(forum_keyword_rule_dsl::forum_keyword_rule)
+        .values(&NewForumKeywordRule {
+            label: &label,
+            pattern: &pattern,
+        })
+        .on_conflict((
+            forum_keyword_rule_dsl::label,
+            forum_keyword_rule_dsl::pattern,
+        ))
+        .do_nothing()
+        .execute(conn)
+        .context("error saving forum keyword rule")?;
+
+    forum_keyword_rule_dsl::forum_keyword_rule
+        .filter(forum_keyword_rule_dsl::label.eq(&label))
+        .filter(forum_keyword_rule_dsl::pattern.eq(&pattern))
+        .select(ForumKeywordRule::as_select())
+        .first::<ForumKeywordRule>(conn)
+        .context("error loading saved forum keyword rule")
+}
+
+pub fn remove_forum_keyword_rule(
+    conn: &mut SqliteConnection,
+    raw_label: &str,
+    raw_pattern: &str,
+) -> Result<Option<(String, String)>> {
+    use crate::schema::forum_keyword_rule::dsl as forum_keyword_rule_dsl;
+
+    let label = normalize_forum_keyword_label(raw_label)?;
+    let pattern = normalize_forum_keyword_pattern(raw_pattern)?;
+    let deleted = diesel::delete(
+        forum_keyword_rule_dsl::forum_keyword_rule
+            .filter(forum_keyword_rule_dsl::label.eq(&label))
+            .filter(forum_keyword_rule_dsl::pattern.eq(&pattern)),
+    )
+    .execute(conn)
+    .context("error removing forum keyword rule")?;
+
+    Ok((deleted > 0).then_some((label, pattern)))
 }
 
 pub fn list_domain_blacklist_rules(
@@ -388,8 +537,6 @@ pub fn list_site_profiles(
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<SiteProfileSummary>> {
-    use crate::schema::site_profile::dsl as site_profile_dsl;
-
     let pagination = normalize_pagination(
         requested_limit,
         requested_offset,
@@ -400,15 +547,41 @@ pub fn list_site_profiles(
         .select(count_star())
         .first(conn)
         .context("error counting site profiles")?;
-    let records = site_profile_dsl::site_profile
-        .order(site_profile_dsl::score.desc())
-        .then_order_by(site_profile_dsl::page_count.desc())
-        .then_order_by(site_profile_dsl::host.asc())
-        .limit(pagination.limit)
-        .offset(pagination.offset)
-        .select(SiteProfileRecord::as_select())
-        .load::<SiteProfileRecord>(conn)
-        .context("error loading site profiles")?;
+    let host_expr = sql_host_expr("p.url");
+    let query = format!(
+        "
+        SELECT
+            sp.id,
+            sp.host,
+            sp.category,
+            sp.confidence,
+            sp.score,
+            sp.page_count,
+            sp.evidence,
+            sp.source_page_id,
+            sp.last_classified_at,
+            sp.created_at
+        FROM site_profile sp
+        LEFT JOIN (
+            SELECT
+                {host_expr} AS host,
+                MAX(p.last_scanned_at) AS last_scanned_at
+            FROM page p
+            WHERE {host_expr} != ''
+            GROUP BY {host_expr}
+        ) recent_pages ON recent_pages.host = sp.host
+        ORDER BY COALESCE(recent_pages.last_scanned_at, '') DESC, sp.host ASC
+        LIMIT ? OFFSET ?
+        "
+    );
+    let records = sql_query(query)
+        .bind::<BigInt, _>(pagination.limit)
+        .bind::<BigInt, _>(pagination.offset)
+        .load::<SiteProfileListRow>(conn)
+        .context("error loading site profiles")?
+        .into_iter()
+        .map(site_profile_record_from_row)
+        .collect::<Vec<_>>();
     let items = build_site_profile_summaries(conn, &records)?;
 
     Ok(PaginatedResult {
@@ -469,6 +642,22 @@ fn normalize_page_snapshot(snapshot: &PageSnapshot) -> PageSnapshot {
     normalized
 }
 
+fn compute_page_keyword_tags(snapshot: &PageSnapshot, rules: &[ForumKeywordRule]) -> Vec<String> {
+    let haystack = snapshot.keyword_corpus.to_ascii_lowercase();
+    let mut tags = rules
+        .iter()
+        .filter_map(|rule| {
+            haystack
+                .contains(&rule.pattern)
+                .then(|| format!("keyword:{}", rule.label))
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags
+}
+
 pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> Result<()> {
     use crate::schema::page::dsl::{
         coins as page_coins, emails as page_emails, language as page_language,
@@ -476,8 +665,8 @@ pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> R
         url as page_url,
     };
     use crate::schema::{
-        page_classification, page_crypto, page_email, page_link, page_scan, page_scan_crypto,
-        page_scan_email, page_scan_link, site_profile,
+        page_classification, page_crypto, page_email, page_keyword_tag, page_link, page_scan,
+        page_scan_crypto, page_scan_email, page_scan_link, site_profile,
     };
     let snapshot = normalize_page_snapshot(snapshot);
 
@@ -521,6 +710,9 @@ pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> R
             .select(crate::schema::page::id)
             .first::<i32>(conn)
             .context("error loading saved page id")?;
+
+        let forum_keyword_tags =
+            compute_page_keyword_tags(&snapshot, &list_forum_keyword_rules(conn)?);
 
         let stored_scan_id = diesel::insert_into(page_scan::table)
             .values(NewPageScan {
@@ -588,6 +780,11 @@ pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> R
         diesel::delete(page_crypto::table.filter(page_crypto::page_id.eq(stored_page_id)))
             .execute(conn)
             .context("error clearing saved page crypto refs")?;
+        diesel::delete(
+            page_keyword_tag::table.filter(page_keyword_tag::page_id.eq(stored_page_id)),
+        )
+        .execute(conn)
+        .context("error clearing saved page keyword tags")?;
 
         let link_rows = snapshot
             .links
@@ -634,6 +831,20 @@ pub fn save_page_info(conn: &mut SqliteConnection, snapshot: &PageSnapshot) -> R
                 .values(&crypto_rows)
                 .execute(conn)
                 .context("error saving page crypto references")?;
+        }
+
+        let keyword_tag_rows = forum_keyword_tags
+            .iter()
+            .map(|tag| NewPageKeywordTag {
+                page_id: stored_page_id,
+                tag: tag.clone(),
+            })
+            .collect::<Vec<_>>();
+        if !keyword_tag_rows.is_empty() {
+            diesel::insert_into(page_keyword_tag::table)
+                .values(&keyword_tag_rows)
+                .execute(conn)
+                .context("error saving page keyword tags")?;
         }
 
         let classification = classify_page_snapshot(&snapshot);
@@ -1805,6 +2016,114 @@ pub fn get_ssh_host_key_detail(
     }))
 }
 
+pub fn list_top_sites_by_email_refs(
+    conn: &mut SqliteConnection,
+    requested_limit: Option<i64>,
+) -> Result<Vec<TopSiteEntry>> {
+    let limit = requested_limit
+        .unwrap_or(DEFAULT_TOP_SITE_LIMIT)
+        .clamp(1, MAX_PAGE_LIMIT);
+    let host_expr = sql_host_expr("p.url");
+    let query = format!(
+        "
+        SELECT
+            {host_expr} AS host,
+            COUNT(*) AS count,
+            MAX(p.last_scanned_at) AS last_scanned_at
+        FROM page_email pe
+        JOIN page p ON p.id = pe.page_id
+        WHERE {host_expr} != ''
+        GROUP BY {host_expr}
+        ORDER BY count DESC, last_scanned_at DESC, host ASC
+        LIMIT ?
+        "
+    );
+    load_top_site_entries_from_query(conn, &query, limit)
+}
+
+pub fn list_top_sites_by_crypto_refs(
+    conn: &mut SqliteConnection,
+    requested_limit: Option<i64>,
+) -> Result<Vec<TopSiteEntry>> {
+    let limit = requested_limit
+        .unwrap_or(DEFAULT_TOP_SITE_LIMIT)
+        .clamp(1, MAX_PAGE_LIMIT);
+    let host_expr = sql_host_expr("p.url");
+    let query = format!(
+        "
+        SELECT
+            {host_expr} AS host,
+            COUNT(*) AS count,
+            MAX(p.last_scanned_at) AS last_scanned_at
+        FROM page_crypto pc
+        JOIN page p ON p.id = pc.page_id
+        WHERE {host_expr} != ''
+        GROUP BY {host_expr}
+        ORDER BY count DESC, last_scanned_at DESC, host ASC
+        LIMIT ?
+        "
+    );
+    load_top_site_entries_from_query(conn, &query, limit)
+}
+
+pub fn list_top_sites_by_outgoing_links(
+    conn: &mut SqliteConnection,
+    requested_limit: Option<i64>,
+) -> Result<Vec<TopSiteEntry>> {
+    let limit = requested_limit
+        .unwrap_or(DEFAULT_TOP_SITE_LIMIT)
+        .clamp(1, MAX_PAGE_LIMIT);
+    let host_expr = sql_host_expr("p.url");
+    let query = format!(
+        "
+        SELECT
+            {host_expr} AS host,
+            COUNT(*) AS count,
+            MAX(p.last_scanned_at) AS last_scanned_at
+        FROM page_link pl
+        JOIN page p ON p.id = pl.source_page_id
+        WHERE {host_expr} != ''
+        GROUP BY {host_expr}
+        ORDER BY count DESC, last_scanned_at DESC, host ASC
+        LIMIT ?
+        "
+    );
+    load_top_site_entries_from_query(conn, &query, limit)
+}
+
+pub fn list_top_referenced_sites(
+    conn: &mut SqliteConnection,
+    requested_limit: Option<i64>,
+) -> Result<Vec<TopSiteEntry>> {
+    let limit = requested_limit
+        .unwrap_or(DEFAULT_TOP_SITE_LIMIT)
+        .clamp(1, MAX_PAGE_LIMIT);
+    let host_expr = sql_host_expr("p.url");
+    let query = format!(
+        "
+        WITH target_recency AS (
+            SELECT
+                {host_expr} AS host,
+                MAX(p.last_scanned_at) AS last_scanned_at
+            FROM page p
+            WHERE {host_expr} != ''
+            GROUP BY {host_expr}
+        )
+        SELECT
+            pl.target_host AS host,
+            COUNT(*) AS count,
+            target_recency.last_scanned_at
+        FROM page_link pl
+        LEFT JOIN target_recency ON target_recency.host = pl.target_host
+        WHERE pl.target_host != ''
+        GROUP BY pl.target_host
+        ORDER BY count DESC, COALESCE(target_recency.last_scanned_at, '') DESC, pl.target_host ASC
+        LIMIT ?
+        "
+    );
+    load_top_site_entries_from_query(conn, &query, limit)
+}
+
 pub fn list_site_relationships(
     conn: &mut SqliteConnection,
     requested_limit: Option<i64>,
@@ -2034,6 +2353,21 @@ fn recompute_site_profile_record(
     })
 }
 
+fn site_profile_record_from_row(row: SiteProfileListRow) -> SiteProfileRecord {
+    SiteProfileRecord {
+        id: row.id,
+        host: row.host,
+        category: row.category,
+        confidence: row.confidence,
+        score: row.score,
+        page_count: row.page_count,
+        evidence: row.evidence,
+        source_page_id: row.source_page_id,
+        last_classified_at: row.last_classified_at,
+        created_at: row.created_at,
+    }
+}
+
 fn load_site_profile_by_host(
     conn: &mut SqliteConnection,
     host: &str,
@@ -2100,6 +2434,20 @@ fn build_site_profile_summaries(
     conn: &mut SqliteConnection,
     records: &[SiteProfileRecord],
 ) -> Result<Vec<SiteProfileSummary>> {
+    let keyword_tags_by_host = load_forum_keyword_tags_by_hosts(
+        conn,
+        &records
+            .iter()
+            .map(|record| record.host.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    let host_contexts = load_host_page_contexts_by_hosts(
+        conn,
+        &records
+            .iter()
+            .map(|record| record.host.clone())
+            .collect::<Vec<_>>(),
+    )?;
     let source_page_ids = records
         .iter()
         .filter_map(|record| record.source_page_id)
@@ -2115,20 +2463,181 @@ fn build_site_profile_summaries(
             let source_page = record
                 .source_page_id
                 .and_then(|page_id| source_pages.get(&page_id));
+            let last_scanned_at = host_contexts
+                .get(&record.host)
+                .map(|context| context.last_scanned_at.clone())
+                .or_else(|| source_page.map(|page| page.last_scanned_at.clone()))
+                .unwrap_or_else(|| "Never".to_string());
             SiteProfileSummary {
                 host: record.host.clone(),
                 category: record.category.clone(),
                 label: site_category_label(&record.category).to_string(),
                 confidence: record.confidence.clone(),
                 evidence: deserialize_evidence(&record.evidence),
+                keyword_tags: if record.category == CATEGORY_FORUM {
+                    keyword_tags_by_host
+                        .get(&record.host)
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                },
                 page_count: record.page_count.max(0) as usize,
                 source_page_id: record.source_page_id,
                 source_page_title: source_page.map(|page| page.title.clone()),
                 source_page_url: source_page.map(|page| page.url.clone()),
+                last_scanned_at,
                 last_classified_at: record.last_classified_at.clone(),
             }
         })
         .collect())
+}
+
+fn load_top_site_entries_from_query(
+    conn: &mut SqliteConnection,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<TopSiteEntry>> {
+    let rows = sql_query(query)
+        .bind::<BigInt, _>(limit)
+        .load::<HostMetricSummaryRow>(conn)
+        .context("error loading top site leaderboard rows")?;
+    build_top_site_entries(conn, rows)
+}
+
+fn build_top_site_entries(
+    conn: &mut SqliteConnection,
+    rows: Vec<HostMetricSummaryRow>,
+) -> Result<Vec<TopSiteEntry>> {
+    let hosts = rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>();
+    let host_contexts = load_host_page_contexts_by_hosts(conn, &hosts)?;
+    let site_categories = load_site_profile_badges_by_hosts(conn, &hosts)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let host_context = host_contexts.get(&row.host);
+            TopSiteEntry {
+                host: row.host.clone(),
+                count: row.count.max(0) as usize,
+                last_scanned_at: row
+                    .last_scanned_at
+                    .or_else(|| host_context.map(|context| context.last_scanned_at.clone())),
+                page_id: host_context.map(|context| context.page_id),
+                page_title: host_context.map(|context| context.page_title.clone()),
+                page_url: host_context.map(|context| context.page_url.clone()),
+                site_category: site_categories.get(&row.host).cloned(),
+            }
+        })
+        .collect())
+}
+
+fn load_host_page_contexts_by_hosts(
+    conn: &mut SqliteConnection,
+    hosts: &[String],
+) -> Result<HashMap<String, HostPageContext>> {
+    let unique_hosts = hosts
+        .iter()
+        .map(|host| host.trim().to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if unique_hosts.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let host_expr = sql_host_expr("p.url");
+    let host_literals = unique_hosts
+        .iter()
+        .map(|host| quote_sql_text_literal(host))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = format!(
+        "
+        WITH ranked_pages AS (
+            SELECT
+                p.id AS page_id,
+                p.title AS page_title,
+                p.url AS page_url,
+                {host_expr} AS host,
+                p.last_scanned_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY {host_expr}
+                    ORDER BY p.last_scanned_at DESC, p.id DESC
+                ) AS row_number
+            FROM page p
+            WHERE {host_expr} IN ({host_literals})
+        )
+        SELECT
+            page_id,
+            page_title,
+            page_url,
+            host,
+            last_scanned_at
+        FROM ranked_pages
+        WHERE row_number = 1
+        "
+    );
+    Ok(sql_query(query)
+        .load::<HostPageContextRow>(conn)
+        .context("error loading host page contexts")?
+        .into_iter()
+        .map(|row| {
+            (
+                row.host,
+                HostPageContext {
+                    page_id: row.page_id,
+                    page_title: row.page_title,
+                    page_url: row.page_url,
+                    last_scanned_at: row.last_scanned_at,
+                },
+            )
+        })
+        .collect())
+}
+
+fn load_forum_keyword_tags_by_hosts(
+    conn: &mut SqliteConnection,
+    hosts: &[String],
+) -> Result<HashMap<String, Vec<String>>> {
+    let unique_hosts = hosts
+        .iter()
+        .map(|host| host.trim().to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if unique_hosts.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let host_expr = sql_host_expr("p.url");
+    let host_literals = unique_hosts
+        .iter()
+        .map(|host| quote_sql_text_literal(host))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = format!(
+        "
+        SELECT
+            {host_expr} AS host,
+            pkt.tag
+        FROM page_keyword_tag pkt
+        JOIN page p ON p.id = pkt.page_id
+        WHERE {host_expr} IN ({host_literals})
+        GROUP BY {host_expr}, pkt.tag
+        ORDER BY {host_expr} ASC, pkt.tag ASC
+        "
+    );
+    let rows = sql_query(query)
+        .load::<HostTagRow>(conn)
+        .context("error loading forum keyword tags by host")?;
+    let mut grouped = HashMap::<String, Vec<String>>::new();
+    for row in rows {
+        grouped.entry(row.host).or_default().push(row.tag);
+    }
+    Ok(grouped)
 }
 
 fn load_page_by_id(conn: &mut SqliteConnection, page_id: i32) -> Result<Option<Page>> {
@@ -2510,6 +3019,10 @@ fn escape_like(input: &str) -> String {
         .replace('_', "\\_")
 }
 
+fn quote_sql_text_literal(input: &str) -> String {
+    format!("'{}'", input.replace('\'', "''"))
+}
+
 fn serialize_evidence(evidence: &[String]) -> String {
     evidence
         .iter()
@@ -2668,6 +3181,13 @@ mod tests {
               domain VARCHAR NOT NULL UNIQUE,
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE forum_keyword_rule(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              label VARCHAR NOT NULL,
+              pattern VARCHAR NOT NULL,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(label, pattern)
+            );
             CREATE TABLE host_ssh_observation(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               host VARCHAR NOT NULL,
@@ -2746,6 +3266,13 @@ mod tests {
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(page_id, email)
             );
+            CREATE TABLE page_keyword_tag(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              page_id INTEGER NOT NULL,
+              tag VARCHAR NOT NULL,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(page_id, tag)
+            );
             CREATE TABLE page_crypto(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               page_id INTEGER NOT NULL,
@@ -2777,6 +3304,7 @@ mod tests {
             title: "Alpha Market".to_string(),
             url: "http://alpha.onion".to_string(),
             language: "English".to_string(),
+            keyword_corpus: "http://alpha.onion\nAlpha Market\nmarketplace listings".to_string(),
             links: vec![LinkObservation {
                 target_url: "http://beta.onion".to_string(),
                 target_host: "beta.onion".to_string(),
@@ -2810,6 +3338,8 @@ mod tests {
             title: "Beta Forum".to_string(),
             url: "http://beta.onion".to_string(),
             language: "French".to_string(),
+            keyword_corpus: "http://beta.onion\nBeta Forum\nthread reply topic discussion"
+                .to_string(),
             links: vec![LinkObservation {
                 target_url: "http://alpha.onion".to_string(),
                 target_host: "alpha.onion".to_string(),
@@ -2840,6 +3370,42 @@ mod tests {
                         weight: 4,
                     },
                 ],
+                ..ClassificationSignals::default()
+            },
+        }
+    }
+
+    fn gamma_snapshot() -> PageSnapshot {
+        PageSnapshot {
+            title: "Gamma Directory".to_string(),
+            url: "http://gamma.onion".to_string(),
+            language: "German".to_string(),
+            keyword_corpus: "http://gamma.onion\nGamma Directory\nresource directory".to_string(),
+            links: vec![
+                LinkObservation {
+                    target_url: "http://beta.onion".to_string(),
+                    target_host: "beta.onion".to_string(),
+                },
+                LinkObservation {
+                    target_url: "http://alpha.onion".to_string(),
+                    target_host: "alpha.onion".to_string(),
+                },
+            ],
+            emails: vec![
+                "ops@gamma.onion".to_string(),
+                "sales@gamma.onion".to_string(),
+            ],
+            crypto_refs: vec![CryptoReference {
+                asset_type: "monero".to_string(),
+                reference: "84A1gammaExampleAddress".to_string(),
+            }],
+            classification_signals: ClassificationSignals {
+                word_count: 200,
+                hints: vec![CategoryHint {
+                    category: CATEGORY_DIRECTORY.to_string(),
+                    evidence: "title:directory".to_string(),
+                    weight: 6,
+                }],
                 ..ClassificationSignals::default()
             },
         }
@@ -2964,6 +3530,121 @@ mod tests {
     }
 
     #[test]
+    fn forum_keyword_rules_are_normalized_idempotent_and_removable() {
+        let mut conn = setup_connection();
+
+        add_forum_keyword_rule(&mut conn, "  Acme   Corp  ", "  ACME Corp ").expect("first add");
+        add_forum_keyword_rule(&mut conn, "acme corp", "acme corp").expect("duplicate add");
+
+        let rules = list_forum_keyword_rules(&mut conn).expect("list rules");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].label, "acme corp");
+        assert_eq!(rules[0].pattern, "acme corp");
+
+        assert_eq!(
+            remove_forum_keyword_rule(&mut conn, " Acme Corp ", "ACME Corp").expect("remove rule"),
+            Some(("acme corp".to_string(), "acme corp".to_string()))
+        );
+        assert!(
+            remove_forum_keyword_rule(&mut conn, "acme corp", "acme corp")
+                .expect("remove absent rule")
+                .is_none()
+        );
+        assert!(list_forum_keyword_rules(&mut conn)
+            .expect("list after remove")
+            .is_empty());
+    }
+
+    #[test]
+    fn forum_keyword_tags_surface_only_for_forum_sites() {
+        let mut conn = setup_connection();
+        add_forum_keyword_rule(&mut conn, "Acme Corp", "acme corp").expect("add keyword rule");
+
+        let mut alpha = alpha_snapshot();
+        alpha.keyword_corpus = "http://alpha.onion\nAlpha Market\nseller acme corp".to_string();
+        let mut beta = beta_snapshot();
+        beta.keyword_corpus =
+            "http://beta.onion\nBeta Forum\nthread about acme corp and mirrors".to_string();
+
+        save_page_info(&mut conn, &alpha).expect("save alpha");
+        save_page_info(&mut conn, &beta).expect("save beta");
+
+        let sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
+        let alpha_site = sites
+            .items
+            .iter()
+            .find(|site| site.host == "alpha.onion")
+            .expect("alpha site");
+        let beta_site = sites
+            .items
+            .iter()
+            .find(|site| site.host == "beta.onion")
+            .expect("beta site");
+
+        assert!(alpha_site.keyword_tags.is_empty());
+        assert_eq!(
+            beta_site.keyword_tags,
+            vec!["keyword:acme corp".to_string()]
+        );
+        assert_eq!(
+            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_keyword_tag")
+                .expect("keyword tag count"),
+            2
+        );
+    }
+
+    #[test]
+    fn rescanning_a_forum_page_replaces_keyword_tags() {
+        let mut conn = setup_connection();
+        add_forum_keyword_rule(&mut conn, "Acme Corp", "acme corp").expect("add acme rule");
+        add_forum_keyword_rule(&mut conn, "LockBit", "lockbit").expect("add lockbit rule");
+
+        let mut snapshot = beta_snapshot();
+        snapshot.keyword_corpus =
+            "http://beta.onion\nBeta Forum\nthread about acme corp and lockbit".to_string();
+        save_page_info(&mut conn, &snapshot).expect("save forum page");
+
+        assert_eq!(
+            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_keyword_tag")
+                .expect("initial keyword tag count"),
+            2
+        );
+        let initial_sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
+        let initial_beta = initial_sites
+            .items
+            .iter()
+            .find(|site| site.host == "beta.onion")
+            .expect("beta site");
+        assert_eq!(
+            initial_beta.keyword_tags,
+            vec![
+                "keyword:acme corp".to_string(),
+                "keyword:lockbit".to_string()
+            ]
+        );
+
+        snapshot.keyword_corpus =
+            "http://beta.onion\nBeta Forum\nthread about acme corp".to_string();
+        save_page_info(&mut conn, &snapshot).expect("resave forum page");
+
+        assert_eq!(
+            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_keyword_tag")
+                .expect("updated keyword tag count"),
+            1
+        );
+        let updated_sites = list_site_profiles(&mut conn, None, None).expect("updated sites");
+        let updated_beta = updated_sites
+            .items
+            .iter()
+            .find(|site| site.host == "beta.onion")
+            .expect("beta site");
+        assert_eq!(
+            updated_beta.keyword_tags,
+            vec!["keyword:acme corp".to_string()]
+        );
+    }
+
+    #[test]
     fn page_relations_entities_search_and_pagination_are_available() {
         let mut conn = setup_connection();
 
@@ -3049,6 +3730,78 @@ mod tests {
                 .map(|badge| badge.category.as_str()),
             Some(CATEGORY_FORUM)
         );
+    }
+
+    #[test]
+    fn top_site_rankings_are_host_level_and_tie_break_by_recency() {
+        let mut conn = setup_connection();
+
+        save_page_info(&mut conn, &alpha_snapshot()).expect("save alpha");
+        save_page_info(&mut conn, &beta_snapshot()).expect("save beta");
+        save_page_info(&mut conn, &gamma_snapshot()).expect("save gamma");
+        conn.batch_execute(
+            "
+            UPDATE page SET last_scanned_at = '2026-05-02 08:00:00' WHERE url = 'http://alpha.onion';
+            UPDATE page SET last_scanned_at = '2026-05-03 09:00:00' WHERE url = 'http://beta.onion';
+            UPDATE page SET last_scanned_at = '2026-05-01 07:00:00' WHERE url = 'http://gamma.onion';
+            ",
+        )
+        .expect("update page recency");
+
+        let email_leaders =
+            list_top_sites_by_email_refs(&mut conn, Some(10)).expect("email leaders");
+        assert_eq!(email_leaders[0].host, "gamma.onion");
+        assert_eq!(email_leaders[0].count, 2);
+        assert_eq!(email_leaders[1].host, "beta.onion");
+        assert_eq!(email_leaders[2].host, "alpha.onion");
+
+        let crypto_leaders =
+            list_top_sites_by_crypto_refs(&mut conn, Some(10)).expect("crypto leaders");
+        assert_eq!(crypto_leaders[0].host, "beta.onion");
+        assert_eq!(crypto_leaders[0].count, 2);
+        assert_eq!(crypto_leaders[1].host, "alpha.onion");
+        assert_eq!(crypto_leaders[2].host, "gamma.onion");
+
+        let outgoing_leaders =
+            list_top_sites_by_outgoing_links(&mut conn, Some(10)).expect("outgoing leaders");
+        assert_eq!(outgoing_leaders[0].host, "gamma.onion");
+        assert_eq!(outgoing_leaders[0].count, 2);
+        assert_eq!(outgoing_leaders[1].host, "beta.onion");
+        assert_eq!(outgoing_leaders[2].host, "alpha.onion");
+
+        let referenced_leaders =
+            list_top_referenced_sites(&mut conn, Some(10)).expect("referenced leaders");
+        assert_eq!(referenced_leaders[0].host, "beta.onion");
+        assert_eq!(referenced_leaders[0].count, 2);
+        assert_eq!(referenced_leaders[1].host, "alpha.onion");
+        assert_eq!(referenced_leaders[1].count, 2);
+        assert_eq!(
+            referenced_leaders[0].last_scanned_at.as_deref(),
+            Some("2026-05-03 09:00:00")
+        );
+    }
+
+    #[test]
+    fn site_profiles_are_sorted_by_most_recent_scan() {
+        let mut conn = setup_connection();
+
+        save_page_info(&mut conn, &alpha_snapshot()).expect("save alpha");
+        save_page_info(&mut conn, &beta_snapshot()).expect("save beta");
+        save_page_info(&mut conn, &gamma_snapshot()).expect("save gamma");
+        conn.batch_execute(
+            "
+            UPDATE page SET last_scanned_at = '2026-05-02 08:00:00' WHERE url = 'http://alpha.onion';
+            UPDATE page SET last_scanned_at = '2026-05-03 09:00:00' WHERE url = 'http://beta.onion';
+            UPDATE page SET last_scanned_at = '2026-05-01 07:00:00' WHERE url = 'http://gamma.onion';
+            ",
+        )
+        .expect("update page recency");
+
+        let sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
+        assert_eq!(sites.items[0].host, "beta.onion");
+        assert_eq!(sites.items[1].host, "alpha.onion");
+        assert_eq!(sites.items[2].host, "gamma.onion");
+        assert_eq!(sites.items[0].last_scanned_at, "2026-05-03 09:00:00");
     }
 
     #[test]
@@ -3430,6 +4183,7 @@ mod tests {
             title: "Anchor Heavy Page".to_string(),
             url: "https://example.com/docs/page#overview".to_string(),
             language: "English".to_string(),
+            keyword_corpus: "https://example.com/docs/page#overview\nAnchor Heavy Page\nhttps://example.com/docs/faq#shipping".to_string(),
             links: vec![
                 LinkObservation {
                     target_url: "https://example.com/docs/faq#shipping".to_string(),

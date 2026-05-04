@@ -9,6 +9,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    forum_keyword_rule (id) {
+        id -> Integer,
+        label -> Text,
+        pattern -> Text,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
     host_ssh_observation (id) {
         id -> Integer,
         host -> Text,
@@ -67,6 +76,15 @@ diesel::table! {
         id -> Integer,
         page_id -> Integer,
         email -> Text,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
+    page_keyword_tag (id) {
+        id -> Integer,
+        page_id -> Integer,
+        tag -> Text,
         created_at -> Text,
     }
 }
@@ -148,6 +166,7 @@ diesel::table! {
 diesel::joinable!(page_classification -> page (page_id));
 diesel::joinable!(page_crypto -> page (page_id));
 diesel::joinable!(page_email -> page (page_id));
+diesel::joinable!(page_keyword_tag -> page (page_id));
 diesel::joinable!(page_link -> page (source_page_id));
 diesel::joinable!(page_scan -> page (page_id));
 diesel::joinable!(page_scan_crypto -> page_scan (scan_id));
@@ -157,11 +176,13 @@ diesel::joinable!(site_profile -> page (source_page_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     domain_blacklist,
+    forum_keyword_rule,
     host_ssh_observation,
     page,
     page_classification,
     page_crypto,
     page_email,
+    page_keyword_tag,
     page_link,
     page_scan,
     page_scan_crypto,

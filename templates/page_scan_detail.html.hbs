@@ -72,6 +72,13 @@
         <span class="site-category-badge site-confidence-{{detail.site_profile.confidence}}">{{detail.site_profile.label}} · {{detail.site_profile.confidence}}</span>
         <span class="muted">Last classified {{detail.site_profile.last_classified_at}}</span>
     </div>
+    {{#if detail.site_profile.keyword_tags}}
+    <div class="site-evidence-list">
+        {{#each detail.site_profile.keyword_tags}}
+        <span class="tag">{{this}}</span>
+        {{/each}}
+    </div>
+    {{/if}}
     {{#if detail.site_profile.source_page_id}}
     <p class="detail-reference">
         Evidence source:
