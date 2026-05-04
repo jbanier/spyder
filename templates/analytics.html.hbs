@@ -1,6 +1,6 @@
 {{#*inline "body"}}
 <section class="hero hero-compact">
-    <p class="eyebrow">Category Analytics</p>
+    <p class="eyebrow">Site Analytics</p>
     <h1>{{title}}</h1>
     <p class="lead">{{description}}</p>
 </section>
@@ -31,10 +31,10 @@
         {{#if has_distribution}}
         <div class="chart-shell">
             <div class="chart-visual">
-                {{{pie_svg}}}
+                {{{category_pie_svg}}}
             </div>
             <div class="chart-legend">
-                {{#each legend}}
+                {{#each category_legend}}
                 <div class="legend-row">
                     <span class="legend-swatch" style="background: {{color}};"></span>
                     <div class="legend-copy">
@@ -61,11 +61,59 @@
         </div>
         {{#if has_timeline}}
         <div class="chart-scroll">
-            {{{histogram_svg}}}
+            {{{category_histogram_svg}}}
         </div>
         <p class="chart-note">Range: {{first_day}} to {{last_day}}</p>
         {{else}}
         <p class="empty-copy">No category timeline is available yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <div class="table-cell-stack">
+                <h2>Current Keyword Mix</h2>
+                <span class="muted">Distribution of current <code>keyword:*</code> tags across known forum hosts.</span>
+            </div>
+        </div>
+        {{#if has_keyword_distribution}}
+        <div class="chart-shell">
+            <div class="chart-visual">
+                {{{keyword_pie_svg}}}
+            </div>
+            <div class="chart-legend">
+                {{#each keyword_legend}}
+                <div class="legend-row">
+                    <span class="legend-swatch" style="background: {{color}};"></span>
+                    <div class="legend-copy">
+                        <strong>{{label}}</strong>
+                        <span class="muted">{{category}}</span>
+                    </div>
+                    <span class="count-pill">{{host_count}} hosts</span>
+                    <span class="muted">{{percentage_label}}</span>
+                </div>
+                {{/each}}
+            </div>
+        </div>
+        {{else}}
+        <p class="empty-copy">No keyword-tagged forum hosts are available yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <div class="table-cell-stack">
+                <h2>Keyword Timeline</h2>
+                <span class="muted">Daily histogram of when each <code>host + keyword</code> pair was first observed.</span>
+            </div>
+        </div>
+        {{#if has_keyword_timeline}}
+        <div class="chart-scroll">
+            {{{keyword_histogram_svg}}}
+        </div>
+        <p class="chart-note">Range: {{keyword_first_day}} to {{keyword_last_day}}</p>
+        {{else}}
+        <p class="empty-copy">No keyword timeline is available yet.</p>
         {{/if}}
     </section>
 </div>

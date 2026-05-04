@@ -798,6 +798,15 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
 
         let forum_keyword_tags =
             compute_page_keyword_tags(&snapshot, &list_forum_keyword_rules(conn)?);
+        let existing_keyword_tag_timestamps = page_keyword_tag::table
+            .filter(page_keyword_tag::page_id.eq(stored_page_id))
+            .select(PageKeywordTag::as_select())
+            .load::<PageKeywordTag>(conn)
+            .context("error loading existing page keyword tags")?
+            .into_iter()
+            .map(|row| (row.tag, row.created_at))
+            .collect::<HashMap<_, _>>();
+        let current_timestamp = current_timestamp_text(conn)?;
 
         let stored_scan_id = diesel::insert_into(page_scan::table)
             .values(NewPageScan {
@@ -923,6 +932,10 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
             .map(|tag| NewPageKeywordTag {
                 page_id: stored_page_id,
                 tag: tag.clone(),
+                created_at: existing_keyword_tag_timestamps
+                    .get(tag)
+                    .cloned()
+                    .unwrap_or_else(|| current_timestamp.clone()),
             })
             .collect::<Vec<_>>();
         if !keyword_tag_rows.is_empty() {
@@ -2732,6 +2745,91 @@ pub fn list_site_category_timeline(conn: &mut PgConnection) -> Result<Vec<Catego
         .collect())
 }
 
+fn keyword_tag_label(tag: &str) -> String {
+    tag.strip_prefix("keyword:").unwrap_or(tag).to_string()
+}
+
+pub fn list_site_keyword_distribution(
+    conn: &mut PgConnection,
+) -> Result<Vec<CategoryDistributionEntry>> {
+    let host_expr = sql_host_expr("p.url", conn);
+    let query = format!(
+        "
+        SELECT
+            keyword_hosts.category,
+            COUNT(*) AS host_count
+        FROM (
+            SELECT
+                {host_expr} AS host,
+                pkt.tag AS category
+            FROM page_keyword_tag pkt
+            JOIN page p ON p.id = pkt.page_id
+            JOIN site_profile sp ON sp.host = {host_expr}
+            WHERE sp.category = 'forum'
+                AND pkt.tag LIKE 'keyword:%'
+                AND {host_expr} != ''
+            GROUP BY {host_expr}, pkt.tag
+        ) AS keyword_hosts
+        GROUP BY keyword_hosts.category
+        ORDER BY host_count DESC, keyword_hosts.category ASC
+        "
+    );
+    let rows = sql_query(query)
+        .load::<CategoryDistributionRow>(conn)
+        .context("error loading site keyword distribution")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CategoryDistributionEntry {
+            label: keyword_tag_label(&row.category),
+            category: row.category,
+            host_count: row.host_count.max(0) as usize,
+        })
+        .collect())
+}
+
+pub fn list_site_keyword_timeline(conn: &mut PgConnection) -> Result<Vec<CategoryTimelinePoint>> {
+    let host_expr = sql_host_expr("p.url", conn);
+    let day_expr = sql_day_bucket_expr("keyword_hosts.first_seen_at", conn);
+    let query = format!(
+        "
+        WITH keyword_hosts AS (
+            SELECT
+                {host_expr} AS host,
+                pkt.tag AS category,
+                MIN(pkt.created_at) AS first_seen_at
+            FROM page_keyword_tag pkt
+            JOIN page p ON p.id = pkt.page_id
+            JOIN site_profile sp ON sp.host = {host_expr}
+            WHERE sp.category = 'forum'
+                AND pkt.tag LIKE 'keyword:%'
+                AND {host_expr} != ''
+            GROUP BY {host_expr}, pkt.tag
+        )
+        SELECT
+            {day_expr} AS day,
+            keyword_hosts.category,
+            COUNT(*) AS host_count
+        FROM keyword_hosts
+        GROUP BY {day_expr}, keyword_hosts.category
+        ORDER BY day ASC, keyword_hosts.category ASC
+        "
+    );
+    let rows = sql_query(query)
+        .load::<CategoryTimelineRow>(conn)
+        .context("error loading site keyword timeline")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CategoryTimelinePoint {
+            day: row.day,
+            label: keyword_tag_label(&row.category),
+            category: row.category,
+            host_count: row.host_count.max(0) as usize,
+        })
+        .collect())
+}
+
 pub fn list_site_relationships(
     conn: &mut PgConnection,
     requested_limit: Option<i64>,
@@ -4377,6 +4475,73 @@ mod tests {
             updated_beta.keyword_tags,
             vec!["keyword:acme corp".to_string()]
         );
+    }
+
+    #[test]
+    fn keyword_analytics_are_host_level_and_timed_by_first_tag_observation() {
+        let mut conn = setup_connection();
+        add_forum_keyword_rule(&mut conn, "Acme Corp", "acme corp").expect("add acme rule");
+        add_forum_keyword_rule(&mut conn, "LockBit", "lockbit").expect("add lockbit rule");
+
+        let mut alpha = alpha_snapshot();
+        alpha.keyword_corpus = "http://alpha.onion\nAlpha Market\nseller acme corp".to_string();
+
+        let mut beta = beta_snapshot();
+        beta.keyword_corpus =
+            "http://beta.onion\nBeta Forum\nthread about acme corp and mirrors".to_string();
+
+        let mut gamma = beta_snapshot();
+        gamma.url = "http://gamma.onion".to_string();
+        gamma.title = "Gamma Forum".to_string();
+        gamma.keyword_corpus =
+            "http://gamma.onion\nGamma Forum\nthread about acme corp and lockbit".to_string();
+        gamma.links = vec![LinkObservation {
+            target_url: "http://beta.onion".to_string(),
+            target_host: "beta.onion".to_string(),
+        }];
+
+        save_page_info(&mut conn, &alpha).expect("save alpha");
+        save_page_info(&mut conn, &beta).expect("save beta");
+        save_page_info(&mut conn, &gamma).expect("save gamma");
+        conn.batch_execute(
+            "
+            UPDATE page_keyword_tag
+            SET created_at = '2026-05-01 08:00:00'
+            WHERE page_id = (SELECT id FROM page WHERE url = 'http://beta.onion')
+              AND tag = 'keyword:acme corp';
+            UPDATE page_keyword_tag
+            SET created_at = '2026-05-02 09:00:00'
+            WHERE page_id = (SELECT id FROM page WHERE url = 'http://gamma.onion')
+              AND tag = 'keyword:acme corp';
+            UPDATE page_keyword_tag
+            SET created_at = '2026-05-03 10:00:00'
+            WHERE page_id = (SELECT id FROM page WHERE url = 'http://gamma.onion')
+              AND tag = 'keyword:lockbit';
+            ",
+        )
+        .expect("seed keyword timestamps");
+
+        save_page_info(&mut conn, &beta).expect("resave beta");
+
+        let distribution = list_site_keyword_distribution(&mut conn).expect("keyword distribution");
+        assert_eq!(distribution.len(), 2);
+        assert_eq!(distribution[0].category, "keyword:acme corp");
+        assert_eq!(distribution[0].label, "acme corp");
+        assert_eq!(distribution[0].host_count, 2);
+        assert_eq!(distribution[1].category, "keyword:lockbit");
+        assert_eq!(distribution[1].host_count, 1);
+
+        let timeline = list_site_keyword_timeline(&mut conn).expect("keyword timeline");
+        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline[0].day, "2026-05-01");
+        assert_eq!(timeline[0].category, "keyword:acme corp");
+        assert_eq!(timeline[0].host_count, 1);
+        assert_eq!(timeline[1].day, "2026-05-02");
+        assert_eq!(timeline[1].category, "keyword:acme corp");
+        assert_eq!(timeline[1].host_count, 1);
+        assert_eq!(timeline[2].day, "2026-05-03");
+        assert_eq!(timeline[2].category, "keyword:lockbit");
+        assert_eq!(timeline[2].host_count, 1);
     }
 
     #[test]

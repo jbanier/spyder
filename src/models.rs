@@ -310,6 +310,7 @@ pub struct PageKeywordTag {
 pub struct NewPageKeywordTag {
     pub page_id: i32,
     pub tag: String,
+    pub created_at: String,
 }
 
 #[derive(Selectable, Queryable, Clone)]

@@ -16,10 +16,10 @@ use spyder::{
     get_page_scan_detail, get_ssh_host_key_detail, list_crypto_entities,
     list_domain_blacklist_rules, list_domain_blacklist_summaries, list_email_entities,
     list_host_http_observations, list_page_scan_summaries, list_page_summaries,
-    list_site_category_distribution, list_site_category_timeline, list_site_profiles,
-    list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
-    list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
-    list_work_units, search_pages,
+    list_site_category_distribution, list_site_category_timeline, list_site_keyword_distribution,
+    list_site_keyword_timeline, list_site_profiles, list_site_relationships, list_ssh_host_keys,
+    list_top_referenced_sites, list_top_sites_by_crypto_refs, list_top_sites_by_email_refs,
+    list_top_sites_by_outgoing_links, list_work_units, search_pages,
 };
 use std::collections::{BTreeMap, HashMap};
 use url::form_urlencoded;
@@ -504,19 +504,31 @@ fn top() -> HtmlResult {
 #[get("/analytics")]
 fn analytics() -> HtmlResult {
     let mut connection = open_connection()?;
-    let distribution = list_site_category_distribution(&mut connection)
+    let category_distribution = list_site_category_distribution(&mut connection)
         .frontend_context("loading site category distribution")?;
-    let timeline = list_site_category_timeline(&mut connection)
+    let category_timeline = list_site_category_timeline(&mut connection)
         .frontend_context("loading site category timeline")?;
-    let total_hosts = distribution
+    let keyword_distribution = list_site_keyword_distribution(&mut connection)
+        .frontend_context("loading site keyword distribution")?;
+    let keyword_timeline = list_site_keyword_timeline(&mut connection)
+        .frontend_context("loading site keyword timeline")?;
+    let total_hosts = category_distribution
         .iter()
         .map(|entry| entry.host_count)
         .sum::<usize>();
-    let first_day = timeline
+    let first_day = category_timeline
         .first()
         .map(|item| item.day.clone())
         .unwrap_or_else(|| "Never".to_string());
-    let last_day = timeline
+    let last_day = category_timeline
+        .last()
+        .map(|item| item.day.clone())
+        .unwrap_or_else(|| "Never".to_string());
+    let keyword_first_day = keyword_timeline
+        .first()
+        .map(|item| item.day.clone())
+        .unwrap_or_else(|| "Never".to_string());
+    let keyword_last_day = keyword_timeline
         .last()
         .map(|item| item.day.clone())
         .unwrap_or_else(|| "Never".to_string());
@@ -526,7 +538,7 @@ fn analytics() -> HtmlResult {
             label: "Classified Hosts".to_string(),
         },
         CategoryMetricView {
-            value: distribution.len().to_string(),
+            value: category_distribution.len().to_string(),
             label: "Active Categories".to_string(),
         },
         CategoryMetricView {
@@ -538,26 +550,62 @@ fn analytics() -> HtmlResult {
             label: "Latest Classified Day".to_string(),
         },
     ];
-    let legend = build_category_legend_items(&distribution);
-    let pie_svg = render_category_pie_chart(&distribution);
-    let histogram_svg = render_category_histogram(&distribution, &timeline);
-    let has_distribution = !distribution.is_empty();
-    let has_timeline = !timeline.is_empty();
+    let category_legend = build_category_legend_items(&category_distribution);
+    let category_pie_svg = render_distribution_pie_chart(
+        &category_distribution,
+        "Classified",
+        "Current site category distribution",
+        "No data",
+        "Run more scans to classify hosts",
+    );
+    let category_histogram_svg = render_timeline_histogram(
+        &category_distribution,
+        &category_timeline,
+        "Daily histogram of newly classified hosts by category",
+        "No timeline yet",
+        "Newly classified hosts will appear here over time",
+    );
+    let keyword_legend = build_category_legend_items(&keyword_distribution);
+    let keyword_pie_svg = render_distribution_pie_chart(
+        &keyword_distribution,
+        "Keyword Tags",
+        "Current site keyword tag distribution",
+        "No keyword data",
+        "Tagged forum hosts will appear here after keyword matches are found",
+    );
+    let keyword_histogram_svg = render_timeline_histogram(
+        &keyword_distribution,
+        &keyword_timeline,
+        "Daily histogram of first observed host keyword tags",
+        "No keyword timeline yet",
+        "Newly tagged forum hosts will appear here over time",
+    );
+    let has_distribution = !category_distribution.is_empty();
+    let has_timeline = !category_timeline.is_empty();
+    let has_keyword_distribution = !keyword_distribution.is_empty();
+    let has_keyword_timeline = !keyword_timeline.is_empty();
 
     Ok(Template::render(
         "analytics",
         context! {
-            title: "Category Analytics",
-            description: "See the current host-category mix and when newly classified hosts first appeared in the index.",
+            title: "Site Analytics",
+            description: "See current category and keyword-tag breakdowns, plus when those classifications and tags first appeared in the index.",
             metrics: metrics,
-            legend: legend,
-            pie_svg: pie_svg,
-            histogram_svg: histogram_svg,
+            category_legend: category_legend,
+            category_pie_svg: category_pie_svg,
+            category_histogram_svg: category_histogram_svg,
+            keyword_legend: keyword_legend,
+            keyword_pie_svg: keyword_pie_svg,
+            keyword_histogram_svg: keyword_histogram_svg,
             has_distribution: has_distribution,
             has_timeline: has_timeline,
+            has_keyword_distribution: has_keyword_distribution,
+            has_keyword_timeline: has_keyword_timeline,
             total_hosts: total_hosts,
             first_day: first_day,
             last_day: last_day,
+            keyword_first_day: keyword_first_day,
+            keyword_last_day: keyword_last_day,
         },
     ))
 }
@@ -1017,7 +1065,7 @@ fn build_category_legend_items(
         .map(|entry| CategoryLegendView {
             category: entry.category.clone(),
             label: entry.label.clone(),
-            color: category_chart_color(&entry.category).to_string(),
+            color: analytics_chart_color(&entry.category).to_string(),
             host_count: entry.host_count,
             percentage_label: format!(
                 "{:.1}%",
@@ -1027,8 +1075,8 @@ fn build_category_legend_items(
         .collect()
 }
 
-fn category_chart_color(category: &str) -> &'static str {
-    match category {
+fn analytics_chart_color(series_key: &str) -> &'static str {
+    match series_key {
         "search-engine" => "#1f6c5c",
         "forum" => "#0f5b73",
         "market" => "#a35d10",
@@ -1041,19 +1089,42 @@ fn category_chart_color(category: &str) -> &'static str {
         "docs" => "#366b87",
         "indexer" => "#6e4d34",
         "content" => "#677a74",
-        _ => "#8a9490",
+        _ => fallback_chart_color(series_key),
     }
 }
 
-fn render_category_pie_chart(distribution: &[CategoryDistributionEntry]) -> String {
+fn fallback_chart_color(series_key: &str) -> &'static str {
+    const PALETTE: [&str; 12] = [
+        "#1f6c5c", "#0f5b73", "#a35d10", "#3f6c1f", "#4c5f9c", "#b24f6b", "#7f4db8", "#b2492c",
+        "#8b5e34", "#366b87", "#6e4d34", "#677a74",
+    ];
+
+    let hash = series_key.bytes().fold(0_usize, |acc, byte| {
+        acc.wrapping_mul(33).wrapping_add(byte as usize)
+    });
+    PALETTE[hash % PALETTE.len()]
+}
+
+fn render_distribution_pie_chart(
+    distribution: &[CategoryDistributionEntry],
+    center_label: &str,
+    aria_label: &str,
+    empty_title: &str,
+    empty_subtitle: &str,
+) -> String {
     if distribution.is_empty() {
-        return r##"
-<svg class="chart-svg" viewBox="0 0 320 320" role="img" aria-label="No category distribution available">
+        return format!(
+            r##"
+<svg class="chart-svg" viewBox="0 0 320 320" role="img" aria-label="{aria_label}">
   <circle cx="160" cy="160" r="96" fill="none" stroke="#d8e0d2" stroke-width="46"></circle>
-  <text x="160" y="154" text-anchor="middle" font-size="18" font-weight="700" fill="#5c6c68">No data</text>
-  <text x="160" y="176" text-anchor="middle" font-size="12" fill="#5c6c68">Run more scans to classify hosts</text>
+  <text x="160" y="154" text-anchor="middle" font-size="18" font-weight="700" fill="#5c6c68">{empty_title}</text>
+  <text x="160" y="176" text-anchor="middle" font-size="12" fill="#5c6c68">{empty_subtitle}</text>
 </svg>
-"##
+"##,
+            aria_label = aria_label,
+            empty_title = empty_title,
+            empty_subtitle = empty_subtitle,
+        )
         .trim()
         .to_string();
     }
@@ -1070,7 +1141,7 @@ fn render_category_pie_chart(distribution: &[CategoryDistributionEntry]) -> Stri
 
     for entry in distribution {
         let slice_len = circumference * (entry.host_count as f64 / total_hosts as f64);
-        let color = category_chart_color(&entry.category);
+        let color = analytics_chart_color(&entry.category);
         let percentage = (entry.host_count as f64 / total_hosts as f64) * 100.0;
         slices.push_str(&format!(
             r##"<circle cx="160" cy="160" r="{radius}" fill="none" stroke="{color}" stroke-width="46" stroke-dasharray="{slice_len:.3} {remaining:.3}" stroke-dashoffset="{dashoffset:.3}" transform="rotate(-90 160 160)"><title>{label}: {count} hosts ({percentage:.1}%)</title></circle>"##,
@@ -1088,34 +1159,44 @@ fn render_category_pie_chart(distribution: &[CategoryDistributionEntry]) -> Stri
 
     format!(
         r##"
-<svg class="chart-svg" viewBox="0 0 320 320" role="img" aria-label="Current site category distribution">
+<svg class="chart-svg" viewBox="0 0 320 320" role="img" aria-label="{aria_label}">
   <circle cx="160" cy="160" r="{radius}" fill="none" stroke="#e8ece2" stroke-width="46"></circle>
   {slices}
   <circle cx="160" cy="160" r="62" fill="#fbfcf8" stroke="#d8e0d2" stroke-width="1.5"></circle>
-  <text x="160" y="150" text-anchor="middle" font-size="14" fill="#5c6c68">Classified</text>
+  <text x="160" y="150" text-anchor="middle" font-size="14" fill="#5c6c68">{center_label}</text>
   <text x="160" y="176" text-anchor="middle" font-size="34" font-weight="700" fill="#17211f">{total_hosts}</text>
 </svg>
 "##,
+        aria_label = aria_label,
         radius = radius,
         slices = slices,
+        center_label = center_label,
         total_hosts = total_hosts,
     )
     .trim()
     .to_string()
 }
 
-fn render_category_histogram(
+fn render_timeline_histogram(
     distribution: &[CategoryDistributionEntry],
     timeline: &[CategoryTimelinePoint],
+    aria_label: &str,
+    empty_title: &str,
+    empty_subtitle: &str,
 ) -> String {
     if timeline.is_empty() {
-        return r##"
-<svg class="chart-svg" viewBox="0 0 920 320" role="img" aria-label="No category timeline available">
+        return format!(
+            r##"
+<svg class="chart-svg" viewBox="0 0 920 320" role="img" aria-label="{aria_label}">
   <rect x="0" y="0" width="920" height="320" rx="18" fill="#fbfcf8"></rect>
-  <text x="460" y="150" text-anchor="middle" font-size="18" font-weight="700" fill="#5c6c68">No timeline yet</text>
-  <text x="460" y="176" text-anchor="middle" font-size="12" fill="#5c6c68">Newly classified hosts will appear here over time</text>
+  <text x="460" y="150" text-anchor="middle" font-size="18" font-weight="700" fill="#5c6c68">{empty_title}</text>
+  <text x="460" y="176" text-anchor="middle" font-size="12" fill="#5c6c68">{empty_subtitle}</text>
 </svg>
-"##
+"##,
+            aria_label = aria_label,
+            empty_title = empty_title,
+            empty_subtitle = empty_subtitle,
+        )
         .trim()
         .to_string();
     }
@@ -1188,7 +1269,7 @@ fn render_category_histogram(
             }
             let segment_height = (count as f64 / max_total as f64) * chart_height;
             y_cursor -= segment_height;
-            let color = category_chart_color(category);
+            let color = analytics_chart_color(category);
             let label = category_labels
                 .get(category)
                 .cloned()
@@ -1225,13 +1306,14 @@ fn render_category_histogram(
 
     format!(
         r##"
-<svg class="chart-svg chart-svg-wide" viewBox="0 0 {width:.1} {height:.1}" role="img" aria-label="Daily histogram of newly classified hosts by category">
+<svg class="chart-svg chart-svg-wide" viewBox="0 0 {width:.1} {height:.1}" role="img" aria-label="{aria_label}">
   <rect x="0" y="0" width="{width:.1}" height="{height:.1}" rx="18" fill="#fbfcf8"></rect>
   {grid}
   <line x1="{left:.1}" y1="{axis_y:.1}" x2="{axis_right:.1}" y2="{axis_y:.1}" stroke="#9fb0aa" stroke-width="1.2"></line>
   {bars}
 </svg>
 "##,
+        aria_label = aria_label,
         width = width,
         height = height,
         grid = grid,
@@ -1644,6 +1726,28 @@ mod tests {
         assert!(body.contains("Most Referenced Sites"));
         assert!(body.contains("gamma.onion"));
         assert!(body.contains("beta.onion"));
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn analytics_page_renders_keyword_breakdown_sections() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client.get("/analytics").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        let body = response.into_string().expect("response body");
+        assert!(body.contains("Current Category Mix"));
+        assert!(body.contains("Current Keyword Mix"));
+        assert!(body.contains("Keyword Timeline"));
+        assert!(body.contains("keyword:acme corp"));
 
         fs::remove_file(&database_url).expect("remove test database");
     }
