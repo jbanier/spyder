@@ -224,6 +224,24 @@ struct HostMetricSummaryRow {
 }
 
 #[derive(QueryableByName)]
+struct CategoryDistributionRow {
+    #[diesel(sql_type = Text)]
+    category: String,
+    #[diesel(sql_type = BigInt)]
+    host_count: i64,
+}
+
+#[derive(QueryableByName)]
+struct CategoryTimelineRow {
+    #[diesel(sql_type = Text)]
+    day: String,
+    #[diesel(sql_type = Text)]
+    category: String,
+    #[diesel(sql_type = BigInt)]
+    host_count: i64,
+}
+
+#[derive(QueryableByName)]
 struct HostPageContextRow {
     #[diesel(sql_type = diesel::sql_types::Integer)]
     page_id: i32,
@@ -2196,6 +2214,62 @@ pub fn list_top_referenced_sites(
     load_top_site_entries_from_query(conn, &query, limit)
 }
 
+pub fn list_site_category_distribution(
+    conn: &mut PgConnection,
+) -> Result<Vec<CategoryDistributionEntry>> {
+    let rows = sql_query(
+        "
+        SELECT
+            category,
+            COUNT(*) AS host_count
+        FROM site_profile
+        WHERE category != ''
+        GROUP BY category
+        ORDER BY host_count DESC, category ASC
+        ",
+    )
+    .load::<CategoryDistributionRow>(conn)
+    .context("error loading site category distribution")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CategoryDistributionEntry {
+            label: site_category_label(&row.category).to_string(),
+            category: row.category,
+            host_count: row.host_count.max(0) as usize,
+        })
+        .collect())
+}
+
+pub fn list_site_category_timeline(conn: &mut PgConnection) -> Result<Vec<CategoryTimelinePoint>> {
+    let day_expr = sql_day_bucket_expr("sp.created_at", conn);
+    let query = format!(
+        "
+        SELECT
+            {day_expr} AS day,
+            sp.category,
+            COUNT(*) AS host_count
+        FROM site_profile sp
+        WHERE sp.category != ''
+        GROUP BY {day_expr}, sp.category
+        ORDER BY day ASC, sp.category ASC
+        "
+    );
+    let rows = sql_query(query)
+        .load::<CategoryTimelineRow>(conn)
+        .context("error loading site category timeline")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CategoryTimelinePoint {
+            day: row.day,
+            label: site_category_label(&row.category).to_string(),
+            category: row.category,
+            host_count: row.host_count.max(0) as usize,
+        })
+        .collect())
+}
+
 pub fn list_site_relationships(
     conn: &mut PgConnection,
     requested_limit: Option<i64>,
@@ -3109,6 +3183,13 @@ fn sql_case_insensitive_match_expr(
         SqlDialect::Sqlite => {
             format!("{column} LIKE {placeholder} ESCAPE '\\' COLLATE NOCASE")
         }
+    }
+}
+
+fn sql_day_bucket_expr(column: &str, conn: &impl AppConnection) -> String {
+    match conn.dialect() {
+        SqlDialect::Postgres => format!("LEFT({column}, 10)"),
+        SqlDialect::Sqlite => format!("substr({column}, 1, 10)"),
     }
 }
 

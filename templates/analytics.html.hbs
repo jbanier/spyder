@@ -1,0 +1,74 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Category Analytics</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Summary</h2>
+        <span class="muted">{{total_hosts}} classified hosts</span>
+    </div>
+    <div class="stats-grid">
+        {{#each metrics}}
+        <article class="stat-item">
+            <strong>{{value}}</strong>
+            <span>{{label}}</span>
+        </article>
+        {{/each}}
+    </div>
+</section>
+
+<div class="dashboard-grid dashboard-grid-wide analytics-grid">
+    <section class="card">
+        <div class="section-heading">
+            <div class="table-cell-stack">
+                <h2>Current Category Mix</h2>
+                <span class="muted">Distribution of current host classifications from <code>site_profile</code>.</span>
+            </div>
+        </div>
+        {{#if has_distribution}}
+        <div class="chart-shell">
+            <div class="chart-visual">
+                {{{pie_svg}}}
+            </div>
+            <div class="chart-legend">
+                {{#each legend}}
+                <div class="legend-row">
+                    <span class="legend-swatch" style="background: {{color}};"></span>
+                    <div class="legend-copy">
+                        <strong>{{label}}</strong>
+                        <span class="muted">{{category}}</span>
+                    </div>
+                    <span class="count-pill">{{host_count}} hosts</span>
+                    <span class="muted">{{percentage_label}}</span>
+                </div>
+                {{/each}}
+            </div>
+        </div>
+        {{else}}
+        <p class="empty-copy">No classified hosts are available yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <div class="table-cell-stack">
+                <h2>Discovery Timeline</h2>
+                <span class="muted">Daily histogram of newly classified hosts by category, based on <code>site_profile.created_at</code>.</span>
+            </div>
+        </div>
+        {{#if has_timeline}}
+        <div class="chart-scroll">
+            {{{histogram_svg}}}
+        </div>
+        <p class="chart-note">Range: {{first_day}} to {{last_day}}</p>
+        {{else}}
+        <p class="empty-copy">No category timeline is available yet.</p>
+        {{/if}}
+    </section>
+</div>
+{{/inline}}
+
+{{> base}}

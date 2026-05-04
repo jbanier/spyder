@@ -560,6 +560,23 @@ pub struct TopSiteSection {
 
 #[derive(Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
+pub struct CategoryDistributionEntry {
+    pub category: String,
+    pub label: String,
+    pub host_count: usize,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct CategoryTimelinePoint {
+    pub day: String,
+    pub category: String,
+    pub label: String,
+    pub host_count: usize,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
 pub struct EmailEntitySummary {
     pub value: String,
     pub page_count: usize,

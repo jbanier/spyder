@@ -170,6 +170,10 @@ a:hover {
     grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 1fr);
 }
 
+.analytics-grid {
+    margin-top: 1.35rem;
+}
+
 .section-heading {
     align-items: center;
     display: flex;
@@ -307,6 +311,72 @@ a:hover {
     display: flex;
     flex-wrap: wrap;
     gap: 0.55rem;
+    margin-top: 0.9rem;
+}
+
+.chart-shell {
+    display: grid;
+    gap: 1.2rem;
+    grid-template-columns: minmax(240px, 320px) minmax(280px, 1fr);
+    align-items: center;
+}
+
+.chart-visual {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+}
+
+.chart-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+}
+
+.legend-row {
+    align-items: center;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    display: grid;
+    gap: 0.8rem;
+    grid-template-columns: 14px minmax(0, 1fr) auto auto;
+    padding: 0.85rem 0.95rem;
+}
+
+.legend-swatch {
+    border-radius: 999px;
+    display: inline-flex;
+    height: 14px;
+    width: 14px;
+}
+
+.legend-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+}
+
+.chart-scroll {
+    overflow-x: auto;
+    padding-bottom: 0.35rem;
+}
+
+.chart-svg {
+    display: block;
+    height: auto;
+    max-width: 100%;
+    width: 100%;
+}
+
+.chart-svg-wide {
+    min-width: 920px;
+}
+
+.chart-note {
+    color: var(--muted);
+    font-size: 0.9rem;
     margin-top: 0.9rem;
 }
 
@@ -658,6 +728,15 @@ footer {
 
     .dashboard-grid-wide {
         grid-template-columns: 1fr;
+    }
+
+    .chart-shell,
+    .legend-row {
+        grid-template-columns: 1fr;
+    }
+
+    .chart-visual {
+        justify-content: flex-start;
     }
 
     .compact-row {

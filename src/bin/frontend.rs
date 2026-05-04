@@ -7,16 +7,20 @@ use rocket::response::{self, Responder};
 use rocket::serde::{json::Json, Serialize};
 use rocket::{get, launch, routes};
 use rocket_dyn_templates::{context, Template};
-use spyder::models::{PaginatedResult, TopSiteSection};
+use spyder::models::{
+    CategoryDistributionEntry, CategoryTimelinePoint, PaginatedResult, TopSiteSection,
+};
 use spyder::{
     collect_stats, establish_connection, find_matching_blacklist_domain, get_crypto_entity_detail,
     get_email_entity_detail, get_page_detail, get_page_scan_detail, get_ssh_host_key_detail,
     list_crypto_entities, list_domain_blacklist_rules, list_domain_blacklist_summaries,
-    list_email_entities, list_page_scan_summaries, list_page_summaries, list_site_profiles,
+    list_email_entities, list_page_scan_summaries, list_page_summaries,
+    list_site_category_distribution, list_site_category_timeline, list_site_profiles,
     list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
     list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
     list_work_units, search_pages,
 };
+use std::collections::{BTreeMap, HashMap};
 use url::form_urlencoded;
 use url::Url;
 
@@ -105,6 +109,23 @@ struct WorkUnitView {
     created_at: String,
     is_blacklisted: bool,
     blacklist_match_domain: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+struct CategoryMetricView {
+    value: String,
+    label: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+struct CategoryLegendView {
+    category: String,
+    label: String,
+    color: String,
+    host_count: usize,
+    percentage_label: String,
 }
 
 #[derive(FromForm, Clone)]
@@ -466,6 +487,67 @@ fn top() -> HtmlResult {
             description: "Host-level leaderboards for the most active and most referenced sites in the current index.",
             sections: sections,
             has_sections: has_sections,
+        },
+    ))
+}
+
+#[get("/analytics")]
+fn analytics() -> HtmlResult {
+    let mut connection = open_connection()?;
+    let distribution = list_site_category_distribution(&mut connection)
+        .frontend_context("loading site category distribution")?;
+    let timeline = list_site_category_timeline(&mut connection)
+        .frontend_context("loading site category timeline")?;
+    let total_hosts = distribution
+        .iter()
+        .map(|entry| entry.host_count)
+        .sum::<usize>();
+    let first_day = timeline
+        .first()
+        .map(|item| item.day.clone())
+        .unwrap_or_else(|| "Never".to_string());
+    let last_day = timeline
+        .last()
+        .map(|item| item.day.clone())
+        .unwrap_or_else(|| "Never".to_string());
+    let metrics = vec![
+        CategoryMetricView {
+            value: total_hosts.to_string(),
+            label: "Classified Hosts".to_string(),
+        },
+        CategoryMetricView {
+            value: distribution.len().to_string(),
+            label: "Active Categories".to_string(),
+        },
+        CategoryMetricView {
+            value: first_day.clone(),
+            label: "First Classified Day".to_string(),
+        },
+        CategoryMetricView {
+            value: last_day.clone(),
+            label: "Latest Classified Day".to_string(),
+        },
+    ];
+    let legend = build_category_legend_items(&distribution);
+    let pie_svg = render_category_pie_chart(&distribution);
+    let histogram_svg = render_category_histogram(&distribution, &timeline);
+    let has_distribution = !distribution.is_empty();
+    let has_timeline = !timeline.is_empty();
+
+    Ok(Template::render(
+        "analytics",
+        context! {
+            title: "Category Analytics",
+            description: "See the current host-category mix and when newly classified hosts first appeared in the index.",
+            metrics: metrics,
+            legend: legend,
+            pie_svg: pie_svg,
+            histogram_svg: histogram_svg,
+            has_distribution: has_distribution,
+            has_timeline: has_timeline,
+            total_hosts: total_hosts,
+            first_day: first_day,
+            last_day: last_day,
         },
     ))
 }
@@ -861,6 +943,253 @@ fn build_list_url(
     format!("{base_path}?{}", serializer.finish())
 }
 
+fn build_category_legend_items(
+    distribution: &[CategoryDistributionEntry],
+) -> Vec<CategoryLegendView> {
+    let total_hosts = distribution
+        .iter()
+        .map(|entry| entry.host_count)
+        .sum::<usize>()
+        .max(1);
+    distribution
+        .iter()
+        .map(|entry| CategoryLegendView {
+            category: entry.category.clone(),
+            label: entry.label.clone(),
+            color: category_chart_color(&entry.category).to_string(),
+            host_count: entry.host_count,
+            percentage_label: format!(
+                "{:.1}%",
+                (entry.host_count as f64 / total_hosts as f64) * 100.0
+            ),
+        })
+        .collect()
+}
+
+fn category_chart_color(category: &str) -> &'static str {
+    match category {
+        "search-engine" => "#1f6c5c",
+        "forum" => "#0f5b73",
+        "market" => "#a35d10",
+        "directory" => "#3f6c1f",
+        "wiki" => "#4c5f9c",
+        "blog" => "#b24f6b",
+        "escrow" => "#7f4db8",
+        "shop" => "#b2492c",
+        "vendor-page" => "#8b5e34",
+        "docs" => "#366b87",
+        "indexer" => "#6e4d34",
+        "content" => "#677a74",
+        _ => "#8a9490",
+    }
+}
+
+fn render_category_pie_chart(distribution: &[CategoryDistributionEntry]) -> String {
+    if distribution.is_empty() {
+        return r##"
+<svg class="chart-svg" viewBox="0 0 320 320" role="img" aria-label="No category distribution available">
+  <circle cx="160" cy="160" r="96" fill="none" stroke="#d8e0d2" stroke-width="46"></circle>
+  <text x="160" y="154" text-anchor="middle" font-size="18" font-weight="700" fill="#5c6c68">No data</text>
+  <text x="160" y="176" text-anchor="middle" font-size="12" fill="#5c6c68">Run more scans to classify hosts</text>
+</svg>
+"##
+        .trim()
+        .to_string();
+    }
+
+    let total_hosts = distribution
+        .iter()
+        .map(|entry| entry.host_count)
+        .sum::<usize>()
+        .max(1);
+    let radius = 96.0_f64;
+    let circumference = 2.0 * std::f64::consts::PI * radius;
+    let mut offset = 0.0_f64;
+    let mut slices = String::new();
+
+    for entry in distribution {
+        let slice_len = circumference * (entry.host_count as f64 / total_hosts as f64);
+        let color = category_chart_color(&entry.category);
+        let percentage = (entry.host_count as f64 / total_hosts as f64) * 100.0;
+        slices.push_str(&format!(
+            r##"<circle cx="160" cy="160" r="{radius}" fill="none" stroke="{color}" stroke-width="46" stroke-dasharray="{slice_len:.3} {remaining:.3}" stroke-dashoffset="{dashoffset:.3}" transform="rotate(-90 160 160)"><title>{label}: {count} hosts ({percentage:.1}%)</title></circle>"##,
+            radius = radius,
+            color = color,
+            slice_len = slice_len,
+            remaining = (circumference - slice_len).max(0.0),
+            dashoffset = -offset,
+            label = entry.label,
+            count = entry.host_count,
+            percentage = percentage,
+        ));
+        offset += slice_len;
+    }
+
+    format!(
+        r##"
+<svg class="chart-svg" viewBox="0 0 320 320" role="img" aria-label="Current site category distribution">
+  <circle cx="160" cy="160" r="{radius}" fill="none" stroke="#e8ece2" stroke-width="46"></circle>
+  {slices}
+  <circle cx="160" cy="160" r="62" fill="#fbfcf8" stroke="#d8e0d2" stroke-width="1.5"></circle>
+  <text x="160" y="150" text-anchor="middle" font-size="14" fill="#5c6c68">Classified</text>
+  <text x="160" y="176" text-anchor="middle" font-size="34" font-weight="700" fill="#17211f">{total_hosts}</text>
+</svg>
+"##,
+        radius = radius,
+        slices = slices,
+        total_hosts = total_hosts,
+    )
+    .trim()
+    .to_string()
+}
+
+fn render_category_histogram(
+    distribution: &[CategoryDistributionEntry],
+    timeline: &[CategoryTimelinePoint],
+) -> String {
+    if timeline.is_empty() {
+        return r##"
+<svg class="chart-svg" viewBox="0 0 920 320" role="img" aria-label="No category timeline available">
+  <rect x="0" y="0" width="920" height="320" rx="18" fill="#fbfcf8"></rect>
+  <text x="460" y="150" text-anchor="middle" font-size="18" font-weight="700" fill="#5c6c68">No timeline yet</text>
+  <text x="460" y="176" text-anchor="middle" font-size="12" fill="#5c6c68">Newly classified hosts will appear here over time</text>
+</svg>
+"##
+        .trim()
+        .to_string();
+    }
+
+    let category_order = distribution
+        .iter()
+        .map(|entry| entry.category.clone())
+        .collect::<Vec<_>>();
+    let category_labels = distribution
+        .iter()
+        .map(|entry| (entry.category.clone(), entry.label.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut by_day = BTreeMap::<String, HashMap<String, usize>>::new();
+    for point in timeline {
+        by_day
+            .entry(point.day.clone())
+            .or_default()
+            .insert(point.category.clone(), point.host_count);
+    }
+
+    let buckets = by_day.into_iter().collect::<Vec<_>>();
+    let max_total = buckets
+        .iter()
+        .map(|(_, counts)| counts.values().sum::<usize>())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
+    let left = 56.0_f64;
+    let right = 16.0_f64;
+    let top = 20.0_f64;
+    let bottom = 40.0_f64;
+    let chart_height = 220.0_f64;
+    let bar_width = 18.0_f64;
+    let gap = 12.0_f64;
+    let plot_width = buckets.len() as f64 * (bar_width + gap);
+    let width = (left + right + plot_width).max(920.0);
+    let height = top + chart_height + bottom;
+    let step = if buckets.len() > 14 {
+        ((buckets.len() as f64) / 14.0).ceil() as usize
+    } else {
+        1
+    };
+
+    let mut grid = String::new();
+    for tick in 0..=4 {
+        let value = ((max_total as f64) * (tick as f64) / 4.0).round() as usize;
+        let y = top + chart_height - ((value as f64 / max_total as f64) * chart_height);
+        grid.push_str(&format!(
+            r##"<line x1="{left:.1}" y1="{y:.1}" x2="{right_x:.1}" y2="{y:.1}" stroke="#d8e0d2" stroke-width="1"></line><text x="{label_x:.1}" y="{label_y:.1}" text-anchor="end" font-size="11" fill="#5c6c68">{value}</text>"##,
+            left = left,
+            y = y,
+            right_x = width - right,
+            label_x = left - 8.0,
+            label_y = y + 4.0,
+            value = value,
+        ));
+    }
+
+    let mut bars = String::new();
+    for (index, (day, counts)) in buckets.iter().enumerate() {
+        let x = left + index as f64 * (bar_width + gap);
+        let mut y_cursor = top + chart_height;
+        let total = counts.values().sum::<usize>();
+
+        for category in &category_order {
+            let count = counts.get(category).copied().unwrap_or_default();
+            if count == 0 {
+                continue;
+            }
+            let segment_height = (count as f64 / max_total as f64) * chart_height;
+            y_cursor -= segment_height;
+            let color = category_chart_color(category);
+            let label = category_labels
+                .get(category)
+                .cloned()
+                .unwrap_or_else(|| category.clone());
+            bars.push_str(&format!(
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{width:.1}" height="{height:.1}" rx="3" fill="{color}"><title>{day} · {label}: {count} hosts</title></rect>"##,
+                x = x,
+                y = y_cursor,
+                width = bar_width,
+                height = segment_height.max(1.5),
+                color = color,
+                day = day,
+                label = label,
+                count = count,
+            ));
+        }
+
+        bars.push_str(&format!(
+            r##"<text x="{x:.1}" y="{y:.1}" text-anchor="middle" font-size="10" fill="#5c6c68">{label}</text>"##,
+            x = x + (bar_width / 2.0),
+            y = top + chart_height - ((total as f64 / max_total as f64) * chart_height) - 6.0,
+            label = total,
+        ));
+
+        if index % step == 0 || index + 1 == buckets.len() {
+            bars.push_str(&format!(
+                r##"<text x="{x:.1}" y="{y:.1}" text-anchor="middle" font-size="11" fill="#5c6c68">{label}</text>"##,
+                x = x + (bar_width / 2.0),
+                y = height - 12.0,
+                label = short_day_label(day),
+            ));
+        }
+    }
+
+    format!(
+        r##"
+<svg class="chart-svg chart-svg-wide" viewBox="0 0 {width:.1} {height:.1}" role="img" aria-label="Daily histogram of newly classified hosts by category">
+  <rect x="0" y="0" width="{width:.1}" height="{height:.1}" rx="18" fill="#fbfcf8"></rect>
+  {grid}
+  <line x1="{left:.1}" y1="{axis_y:.1}" x2="{axis_right:.1}" y2="{axis_y:.1}" stroke="#9fb0aa" stroke-width="1.2"></line>
+  {bars}
+</svg>
+"##,
+        width = width,
+        height = height,
+        grid = grid,
+        left = left,
+        axis_y = top + chart_height,
+        axis_right = width - right,
+        bars = bars,
+    )
+    .trim()
+    .to_string()
+}
+
+fn short_day_label(value: &str) -> String {
+    value
+        .get(5..10)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| value.to_string())
+}
+
 #[launch]
 fn rocket() -> _ {
     build_rocket()
@@ -881,6 +1210,7 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 list_work,
                 blacklist,
                 top,
+                analytics,
                 sites,
                 relationships,
                 email_entities,
