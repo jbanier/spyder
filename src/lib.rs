@@ -3,6 +3,7 @@ pub mod models;
 pub mod schema;
 
 use anyhow::{Context, Result};
+use diesel::connection::SimpleConnection;
 use diesel::deserialize::QueryableByName;
 use diesel::dsl::{count_star, sql};
 use diesel::prelude::*;
@@ -21,6 +22,7 @@ pub const STATUS_DONE: &str = "done";
 pub const STATUS_FAILED: &str = "failed";
 pub const SSH_STATUS_SUCCESS: &str = "success";
 pub const MAX_RETRY_ATTEMPTS: i32 = 5;
+const SQLITE_BUSY_TIMEOUT_MS: i32 = 5_000;
 const DEFAULT_TOP_SITE_LIMIT: i64 = 25;
 const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 200;
@@ -259,8 +261,39 @@ pub fn establish_connection() -> Result<SqliteConnection> {
     dotenv().ok();
 
     let database_url = env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
-    SqliteConnection::establish(&database_url)
-        .with_context(|| format!("error connecting to {database_url}"))
+    let mut connection = SqliteConnection::establish(&database_url)
+        .with_context(|| format!("error connecting to {database_url}"))?;
+    configure_sqlite_connection(&mut connection, &database_url)?;
+    Ok(connection)
+}
+
+fn configure_sqlite_connection(conn: &mut SqliteConnection, database_url: &str) -> Result<()> {
+    conn.batch_execute(&format!(
+        "
+        PRAGMA foreign_keys = ON;
+        PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};
+        "
+    ))
+    .context("error configuring sqlite connection")?;
+
+    if is_file_backed_sqlite_database(database_url) {
+        conn.batch_execute(
+            "
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            ",
+        )
+        .context("error enabling sqlite WAL mode")?;
+    }
+
+    Ok(())
+}
+
+fn is_file_backed_sqlite_database(database_url: &str) -> bool {
+    let normalized = database_url.trim().to_ascii_lowercase();
+    !(normalized == ":memory:"
+        || normalized.starts_with("file::memory:")
+        || normalized.contains("mode=memory"))
 }
 
 pub fn strip_url_fragment(raw_url: &str) -> String {
@@ -3160,6 +3193,16 @@ fn truncate(input: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
     use diesel::connection::SimpleConnection;
+    use std::env;
+    use std::fs;
+    use std::process;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(QueryableByName)]
+    struct JournalModeRow {
+        #[diesel(sql_type = Text)]
+        journal_mode: String,
+    }
 
     fn setup_connection() -> SqliteConnection {
         let mut conn = SqliteConnection::establish(":memory:").expect("in-memory sqlite");
@@ -3510,6 +3553,31 @@ mod tests {
         );
         assert!(normalize_blacklist_domain("https://example.com").is_err());
         assert!(normalize_blacklist_domain("example.com/path").is_err());
+    }
+
+    #[test]
+    fn file_backed_connections_enable_wal_mode() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let database_path =
+            env::temp_dir().join(format!("spyder-lib-{}-{unique}.sqlite", process::id()));
+        let database_url = database_path.to_string_lossy().into_owned();
+
+        let mut conn = SqliteConnection::establish(&database_url).expect("sqlite file");
+        configure_sqlite_connection(&mut conn, &database_url).expect("configure sqlite");
+
+        let journal_mode = sql_query("PRAGMA journal_mode")
+            .get_result::<JournalModeRow>(&mut conn)
+            .expect("journal mode")
+            .journal_mode;
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+
+        drop(conn);
+        let _ = fs::remove_file(&database_url);
+        let _ = fs::remove_file(format!("{database_url}-wal"));
+        let _ = fs::remove_file(format!("{database_url}-shm"));
     }
 
     #[test]
