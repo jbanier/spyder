@@ -26,12 +26,14 @@ use spyder::{
     SqlDialect, SSH_STATUS_SUCCESS,
 };
 use ssh2::{HashType, HostKeyType, Session};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::env;
 use std::fmt::Display;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 use url::Url;
 
@@ -41,9 +43,10 @@ enum FailureKind {
     Permanent,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WorkOptions {
     onion_only: bool,
+    concurrency: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,6 +54,7 @@ struct SshScanOptions {
     recent_hours: i64,
     stale_hours: i64,
     limit: i64,
+    concurrency: usize,
 }
 
 struct CrawlFailure {
@@ -63,6 +67,7 @@ struct DiscoveryEnqueueOutcome {
     skipped_blacklisted_count: usize,
 }
 
+#[derive(Clone)]
 struct SocksProxyConfig {
     host: String,
     port: u16,
@@ -75,6 +80,27 @@ struct SshHandshakeCapture {
     host_key: String,
     fingerprint: String,
     server_banner: Option<String>,
+}
+
+struct SshProbeJob {
+    host: String,
+    port: u16,
+}
+
+struct SshProbeResult {
+    job: SshProbeJob,
+    capture: Result<SshHandshakeCapture>,
+}
+
+struct WorkFetchJob {
+    work_unit_id: i32,
+    work_unit_url: String,
+    crawl_url: String,
+}
+
+struct WorkFetchResult {
+    job: WorkFetchJob,
+    capture: std::result::Result<HttpEndpointCapture, CrawlFailure>,
 }
 
 struct HttpEndpointCapture {
@@ -118,6 +144,8 @@ const SSH_PORTS: [u16; 2] = [22, 2222];
 const DEFAULT_SSH_SCAN_RECENT_HOURS: i64 = 24 * 7;
 const DEFAULT_SSH_SCAN_STALE_HOURS: i64 = 24;
 const DEFAULT_SSH_SCAN_LIMIT: i64 = 200;
+const DEFAULT_SSH_SCAN_CONCURRENCY: usize = 4;
+const DEFAULT_WORK_CONCURRENCY: usize = 4;
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_IO_TIMEOUT: Duration = Duration::from_secs(15);
 const IMPORT_BATCH_SIZE: i64 = 5_000;
@@ -323,6 +351,16 @@ impl Default for SshScanOptions {
             recent_hours: DEFAULT_SSH_SCAN_RECENT_HOURS,
             stale_hours: DEFAULT_SSH_SCAN_STALE_HOURS,
             limit: DEFAULT_SSH_SCAN_LIMIT,
+            concurrency: DEFAULT_SSH_SCAN_CONCURRENCY,
+        }
+    }
+}
+
+impl Default for WorkOptions {
+    fn default() -> Self {
+        Self {
+            onion_only: false,
+            concurrency: DEFAULT_WORK_CONCURRENCY,
         }
     }
 }
@@ -505,7 +543,6 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
         return Ok(());
     }
 
-    let total = work_units.len();
     if options.onion_only {
         let skipped_count = pending_count - work_units.len();
         println!(
@@ -517,79 +554,141 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
         println!("Working with {} pending work units", work_units.len());
     }
     let mut processed_urls = HashSet::new();
-    for (index, work_unit) in work_units.into_iter().enumerate() {
-        let current = index + 1;
+    let mut jobs = Vec::new();
+    let mut duplicate_count = 0usize;
+
+    for work_unit in work_units {
         let crawl_url = normalize_crawl_url(&work_unit.url);
         if processed_urls.contains(&crawl_url) {
             mark_work_unit_as_done(&mut connection, work_unit.id)?;
-            print_progress(
-                current,
-                total,
-                format!("Skipped duplicate URL {}", work_unit.url),
-            );
+            duplicate_count += 1;
             continue;
         }
 
-        print_progress(current, total, format!("Fetching {crawl_url}"));
+        jobs.push(WorkFetchJob {
+            work_unit_id: work_unit.id,
+            work_unit_url: work_unit.url,
+            crawl_url: crawl_url.clone(),
+        });
+        processed_urls.insert(crawl_url);
+    }
 
-        match fetch_page_capture(client, &crawl_url, tls_proxy.as_ref()) {
-            Ok(capture) => {
-                print_progress(
-                    current,
-                    total,
-                    format!("Extracted {}", summarize_page_snapshot(&capture.snapshot)),
-                );
-                save_page_info(&mut connection, &capture.snapshot)?;
-                save_host_http_observation(&mut connection, &capture.http_observation)?;
-                if let Some(tls_observation) = capture.tls_observation.as_ref() {
-                    save_host_tls_observation(&mut connection, tls_observation)?;
+    let attempted = jobs.len();
+    if attempted == 0 {
+        println!(
+            "No unique pending work units to process ({} duplicates skipped)",
+            duplicate_count
+        );
+        return Ok(());
+    }
+    if duplicate_count > 0 {
+        print_status(format!(
+            "Skipped {} duplicate work unit{} before fetching",
+            duplicate_count,
+            if duplicate_count == 1 { "" } else { "s" }
+        ));
+    }
+
+    let worker_count = options.concurrency.min(attempted).max(1);
+    print_status(format!(
+        "Fetching {} unique work unit{} with {} worker{}",
+        attempted,
+        if attempted == 1 { "" } else { "s" },
+        worker_count,
+        if worker_count == 1 { "" } else { "s" }
+    ));
+
+    let job_queue = Arc::new(Mutex::new(VecDeque::from(jobs)));
+    let (result_tx, result_rx) = mpsc::channel::<WorkFetchResult>();
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let client = client.clone();
+            let job_queue = Arc::clone(&job_queue);
+            let result_tx = result_tx.clone();
+            let tls_proxy = tls_proxy.clone();
+
+            scope.spawn(move || loop {
+                let job = {
+                    let mut queue = job_queue.lock().expect("work queue lock poisoned");
+                    queue.pop_front()
+                };
+
+                let Some(job) = job else {
+                    break;
+                };
+
+                let capture = fetch_page_capture(&client, &job.crawl_url, tls_proxy.as_ref());
+                if result_tx.send(WorkFetchResult { job, capture }).is_err() {
+                    break;
                 }
-                let discovery_outcome =
-                    enqueue_discovered_links(&mut connection, &capture.snapshot)?;
-                mark_work_unit_as_done(&mut connection, work_unit.id)?;
-                processed_urls.insert(crawl_url.clone());
-                print_progress(
-                    current,
-                    total,
-                    format!(
-                        "Stored page and queued {} discovered URLs",
-                        discovery_outcome.queued_count
-                    ),
-                );
-                if discovery_outcome.skipped_blacklisted_count > 0 {
+            });
+        }
+
+        drop(result_tx);
+
+        for (completed, result) in result_rx.into_iter().enumerate() {
+            let current = completed + 1;
+            match result.capture {
+                Ok(capture) => {
                     print_progress(
                         current,
-                        total,
+                        attempted,
+                        format!("Extracted {}", summarize_page_snapshot(&capture.snapshot)),
+                    );
+                    save_page_info(&mut connection, &capture.snapshot)?;
+                    save_host_http_observation(&mut connection, &capture.http_observation)?;
+                    if let Some(tls_observation) = capture.tls_observation.as_ref() {
+                        save_host_tls_observation(&mut connection, tls_observation)?;
+                    }
+                    let discovery_outcome =
+                        enqueue_discovered_links(&mut connection, &capture.snapshot)?;
+                    mark_work_unit_as_done(&mut connection, result.job.work_unit_id)?;
+                    print_progress(
+                        current,
+                        attempted,
                         format!(
-                            "Skipped {} discovered URLs whose domains are blacklisted",
-                            discovery_outcome.skipped_blacklisted_count
+                            "Stored {} and queued {} discovered URLs",
+                            result.job.crawl_url, discovery_outcome.queued_count
                         ),
+                    );
+                    if discovery_outcome.skipped_blacklisted_count > 0 {
+                        print_progress(
+                            current,
+                            attempted,
+                            format!(
+                                "Skipped {} discovered URLs whose domains are blacklisted",
+                                discovery_outcome.skipped_blacklisted_count
+                            ),
+                        );
+                    }
+                }
+                Err(failure) => {
+                    eprintln!(
+                        "[{current}/{attempted}] Failed to process {} ({})",
+                        result.job.crawl_url,
+                        failure_kind_label(failure.kind)
+                    );
+                    eprintln!(
+                        "ERROR: couldn't extract page information: {:?}",
+                        failure.error
+                    );
+                    record_work_unit_failure(
+                        &mut connection,
+                        result.job.work_unit_id,
+                        &failure.error.to_string(),
+                        failure.kind == FailureKind::Retriable,
+                    )?;
+                    eprintln!(
+                        "[{current}/{attempted}] Recorded failure state for {}",
+                        result.job.work_unit_url
                     );
                 }
             }
-            Err(failure) => {
-                eprintln!(
-                    "[{current}/{total}] Failed to process {} ({})",
-                    crawl_url,
-                    failure_kind_label(failure.kind)
-                );
-                eprintln!(
-                    "ERROR: couldn't extract page information: {:?}",
-                    failure.error
-                );
-                record_work_unit_failure(
-                    &mut connection,
-                    work_unit.id,
-                    &failure.error.to_string(),
-                    failure.kind == FailureKind::Retriable,
-                )?;
-                eprintln!(
-                    "[{current}/{total}] Recorded failure state for {}",
-                    work_unit.url
-                );
-            }
         }
-    }
+
+        Ok::<(), anyhow::Error>(())
+    })?;
 
     Ok(())
 }
@@ -618,19 +717,12 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
     }
 
     let total_hosts = candidates.len();
-    let mut attempted = 0usize;
     let mut skipped = 0usize;
     let mut successes = 0usize;
     let mut failures = 0usize;
+    let mut jobs = Vec::new();
 
-    for (index, candidate) in candidates.into_iter().enumerate() {
-        let current = index + 1;
-        print_progress(
-            current,
-            total_hosts,
-            format!("Scanning SSH endpoints for {}", candidate.host),
-        );
-
+    for candidate in candidates {
         for port in SSH_PORTS {
             let existing =
                 get_host_ssh_observation(&mut connection, &candidate.host, i32::from(port))?;
@@ -640,15 +732,69 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                 continue;
             }
 
-            attempted += 1;
-            match probe_ssh_endpoint(proxy.as_ref(), &candidate.host, port) {
+            jobs.push(SshProbeJob {
+                host: candidate.host.clone(),
+                port,
+            });
+        }
+    }
+
+    let attempted = jobs.len();
+    if attempted == 0 {
+        println!(
+            "No stale SSH endpoints to scan across {} hosts ({} skipped)",
+            total_hosts, skipped
+        );
+        return Ok(());
+    }
+
+    let worker_count = options.concurrency.min(attempted).max(1);
+    print_status(format!(
+        "Scanning {} SSH endpoints across {} hosts with {} worker{}",
+        attempted,
+        total_hosts,
+        worker_count,
+        if worker_count == 1 { "" } else { "s" }
+    ));
+
+    let job_queue = Arc::new(Mutex::new(VecDeque::from(jobs)));
+    let (result_tx, result_rx) = mpsc::channel::<SshProbeResult>();
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let job_queue = Arc::clone(&job_queue);
+            let result_tx = result_tx.clone();
+            let proxy = proxy.clone();
+
+            scope.spawn(move || loop {
+                let job = {
+                    let mut queue = job_queue.lock().expect("ssh probe queue lock poisoned");
+                    queue.pop_front()
+                };
+
+                let Some(job) = job else {
+                    break;
+                };
+
+                let capture = probe_ssh_endpoint(proxy.as_ref(), &job.host, job.port);
+                if result_tx.send(SshProbeResult { job, capture }).is_err() {
+                    break;
+                }
+            });
+        }
+
+        drop(result_tx);
+
+        for (completed, result) in result_rx.into_iter().enumerate() {
+            let current = completed + 1;
+            match result.capture {
                 Ok(capture) => {
                     let fingerprint_preview = compact_for_terminal(&capture.fingerprint, 42);
                     save_host_ssh_observation(
                         &mut connection,
                         &NewHostSshObservation {
-                            host: candidate.host.clone(),
-                            port: i32::from(port),
+                            host: result.job.host.clone(),
+                            port: i32::from(result.job.port),
                             status: SSH_STATUS_SUCCESS.to_string(),
                             host_key_algorithm: Some(capture.algorithm.clone()),
                             host_key: Some(capture.host_key),
@@ -662,10 +808,13 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                     successes += 1;
                     print_progress(
                         current,
-                        total_hosts,
+                        attempted,
                         format!(
                             "Saved {} {} for {}:{}",
-                            capture.algorithm, fingerprint_preview, candidate.host, port
+                            capture.algorithm,
+                            fingerprint_preview,
+                            result.job.host,
+                            result.job.port
                         ),
                     );
                 }
@@ -674,8 +823,8 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                     save_host_ssh_observation(
                         &mut connection,
                         &NewHostSshObservation {
-                            host: candidate.host.clone(),
-                            port: i32::from(port),
+                            host: result.job.host.clone(),
+                            port: i32::from(result.job.port),
                             status: status.to_string(),
                             host_key_algorithm: None,
                             host_key: None,
@@ -688,14 +837,16 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                     )?;
                     failures += 1;
                     eprintln!(
-                        "[{current}/{total_hosts}] SSH scan failed for {}:{} ({status})",
-                        candidate.host, port
+                        "[{current}/{attempted}] SSH scan failed for {}:{} ({status})",
+                        result.job.host, result.job.port
                     );
                     eprintln!("ERROR: {error:?}");
                 }
             }
         }
-    }
+
+        Ok::<(), anyhow::Error>(())
+    })?;
 
     println!(
         "Attempted {} SSH endpoints across {} hosts ({} successes, {} failures, {} skipped)",
@@ -2079,9 +2230,11 @@ fn usage(program: &str) {
         "    import-sqlite <sqlite_path> import an existing SQLite database into PostgreSQL."
     );
     eprintln!(
-        "    ssh-scan [--recent-hours N] [--stale-hours N] [--limit N] scan recent hosts for SSH host keys."
+        "    ssh-scan [--recent-hours N] [--stale-hours N] [--limit N] [--concurrency N] scan recent hosts for SSH host keys."
     );
-    eprintln!("    work [--onion-only] process pending work units and store page metadata.");
+    eprintln!(
+        "    work [--onion-only] [--concurrency N] process pending work units and store page metadata."
+    );
 }
 
 fn print_error(error: &anyhow::Error) {
@@ -2129,10 +2282,15 @@ fn configured_proxy_url_from_values(
 
 fn parse_work_options(args: impl IntoIterator<Item = String>) -> Result<WorkOptions> {
     let mut options = WorkOptions::default();
+    let mut args = args.into_iter();
 
-    for arg in args {
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--onion-only" => options.onion_only = true,
+            "--concurrency" => {
+                options.concurrency =
+                    parse_usize_option_value(args.next(), "--concurrency", 1, 64)?;
+            }
             _ => anyhow::bail!("invalid work option: {arg}"),
         }
     }
@@ -2157,6 +2315,10 @@ fn parse_ssh_scan_options(args: impl IntoIterator<Item = String>) -> Result<SshS
             "--limit" => {
                 options.limit = parse_i64_option_value(args.next(), "--limit", 1, 2_000)?;
             }
+            "--concurrency" => {
+                options.concurrency =
+                    parse_usize_option_value(args.next(), "--concurrency", 1, 64)?;
+            }
             _ => anyhow::bail!("invalid ssh-scan option: {arg}"),
         }
     }
@@ -2168,6 +2330,23 @@ fn parse_i64_option_value(value: Option<String>, option: &str, min: i64, max: i6
     let raw = value.with_context(|| format!("missing value for {option}"))?;
     let parsed = raw
         .parse::<i64>()
+        .with_context(|| format!("invalid integer value for {option}: {raw}"))?;
+    anyhow::ensure!(
+        parsed >= min && parsed <= max,
+        "{option} must be between {min} and {max}"
+    );
+    Ok(parsed)
+}
+
+fn parse_usize_option_value(
+    value: Option<String>,
+    option: &str,
+    min: usize,
+    max: usize,
+) -> Result<usize> {
+    let raw = value.with_context(|| format!("missing value for {option}"))?;
+    let parsed = raw
+        .parse::<usize>()
         .with_context(|| format!("invalid integer value for {option}: {raw}"))?;
     anyhow::ensure!(
         parsed >= min && parsed <= max,
@@ -2384,7 +2563,30 @@ mod tests {
     #[test]
     fn work_options_accept_onion_only_flag() {
         let options = parse_work_options(vec!["--onion-only".to_string()]).expect("work options");
-        assert_eq!(options, WorkOptions { onion_only: true });
+        assert_eq!(
+            options,
+            WorkOptions {
+                onion_only: true,
+                concurrency: DEFAULT_WORK_CONCURRENCY,
+            }
+        );
+    }
+
+    #[test]
+    fn work_options_parse_custom_concurrency() {
+        let options = parse_work_options(vec![
+            "--onion-only".to_string(),
+            "--concurrency".to_string(),
+            "6".to_string(),
+        ])
+        .expect("work options");
+        assert_eq!(
+            options,
+            WorkOptions {
+                onion_only: true,
+                concurrency: 6,
+            }
+        );
     }
 
     #[test]
@@ -2402,6 +2604,7 @@ mod tests {
                 recent_hours: DEFAULT_SSH_SCAN_RECENT_HOURS,
                 stale_hours: DEFAULT_SSH_SCAN_STALE_HOURS,
                 limit: DEFAULT_SSH_SCAN_LIMIT,
+                concurrency: DEFAULT_SSH_SCAN_CONCURRENCY,
             }
         );
     }
@@ -2415,6 +2618,8 @@ mod tests {
             "4".to_string(),
             "--limit".to_string(),
             "32".to_string(),
+            "--concurrency".to_string(),
+            "6".to_string(),
         ])
         .expect("ssh scan options");
         assert_eq!(
@@ -2423,6 +2628,7 @@ mod tests {
                 recent_hours: 12,
                 stale_hours: 4,
                 limit: 32,
+                concurrency: 6,
             }
         );
     }
