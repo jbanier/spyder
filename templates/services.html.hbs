@@ -1,0 +1,125 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Network Services</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+<div class="dashboard-grid dashboard-grid-wide dashboard-grid-stacked">
+    <section class="card">
+        <div class="section-heading">
+            <h2>Observed Endpoints</h2>
+            <span class="muted">{{entity_count}} service endpoints</span>
+        </div>
+        {{#if has_entities}}
+        <div class="compact-list">
+            {{#each entities}}
+            <a class="compact-row" href="{{detail_url}}">
+                <div class="table-cell-stack">
+                    <span class="compact-title">{{service}} · {{host}}:{{port}}</span>
+                    <div class="inline-badges">
+                        <span class="status-pill status-{{status}}">{{status}}</span>
+                        {{#if site_category}}
+                        <span class="site-category-badge site-confidence-{{site_category.confidence}}">{{site_category.label}} · {{site_category.confidence}}</span>
+                        {{/if}}
+                    </div>
+                    <span class="compact-meta">{{endpoint_url}}</span>
+                    {{#if banner}}
+                    <span class="compact-meta">{{banner}}</span>
+                    {{/if}}
+                </div>
+                <div class="table-cell-stack">
+                    {{#if banner_fingerprint}}
+                    <span class="compact-meta">Banner {{banner_fingerprint}}</span>
+                    {{/if}}
+                    {{#if last_success_at}}
+                    <span class="compact-meta">Last success {{last_success_at}}</span>
+                    {{/if}}
+                </div>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No IRC or FTP banners have been captured yet. Run `spyder ssh-scan` to populate this view.</p>
+        {{/if}}
+        {{#if has_pagination}}
+        <section class="pagination-bar pagination-bar-inline">
+            {{#if pagination.has_previous_page}}
+            <a class="btn btn-secondary" href="{{pagination.previous_page_url}}">Previous</a>
+            {{/if}}
+            {{#if pagination.has_next_page}}
+            <a class="btn btn-secondary" href="{{pagination.next_page_url}}">Next</a>
+            {{/if}}
+        </section>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        {{#if has_selected}}
+        <div class="section-heading">
+            <h2>{{selected.service}} · {{selected.host}}:{{selected.port}}</h2>
+            <div class="inline-badges">
+                <span class="status-pill status-{{selected.status}}">{{selected.status}}</span>
+                {{#if selected.site_category}}
+                <span class="site-category-badge site-confidence-{{selected.site_category.confidence}}">{{selected.site_category.label}} · {{selected.site_category.confidence}}</span>
+                {{/if}}
+            </div>
+        </div>
+        <p class="detail-reference">{{selected.endpoint_url}}</p>
+        {{#if selected.source_page_id}}
+        <p class="detail-reference">
+            Indexed page:
+            <a class="inline-link" href="/pages/{{selected.source_page_id}}">{{selected.source_page_title}}</a>
+        </p>
+        {{/if}}
+        <div class="compact-list">
+            {{#if selected.banner}}
+            <div class="compact-row compact-row-static">
+                <div class="table-cell-stack">
+                    <span class="compact-title">Banner</span>
+                    <span class="compact-meta">{{selected.banner}}</span>
+                </div>
+            </div>
+            {{/if}}
+            {{#if selected.banner_fingerprint}}
+            <div class="compact-row compact-row-static">
+                <div class="table-cell-stack">
+                    <span class="compact-title">Banner Fingerprint</span>
+                    <span class="tag">{{selected.banner_fingerprint}}</span>
+                </div>
+            </div>
+            {{/if}}
+            <div class="compact-row compact-row-static">
+                <div class="table-cell-stack">
+                    <span class="compact-title">Last Attempt</span>
+                    <span class="compact-meta">{{selected.last_attempt_at}}</span>
+                </div>
+            </div>
+            {{#if selected.last_success_at}}
+            <div class="compact-row compact-row-static">
+                <div class="table-cell-stack">
+                    <span class="compact-title">Last Success</span>
+                    <span class="compact-meta">{{selected.last_success_at}}</span>
+                </div>
+            </div>
+            {{/if}}
+            {{#if selected.last_error}}
+            <div class="compact-row compact-row-static">
+                <div class="table-cell-stack">
+                    <span class="compact-title">Last Error</span>
+                    <span class="compact-meta">{{selected.last_error}}</span>
+                </div>
+            </div>
+            {{/if}}
+        </div>
+        {{else}}
+        <div class="empty-state empty-state-inline">
+            <h2>Select an endpoint</h2>
+            <p>Choose a row from the left to inspect the captured IRC or FTP banner for that host.</p>
+        </div>
+        {{/if}}
+    </section>
+</div>
+{{/inline}}
+
+{{> base}}

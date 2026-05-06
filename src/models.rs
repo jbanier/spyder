@@ -121,6 +121,37 @@ pub struct HostHttpObservationRecord {
     pub created_at: String,
 }
 
+#[derive(Selectable, Queryable, Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::host_service_observation)]
+pub struct HostServiceObservationRecord {
+    pub id: i32,
+    pub host: String,
+    pub service: String,
+    pub port: i32,
+    pub status: String,
+    pub banner: Option<String>,
+    pub banner_fingerprint: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Insertable, Clone)]
+#[diesel(table_name = crate::schema::host_service_observation)]
+pub struct NewHostServiceObservation {
+    pub host: String,
+    pub service: String,
+    pub port: i32,
+    pub status: String,
+    pub banner: Option<String>,
+    pub banner_fingerprint: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+}
+
 #[derive(Insertable, Clone)]
 #[diesel(table_name = crate::schema::host_http_observation)]
 pub struct NewHostHttpObservation {
@@ -673,6 +704,44 @@ pub struct HostHttpObservationDetail {
     pub source_page_url: Option<String>,
     pub tls_endpoint_url: Option<String>,
     pub tls_observation: Option<HostTlsObservationRecord>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct HostServiceObservationSummary {
+    pub host: String,
+    pub service: String,
+    pub port: i32,
+    pub endpoint_url: String,
+    pub status: String,
+    pub banner: Option<String>,
+    pub banner_fingerprint: Option<String>,
+    pub last_success_at: Option<String>,
+    pub detail_url: String,
+    pub site_category: Option<SiteCategoryBadge>,
+    pub source_page_id: Option<i32>,
+    pub source_page_title: Option<String>,
+    pub source_page_url: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct HostServiceObservationDetail {
+    pub host: String,
+    pub service: String,
+    pub port: i32,
+    pub endpoint_url: String,
+    pub status: String,
+    pub banner: Option<String>,
+    pub banner_fingerprint: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: String,
+    pub last_success_at: Option<String>,
+    pub detail_url: String,
+    pub site_category: Option<SiteCategoryBadge>,
+    pub source_page_id: Option<i32>,
+    pub source_page_title: Option<String>,
+    pub source_page_url: Option<String>,
 }
 
 #[derive(Serialize, Clone)]

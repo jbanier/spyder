@@ -12,14 +12,15 @@ use spyder::models::{
 };
 use spyder::{
     collect_stats, establish_connection, find_matching_blacklist_domain, get_crypto_entity_detail,
-    get_email_entity_detail, get_host_http_observation_detail, get_page_detail,
-    get_page_scan_detail, get_ssh_host_key_detail, list_crypto_entities,
+    get_email_entity_detail, get_host_http_observation_detail, get_host_service_observation_detail,
+    get_page_detail, get_page_scan_detail, get_ssh_host_key_detail, list_crypto_entities,
     list_domain_blacklist_rules, list_domain_blacklist_summaries, list_email_entities,
-    list_host_http_observations, list_page_scan_summaries, list_page_summaries,
-    list_site_category_distribution, list_site_category_timeline, list_site_keyword_distribution,
-    list_site_keyword_timeline, list_site_profiles, list_site_relationships, list_ssh_host_keys,
-    list_top_referenced_sites, list_top_sites_by_crypto_refs, list_top_sites_by_email_refs,
-    list_top_sites_by_outgoing_links, list_work_units, search_pages,
+    list_host_http_observations, list_host_service_observations, list_page_scan_summaries,
+    list_page_summaries, list_site_category_distribution, list_site_category_timeline,
+    list_site_keyword_distribution, list_site_keyword_timeline, list_site_profiles,
+    list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
+    list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
+    list_work_units, search_pages,
 };
 use std::collections::{BTreeMap, HashMap};
 use url::form_urlencoded;
@@ -169,6 +170,15 @@ struct SshQuery {
 struct HttpQuery {
     host: Option<String>,
     scheme: Option<String>,
+    port: Option<i32>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(FromForm, Clone)]
+struct ServiceQuery {
+    host: Option<String>,
+    service: Option<String>,
     port: Option<i32>,
     limit: Option<i64>,
     offset: Option<i64>,
@@ -861,6 +871,57 @@ fn http_entities(query: Option<HttpQuery>) -> HtmlResult {
     ))
 }
 
+#[get("/entities/services?<query..>")]
+fn service_entities(query: Option<ServiceQuery>) -> HtmlResult {
+    let query = query.unwrap_or(ServiceQuery {
+        host: None,
+        service: None,
+        port: None,
+        limit: None,
+        offset: None,
+    });
+    let mut connection = open_connection()?;
+    let entities = list_host_service_observations(&mut connection, query.limit, query.offset)
+        .frontend_context("loading host service observations")?;
+    let selected = match (query.host.clone(), query.service.clone(), query.port) {
+        (Some(host), Some(service), Some(port)) => {
+            get_host_service_observation_detail(&mut connection, &host, &service, port)
+                .frontend_context("loading host service observation detail")?
+        }
+        _ => None,
+    };
+    let has_entities = !entities.items.is_empty();
+    let has_selected = selected.is_some();
+    let mut extra_params = Vec::new();
+    if let Some(host) = query.host.as_ref() {
+        extra_params.push(("host", host.as_str()));
+    }
+    if let Some(service) = query.service.as_ref() {
+        extra_params.push(("service", service.as_str()));
+    }
+    let port_param = query.port.map(|value| value.to_string());
+    if let Some(port) = port_param.as_deref() {
+        extra_params.push(("port", port));
+    }
+    let pagination = pagination_context("/entities/services", &entities, &extra_params);
+    let has_pagination = pagination.has_previous_page || pagination.has_next_page;
+
+    Ok(Template::render(
+        "services",
+        context! {
+            title: "Other Network Services",
+            description: "Inspect host-level IRC and FTP banners captured from recently reachable hosts, alongside any auxiliary web ports already visible under HTTP.",
+            entities: entities.items,
+            selected: selected,
+            has_entities: has_entities,
+            has_selected: has_selected,
+            entity_count: entities.total_count,
+            pagination: pagination,
+            has_pagination: has_pagination,
+        },
+    ))
+}
+
 #[get("/search?<search..>")]
 fn search_page(search: Option<SearchQuery>) -> HtmlResult {
     let search = search.unwrap_or(SearchQuery {
@@ -1373,6 +1434,7 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 email_entities,
                 crypto_entities,
                 http_entities,
+                service_entities,
                 ssh_entities,
                 search_page,
                 api_stats,

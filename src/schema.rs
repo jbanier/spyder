@@ -46,6 +46,22 @@ diesel::table! {
 }
 
 diesel::table! {
+    host_service_observation (id) {
+        id -> Int4,
+        host -> Text,
+        service -> Text,
+        port -> Int4,
+        status -> Text,
+        banner -> Nullable<Text>,
+        banner_fingerprint -> Nullable<Text>,
+        last_error -> Nullable<Text>,
+        last_attempt_at -> Text,
+        last_success_at -> Nullable<Text>,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
     host_ssh_observation (id) {
         id -> Int4,
         host -> Text,
@@ -220,6 +236,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     domain_blacklist,
     forum_keyword_rule,
     host_http_observation,
+    host_service_observation,
     host_ssh_observation,
     host_tls_observation,
     page,

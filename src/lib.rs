@@ -2501,6 +2501,226 @@ fn build_host_http_observation_detail(
     })
 }
 
+pub fn get_host_service_observation(
+    conn: &mut PgConnection,
+    host_value: &str,
+    service_value: &str,
+    port_value: i32,
+) -> Result<Option<HostServiceObservationRecord>> {
+    use crate::schema::host_service_observation::dsl as host_service_dsl;
+
+    let normalized_host = normalize_observed_host(host_value);
+    let normalized_service = service_value.trim().to_ascii_lowercase();
+    if normalized_host.is_empty() || normalized_service.is_empty() {
+        return Ok(None);
+    }
+
+    host_service_dsl::host_service_observation
+        .filter(host_service_dsl::host.eq(normalized_host))
+        .filter(host_service_dsl::service.eq(normalized_service))
+        .filter(host_service_dsl::port.eq(port_value))
+        .select(HostServiceObservationRecord::as_select())
+        .first::<HostServiceObservationRecord>(conn)
+        .optional()
+        .context("error loading host service observation")
+}
+
+pub fn save_host_service_observation(
+    conn: &mut PgConnection,
+    observation: &NewHostServiceObservation,
+) -> Result<()> {
+    use crate::schema::host_service_observation::dsl as host_service_dsl;
+
+    let normalized_host = normalize_observed_host(&observation.host);
+    let normalized_service = observation.service.trim().to_ascii_lowercase();
+    anyhow::ensure!(
+        !normalized_host.is_empty(),
+        "host service observation host must not be empty"
+    );
+    anyhow::ensure!(
+        !normalized_service.is_empty(),
+        "host service observation service must not be empty"
+    );
+
+    let existing = get_host_service_observation(
+        conn,
+        &normalized_host,
+        &normalized_service,
+        observation.port,
+    )?;
+    let current_timestamp = current_timestamp_text(conn)?;
+    let next_is_success = observation.status == SSH_STATUS_SUCCESS;
+    let persisted = NewHostServiceObservation {
+        host: normalized_host,
+        service: normalized_service,
+        port: observation.port,
+        status: observation.status.clone(),
+        banner: if next_is_success {
+            observation.banner.clone()
+        } else {
+            observation
+                .banner
+                .clone()
+                .or_else(|| existing.as_ref().and_then(|row| row.banner.clone()))
+        },
+        banner_fingerprint: if next_is_success {
+            observation.banner_fingerprint.clone()
+        } else {
+            observation.banner_fingerprint.clone().or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.banner_fingerprint.clone())
+            })
+        },
+        last_error: observation.last_error.clone(),
+        last_attempt_at: current_timestamp.clone(),
+        last_success_at: if next_is_success {
+            Some(current_timestamp.clone())
+        } else {
+            existing.and_then(|row| row.last_success_at)
+        },
+    };
+
+    diesel::insert_into(host_service_dsl::host_service_observation)
+        .values(&persisted)
+        .on_conflict((
+            host_service_dsl::host,
+            host_service_dsl::service,
+            host_service_dsl::port,
+        ))
+        .do_update()
+        .set((
+            host_service_dsl::status.eq(persisted.status.clone()),
+            host_service_dsl::banner.eq(persisted.banner.clone()),
+            host_service_dsl::banner_fingerprint.eq(persisted.banner_fingerprint.clone()),
+            host_service_dsl::last_error.eq(persisted.last_error.clone()),
+            host_service_dsl::last_attempt_at.eq(persisted.last_attempt_at.clone()),
+            host_service_dsl::last_success_at.eq(persisted.last_success_at.clone()),
+        ))
+        .execute(conn)
+        .context("error saving host service observation")?;
+
+    Ok(())
+}
+
+pub fn list_host_service_observations(
+    conn: &mut PgConnection,
+    requested_limit: Option<i64>,
+    requested_offset: Option<i64>,
+) -> Result<PaginatedResult<HostServiceObservationSummary>> {
+    use crate::schema::host_service_observation::dsl as host_service_dsl;
+
+    let pagination = normalize_pagination(
+        requested_limit,
+        requested_offset,
+        DEFAULT_PAGE_LIMIT,
+        MAX_PAGE_LIMIT,
+    );
+    let total_count = host_service_dsl::host_service_observation
+        .select(count_star())
+        .first::<i64>(conn)
+        .context("error counting host service observations")?;
+    let rows = host_service_dsl::host_service_observation
+        .order(host_service_dsl::last_success_at.desc().nulls_last())
+        .then_order_by(host_service_dsl::last_attempt_at.desc())
+        .then_order_by(host_service_dsl::service.asc())
+        .then_order_by(host_service_dsl::host.asc())
+        .then_order_by(host_service_dsl::port.asc())
+        .select(HostServiceObservationRecord::as_select())
+        .limit(pagination.limit)
+        .offset(pagination.offset)
+        .load::<HostServiceObservationRecord>(conn)
+        .context("error loading host service observations")?;
+    let hosts = rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>();
+    let host_contexts = load_host_page_contexts_by_hosts(conn, &hosts)?;
+    let site_categories = load_site_profile_badges_by_hosts(conn, &hosts)?;
+    let items = rows
+        .into_iter()
+        .map(|row| {
+            let port = row.port.to_string();
+            let endpoint_url = format_service_endpoint_url(&row.service, &row.host, row.port);
+            let detail_url = build_query_url(
+                "/entities/services",
+                &[
+                    ("host", &row.host),
+                    ("service", &row.service),
+                    ("port", &port),
+                ],
+            );
+            let host_context = host_contexts.get(&row.host);
+            HostServiceObservationSummary {
+                host: row.host.clone(),
+                service: row.service,
+                port: row.port,
+                endpoint_url,
+                status: row.status,
+                banner: row.banner,
+                banner_fingerprint: row.banner_fingerprint,
+                last_success_at: row.last_success_at,
+                detail_url,
+                site_category: site_categories.get(&row.host).cloned(),
+                source_page_id: host_context.map(|context| context.page_id),
+                source_page_title: host_context.map(|context| context.page_title.clone()),
+                source_page_url: host_context.map(|context| context.page_url.clone()),
+            }
+        })
+        .collect();
+
+    Ok(PaginatedResult {
+        items,
+        total_count,
+        limit: pagination.limit,
+        offset: pagination.offset,
+    })
+}
+
+pub fn get_host_service_observation_detail(
+    conn: &mut PgConnection,
+    host: &str,
+    service: &str,
+    port: i32,
+) -> Result<Option<HostServiceObservationDetail>> {
+    let Some(record) = get_host_service_observation(conn, host, service, port)? else {
+        return Ok(None);
+    };
+
+    let host_context =
+        load_host_page_contexts_by_hosts(conn, &[record.host.clone()])?.remove(&record.host);
+    let site_category =
+        load_site_profile_badges_by_hosts(conn, &[record.host.clone()])?.remove(&record.host);
+    let port_value = record.port.to_string();
+    let detail_url = build_query_url(
+        "/entities/services",
+        &[
+            ("host", &record.host),
+            ("service", &record.service),
+            ("port", &port_value),
+        ],
+    );
+
+    Ok(Some(HostServiceObservationDetail {
+        host: record.host.clone(),
+        service: record.service.clone(),
+        port: record.port,
+        endpoint_url: format_service_endpoint_url(&record.service, &record.host, record.port),
+        status: record.status.clone(),
+        banner: record.banner.clone(),
+        banner_fingerprint: record.banner_fingerprint.clone(),
+        last_error: record.last_error.clone(),
+        last_attempt_at: record.last_attempt_at.clone(),
+        last_success_at: record.last_success_at.clone(),
+        detail_url,
+        site_category,
+        source_page_id: host_context.as_ref().map(|context| context.page_id),
+        source_page_title: host_context
+            .as_ref()
+            .map(|context| context.page_title.clone()),
+        source_page_url: host_context
+            .as_ref()
+            .map(|context| context.page_url.clone()),
+    }))
+}
+
 pub fn get_host_ssh_observation(
     conn: &mut PgConnection,
     host_value: &str,
@@ -3942,6 +4162,13 @@ fn format_endpoint_url(scheme: &str, host: &str, port: i32) -> String {
         output.push(':');
         output.push_str(&port.to_string());
     }
+    output
+}
+
+fn format_service_endpoint_url(service: &str, host: &str, port: i32) -> String {
+    let mut output = format!("{service}://{host}");
+    output.push(':');
+    output.push_str(&port.to_string());
     output
 }
 

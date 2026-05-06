@@ -12,16 +12,17 @@ use sha2::{Digest, Sha256};
 use spyder::extraction::{extract_favicon_url, extract_page_snapshot};
 use spyder::models::{
     DomainBlacklistRule, ForumKeywordRule, HostSshObservationRecord, NewHostHttpObservation,
-    NewHostSshObservation, NewHostTlsObservation, Page, PageClassificationRecord, PageCrypto,
-    PageEmail, PageKeywordTag, PageLink, PageScan, PageScanCrypto, PageScanEmail, PageScanLink,
-    PageSnapshot, SiteProfileRecord, WorkUnit,
+    NewHostServiceObservation, NewHostSshObservation, NewHostTlsObservation, Page,
+    PageClassificationRecord, PageCrypto, PageEmail, PageKeywordTag, PageLink, PageScan,
+    PageScanCrypto, PageScanEmail, PageScanLink, PageSnapshot, SiteProfileRecord, WorkUnit,
 };
 use spyder::{
     add_domain_blacklist_entry, add_forum_keyword_rule, create_work_unit, establish_connection,
-    find_matching_blacklist_domain, get_host_ssh_observation, get_pending_work_units,
-    list_domain_blacklist_rules, list_forum_keyword_rules, list_recent_responding_hosts,
-    mark_work_unit_as_done, normalize_crawl_url, record_work_unit_failure,
-    remove_domain_blacklist_entry, remove_forum_keyword_rule, save_host_http_observation,
+    find_matching_blacklist_domain, get_host_http_observation, get_host_service_observation,
+    get_host_ssh_observation, get_pending_work_units, list_domain_blacklist_rules,
+    list_forum_keyword_rules, list_recent_responding_hosts, mark_work_unit_as_done,
+    normalize_crawl_url, record_work_unit_failure, remove_domain_blacklist_entry,
+    remove_forum_keyword_rule, save_host_http_observation, save_host_service_observation,
     save_host_ssh_observation, save_host_tls_observation, save_page_info, AppConnection,
     SqlDialect, SSH_STATUS_SUCCESS,
 };
@@ -82,14 +83,40 @@ struct SshHandshakeCapture {
     server_banner: Option<String>,
 }
 
-struct SshProbeJob {
+#[derive(Clone, Copy)]
+enum HostProbeKind {
+    Ssh,
+    Http,
+    Ftp,
+    Irc,
+}
+
+struct ServiceBannerCapture {
+    status: String,
+    banner: Option<String>,
+    banner_fingerprint: Option<String>,
+}
+
+struct HttpObservationCapture {
+    http_observation: NewHostHttpObservation,
+    tls_observation: Option<NewHostTlsObservation>,
+}
+
+struct HostProbeJob {
     host: String,
+    kind: HostProbeKind,
     port: u16,
 }
 
-struct SshProbeResult {
-    job: SshProbeJob,
-    capture: Result<SshHandshakeCapture>,
+enum HostProbeCapture {
+    Ssh(Result<SshHandshakeCapture>),
+    Http(Result<HttpObservationCapture>),
+    Service(Result<ServiceBannerCapture>),
+}
+
+struct HostProbeResult {
+    job: HostProbeJob,
+    capture: HostProbeCapture,
 }
 
 struct WorkFetchJob {
@@ -141,6 +168,9 @@ struct IntValueRow {
 }
 
 const SSH_PORTS: [u16; 2] = [22, 2222];
+const HTTP_PROBE_PORTS: [u16; 2] = [8000, 8080];
+const FTP_PORTS: [u16; 2] = [21, 2121];
+const IRC_PORTS: [u16; 2] = [6667, 7000];
 const DEFAULT_SSH_SCAN_RECENT_HOURS: i64 = 24 * 7;
 const DEFAULT_SSH_SCAN_STALE_HOURS: i64 = 24;
 const DEFAULT_SSH_SCAN_LIMIT: i64 = 200;
@@ -485,6 +515,88 @@ fn fetch_page_capture(
     })
 }
 
+fn probe_http_endpoint(
+    client: &Client,
+    tls_proxy: Option<&SocksProxyConfig>,
+    host: &str,
+    port: u16,
+) -> Result<HttpObservationCapture> {
+    let endpoint = UrlEndpoint {
+        host: host.to_ascii_lowercase(),
+        scheme: "http".to_string(),
+        port: i32::from(port),
+    };
+    let url = format!("http://{}:{}/", host, port);
+    let response = client
+        .get(&url)
+        .send()
+        .with_context(|| format!("http request failed for {url}"))?;
+    let status = response.status();
+    let final_url = response.url().as_str().to_string();
+    let headers = response.headers().clone();
+    let body_bytes = response
+        .bytes()
+        .with_context(|| format!("failed to read http response body for {url}"))?;
+    let body = String::from_utf8_lossy(&body_bytes).into_owned();
+    let http_observation =
+        build_http_observation(client, &endpoint, status, &final_url, &headers, &body);
+    let tls_observation = build_tls_observation(tls_proxy, &final_url);
+
+    Ok(HttpObservationCapture {
+        http_observation,
+        tls_observation,
+    })
+}
+
+fn probe_ftp_endpoint(
+    proxy: Option<&SocksProxyConfig>,
+    host: &str,
+    port: u16,
+) -> Result<ServiceBannerCapture> {
+    let mut stream = connect_tcp_endpoint(proxy, host, port)?;
+    let banner = read_stream_banner(&mut stream, 2048)?;
+    let status = if banner_is_ftp(&banner) {
+        SSH_STATUS_SUCCESS.to_string()
+    } else if banner.is_some() {
+        "unexpected-banner".to_string()
+    } else {
+        "no-banner".to_string()
+    };
+    let banner_fingerprint = banner.as_deref().map(banner_fingerprint);
+    let _ = stream.write_all(b"QUIT\r\n");
+
+    Ok(ServiceBannerCapture {
+        status,
+        banner,
+        banner_fingerprint,
+    })
+}
+
+fn probe_irc_endpoint(
+    proxy: Option<&SocksProxyConfig>,
+    host: &str,
+    port: u16,
+) -> Result<ServiceBannerCapture> {
+    let mut stream = connect_tcp_endpoint(proxy, host, port)?;
+    let _ = stream.write_all(b"NICK spyder_scan\r\nUSER spyder_scan 0 * :spyder\r\n");
+    let banner = read_stream_banner(&mut stream, 4096)?;
+    let status = if banner_is_irc(&banner) {
+        SSH_STATUS_SUCCESS.to_string()
+    } else if banner.is_some() {
+        "unexpected-banner".to_string()
+    } else {
+        "no-banner".to_string()
+    };
+    let banner_fingerprint = banner.as_deref().map(banner_fingerprint);
+    let _ = stream.write_all(b"QUIT\r\n");
+
+    Ok(ServiceBannerCapture {
+        status,
+        banner,
+        banner_fingerprint,
+    })
+}
+
 fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
     let normalized_url = normalize_crawl_url(url);
     let tls_proxy = load_best_effort_tls_proxy_config();
@@ -708,6 +820,8 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
 
     let stale_cutoff = ssh_stale_cutoff_timestamp(&mut connection, options.stale_hours)?;
     let proxy = load_socks_proxy_config()?;
+    let tls_proxy = proxy.clone();
+    let http_client = build_http_client()?;
     match proxy.as_ref() {
         Some(config) => print_status(format!(
             "Scanning SSH through SOCKS proxy {}",
@@ -726,14 +840,84 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
         for port in SSH_PORTS {
             let existing =
                 get_host_ssh_observation(&mut connection, &candidate.host, i32::from(port))?;
-            if should_skip_ssh_attempt(existing.as_ref(), &candidate.last_scanned_at, &stale_cutoff)
-            {
+            if should_skip_network_attempt(
+                existing.as_ref().map(|row| row.last_attempt_at.as_str()),
+                &candidate.last_scanned_at,
+                &stale_cutoff,
+            ) {
                 skipped += 1;
                 continue;
             }
 
-            jobs.push(SshProbeJob {
+            jobs.push(HostProbeJob {
                 host: candidate.host.clone(),
+                kind: HostProbeKind::Ssh,
+                port,
+            });
+        }
+        for port in HTTP_PROBE_PORTS {
+            let existing = get_host_http_observation(
+                &mut connection,
+                &candidate.host,
+                "http",
+                i32::from(port),
+            )?;
+            if should_skip_network_attempt(
+                existing.as_ref().map(|row| row.last_attempt_at.as_str()),
+                &candidate.last_scanned_at,
+                &stale_cutoff,
+            ) {
+                skipped += 1;
+                continue;
+            }
+
+            jobs.push(HostProbeJob {
+                host: candidate.host.clone(),
+                kind: HostProbeKind::Http,
+                port,
+            });
+        }
+        for port in FTP_PORTS {
+            let existing = get_host_service_observation(
+                &mut connection,
+                &candidate.host,
+                "ftp",
+                i32::from(port),
+            )?;
+            if should_skip_network_attempt(
+                existing.as_ref().map(|row| row.last_attempt_at.as_str()),
+                &candidate.last_scanned_at,
+                &stale_cutoff,
+            ) {
+                skipped += 1;
+                continue;
+            }
+
+            jobs.push(HostProbeJob {
+                host: candidate.host.clone(),
+                kind: HostProbeKind::Ftp,
+                port,
+            });
+        }
+        for port in IRC_PORTS {
+            let existing = get_host_service_observation(
+                &mut connection,
+                &candidate.host,
+                "irc",
+                i32::from(port),
+            )?;
+            if should_skip_network_attempt(
+                existing.as_ref().map(|row| row.last_attempt_at.as_str()),
+                &candidate.last_scanned_at,
+                &stale_cutoff,
+            ) {
+                skipped += 1;
+                continue;
+            }
+
+            jobs.push(HostProbeJob {
+                host: candidate.host.clone(),
+                kind: HostProbeKind::Irc,
                 port,
             });
         }
@@ -742,7 +926,7 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
     let attempted = jobs.len();
     if attempted == 0 {
         println!(
-            "No stale SSH endpoints to scan across {} hosts ({} skipped)",
+            "No stale service endpoints to scan across {} hosts ({} skipped)",
             total_hosts, skipped
         );
         return Ok(());
@@ -750,7 +934,7 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
 
     let worker_count = options.concurrency.min(attempted).max(1);
     print_status(format!(
-        "Scanning {} SSH endpoints across {} hosts with {} worker{}",
+        "Scanning {} service endpoints across {} hosts with {} worker{}",
         attempted,
         total_hosts,
         worker_count,
@@ -758,17 +942,19 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
     ));
 
     let job_queue = Arc::new(Mutex::new(VecDeque::from(jobs)));
-    let (result_tx, result_rx) = mpsc::channel::<SshProbeResult>();
+    let (result_tx, result_rx) = mpsc::channel::<HostProbeResult>();
 
     thread::scope(|scope| {
         for _ in 0..worker_count {
             let job_queue = Arc::clone(&job_queue);
             let result_tx = result_tx.clone();
             let proxy = proxy.clone();
+            let tls_proxy = tls_proxy.clone();
+            let http_client = http_client.clone();
 
             scope.spawn(move || loop {
                 let job = {
-                    let mut queue = job_queue.lock().expect("ssh probe queue lock poisoned");
+                    let mut queue = job_queue.lock().expect("host probe queue lock poisoned");
                     queue.pop_front()
                 };
 
@@ -776,8 +962,30 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                     break;
                 };
 
-                let capture = probe_ssh_endpoint(proxy.as_ref(), &job.host, job.port);
-                if result_tx.send(SshProbeResult { job, capture }).is_err() {
+                let capture = match job.kind {
+                    HostProbeKind::Ssh => HostProbeCapture::Ssh(probe_ssh_endpoint(
+                        proxy.as_ref(),
+                        &job.host,
+                        job.port,
+                    )),
+                    HostProbeKind::Http => HostProbeCapture::Http(probe_http_endpoint(
+                        &http_client,
+                        tls_proxy.as_ref(),
+                        &job.host,
+                        job.port,
+                    )),
+                    HostProbeKind::Ftp => HostProbeCapture::Service(probe_ftp_endpoint(
+                        proxy.as_ref(),
+                        &job.host,
+                        job.port,
+                    )),
+                    HostProbeKind::Irc => HostProbeCapture::Service(probe_irc_endpoint(
+                        proxy.as_ref(),
+                        &job.host,
+                        job.port,
+                    )),
+                };
+                if result_tx.send(HostProbeResult { job, capture }).is_err() {
                     break;
                 }
             });
@@ -788,60 +996,192 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
         for (completed, result) in result_rx.into_iter().enumerate() {
             let current = completed + 1;
             match result.capture {
-                Ok(capture) => {
-                    let fingerprint_preview = compact_for_terminal(&capture.fingerprint, 42);
-                    save_host_ssh_observation(
-                        &mut connection,
-                        &NewHostSshObservation {
-                            host: result.job.host.clone(),
-                            port: i32::from(result.job.port),
-                            status: SSH_STATUS_SUCCESS.to_string(),
-                            host_key_algorithm: Some(capture.algorithm.clone()),
-                            host_key: Some(capture.host_key),
-                            host_key_fingerprint: Some(capture.fingerprint.clone()),
-                            server_banner: capture.server_banner,
-                            last_error: None,
-                            last_attempt_at: String::new(),
-                            last_success_at: None,
-                        },
-                    )?;
-                    successes += 1;
-                    print_progress(
-                        current,
-                        attempted,
-                        format!(
-                            "Saved {} {} for {}:{}",
-                            capture.algorithm,
-                            fingerprint_preview,
+                HostProbeCapture::Ssh(capture) => match capture {
+                    Ok(capture) => {
+                        let fingerprint_preview = compact_for_terminal(&capture.fingerprint, 42);
+                        save_host_ssh_observation(
+                            &mut connection,
+                            &NewHostSshObservation {
+                                host: result.job.host.clone(),
+                                port: i32::from(result.job.port),
+                                status: SSH_STATUS_SUCCESS.to_string(),
+                                host_key_algorithm: Some(capture.algorithm.clone()),
+                                host_key: Some(capture.host_key),
+                                host_key_fingerprint: Some(capture.fingerprint.clone()),
+                                server_banner: capture.server_banner,
+                                last_error: None,
+                                last_attempt_at: String::new(),
+                                last_success_at: None,
+                            },
+                        )?;
+                        successes += 1;
+                        print_progress(
+                            current,
+                            attempted,
+                            format!(
+                                "Saved SSH {} for {}:{}",
+                                fingerprint_preview, result.job.host, result.job.port
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        let status = classify_ssh_probe_error(&error);
+                        save_host_ssh_observation(
+                            &mut connection,
+                            &NewHostSshObservation {
+                                host: result.job.host.clone(),
+                                port: i32::from(result.job.port),
+                                status: status.to_string(),
+                                host_key_algorithm: None,
+                                host_key: None,
+                                host_key_fingerprint: None,
+                                server_banner: None,
+                                last_error: Some(truncate_for_storage(&error.to_string(), 500)),
+                                last_attempt_at: String::new(),
+                                last_success_at: None,
+                            },
+                        )?;
+                        failures += 1;
+                        eprintln!(
+                            "[{current}/{attempted}] SSH scan failed for {}:{} ({status})",
+                            result.job.host, result.job.port
+                        );
+                        eprintln!("ERROR: {error:?}");
+                    }
+                },
+                HostProbeCapture::Http(capture) => match capture {
+                    Ok(capture) => {
+                        let http_status = capture
+                            .http_observation
+                            .http_status_code
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "ok".to_string());
+                        save_host_http_observation(&mut connection, &capture.http_observation)?;
+                        if let Some(tls_observation) = capture.tls_observation.as_ref() {
+                            save_host_tls_observation(&mut connection, tls_observation)?;
+                        }
+                        successes += 1;
+                        print_progress(
+                            current,
+                            attempted,
+                            format!(
+                                "Saved HTTP {} for {}:{}",
+                                http_status, result.job.host, result.job.port
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        let status = classify_service_probe_error(&error);
+                        save_host_http_observation(
+                            &mut connection,
+                            &NewHostHttpObservation {
+                                host: result.job.host.clone(),
+                                scheme: "http".to_string(),
+                                port: i32::from(result.job.port),
+                                status: status.to_string(),
+                                http_status_code: None,
+                                final_url: None,
+                                server_header: None,
+                                powered_by_header: None,
+                                content_type_header: None,
+                                location_header: None,
+                                via_header: None,
+                                alt_svc_header: None,
+                                www_authenticate_header: None,
+                                set_cookie_names: None,
+                                response_headers: None,
+                                header_fingerprint: None,
+                                favicon_url: None,
+                                favicon_hash: None,
+                                last_error: Some(truncate_for_storage(&error.to_string(), 500)),
+                                last_attempt_at: String::new(),
+                                last_success_at: None,
+                            },
+                        )?;
+                        failures += 1;
+                        eprintln!(
+                            "[{current}/{attempted}] HTTP probe failed for {}:{} ({status})",
+                            result.job.host, result.job.port
+                        );
+                        eprintln!("ERROR: {error:?}");
+                    }
+                },
+                HostProbeCapture::Service(capture) => match capture {
+                    Ok(capture) => {
+                        let service = match result.job.kind {
+                            HostProbeKind::Ftp => "ftp",
+                            HostProbeKind::Irc => "irc",
+                            _ => "service",
+                        };
+                        let is_success = capture.status == SSH_STATUS_SUCCESS;
+                        save_host_service_observation(
+                            &mut connection,
+                            &NewHostServiceObservation {
+                                host: result.job.host.clone(),
+                                service: service.to_string(),
+                                port: i32::from(result.job.port),
+                                status: capture.status.clone(),
+                                banner: capture.banner.clone(),
+                                banner_fingerprint: capture.banner_fingerprint.clone(),
+                                last_error: None,
+                                last_attempt_at: String::new(),
+                                last_success_at: None,
+                            },
+                        )?;
+                        if is_success {
+                            successes += 1;
+                            print_progress(
+                                current,
+                                attempted,
+                                format!(
+                                    "Saved {} banner for {}:{}",
+                                    service.to_uppercase(),
+                                    result.job.host,
+                                    result.job.port
+                                ),
+                            );
+                        } else {
+                            failures += 1;
+                            eprintln!(
+                                "[{current}/{attempted}] {} probe mismatch for {}:{} ({})",
+                                service.to_uppercase(),
+                                result.job.host,
+                                result.job.port,
+                                capture.status
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let service = match result.job.kind {
+                            HostProbeKind::Ftp => "ftp",
+                            HostProbeKind::Irc => "irc",
+                            _ => "service",
+                        };
+                        let status = classify_service_probe_error(&error);
+                        save_host_service_observation(
+                            &mut connection,
+                            &NewHostServiceObservation {
+                                host: result.job.host.clone(),
+                                service: service.to_string(),
+                                port: i32::from(result.job.port),
+                                status: status.to_string(),
+                                banner: None,
+                                banner_fingerprint: None,
+                                last_error: Some(truncate_for_storage(&error.to_string(), 500)),
+                                last_attempt_at: String::new(),
+                                last_success_at: None,
+                            },
+                        )?;
+                        failures += 1;
+                        eprintln!(
+                            "[{current}/{attempted}] {} probe failed for {}:{} ({status})",
+                            service.to_uppercase(),
                             result.job.host,
                             result.job.port
-                        ),
-                    );
-                }
-                Err(error) => {
-                    let status = classify_ssh_probe_error(&error);
-                    save_host_ssh_observation(
-                        &mut connection,
-                        &NewHostSshObservation {
-                            host: result.job.host.clone(),
-                            port: i32::from(result.job.port),
-                            status: status.to_string(),
-                            host_key_algorithm: None,
-                            host_key: None,
-                            host_key_fingerprint: None,
-                            server_banner: None,
-                            last_error: Some(truncate_for_storage(&error.to_string(), 500)),
-                            last_attempt_at: String::new(),
-                            last_success_at: None,
-                        },
-                    )?;
-                    failures += 1;
-                    eprintln!(
-                        "[{current}/{attempted}] SSH scan failed for {}:{} ({status})",
-                        result.job.host, result.job.port
-                    );
-                    eprintln!("ERROR: {error:?}");
-                }
+                        );
+                        eprintln!("ERROR: {error:?}");
+                    }
+                },
             }
         }
 
@@ -849,7 +1189,7 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
     })?;
 
     println!(
-        "Attempted {} SSH endpoints across {} hosts ({} successes, {} failures, {} skipped)",
+        "Attempted {} service endpoints across {} hosts ({} successes, {} failures, {} skipped)",
         attempted, total_hosts, successes, failures, skipped
     );
     Ok(())
@@ -876,7 +1216,7 @@ fn parse_socks_proxy_config(proxy_url: &str) -> Result<SocksProxyConfig> {
         Url::parse(proxy_url).with_context(|| format!("invalid proxy url: {proxy_url}"))?;
     anyhow::ensure!(
         matches!(parsed.scheme(), "socks5" | "socks5h"),
-        "ssh-scan requires a socks5 proxy url, got {}",
+        "ssh-scan service probes require a socks5 proxy url, got {}",
         parsed.scheme()
     );
 
@@ -1211,6 +1551,63 @@ fn probe_ssh_endpoint(
     })
 }
 
+fn read_stream_banner(stream: &mut impl Read, max_bytes: usize) -> Result<Option<String>> {
+    let mut buffer = vec![0_u8; max_bytes];
+    let bytes_read = stream
+        .read(&mut buffer)
+        .context("failed to read service banner")?;
+    if bytes_read == 0 {
+        return Ok(None);
+    }
+
+    Ok(normalize_banner_text(&String::from_utf8_lossy(
+        &buffer[..bytes_read],
+    )))
+}
+
+fn normalize_banner_text(value: &str) -> Option<String> {
+    let normalized = value
+        .replace('\r', " ")
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(truncate_for_storage(&normalized, 500))
+    }
+}
+
+fn banner_is_ftp(banner: &Option<String>) -> bool {
+    banner
+        .as_deref()
+        .map(|value| {
+            let upper = value.to_ascii_uppercase();
+            upper.starts_with("220") || upper.contains("FTP")
+        })
+        .unwrap_or(false)
+}
+
+fn banner_is_irc(banner: &Option<String>) -> bool {
+    banner
+        .as_deref()
+        .map(|value| {
+            let upper = value.to_ascii_uppercase();
+            upper.contains("NOTICE AUTH")
+                || upper.contains(" PING ")
+                || upper.contains(" CAP ")
+                || upper.contains(" 001 ")
+                || upper.contains("ERROR :")
+        })
+        .unwrap_or(false)
+}
+
+fn banner_fingerprint(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    format!("sha256:{}", hex_encode(digest.as_slice()))
+}
+
 fn connect_tcp_endpoint(
     proxy: Option<&SocksProxyConfig>,
     host: &str,
@@ -1391,14 +1788,13 @@ fn apply_tcp_timeouts(stream: &TcpStream) -> Result<()> {
     Ok(())
 }
 
-fn should_skip_ssh_attempt(
-    existing: Option<&HostSshObservationRecord>,
+fn should_skip_network_attempt(
+    last_attempt_at: Option<&str>,
     host_last_scanned_at: &str,
     stale_cutoff: &str,
 ) -> bool {
-    existing
-        .map(|row| {
-            let last_attempt_at = row.last_attempt_at.as_str();
+    last_attempt_at
+        .map(|last_attempt_at| {
             last_attempt_at >= stale_cutoff && last_attempt_at >= host_last_scanned_at
         })
         .unwrap_or(false)
@@ -1447,6 +1843,32 @@ fn classify_ssh_probe_error(error: &anyhow::Error) -> &'static str {
         .any(|cause| cause.downcast_ref::<ssh2::Error>().is_some())
     {
         "handshake-failed"
+    } else {
+        "network-error"
+    }
+}
+
+fn classify_service_probe_error(error: &anyhow::Error) -> &'static str {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(|io_error| io_error.kind() == std::io::ErrorKind::TimedOut)
+            .unwrap_or(false)
+    }) {
+        return "timeout";
+    }
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(|io_error| io_error.kind() == std::io::ErrorKind::ConnectionRefused)
+            .unwrap_or(false)
+    }) {
+        return "connection-refused";
+    }
+
+    let rendered = error.to_string().to_ascii_lowercase();
+    if rendered.contains("socks") || rendered.contains("proxy") {
+        "proxy-error"
     } else {
         "network-error"
     }
@@ -2230,7 +2652,7 @@ fn usage(program: &str) {
         "    import-sqlite <sqlite_path> import an existing SQLite database into PostgreSQL."
     );
     eprintln!(
-        "    ssh-scan [--recent-hours N] [--stale-hours N] [--limit N] [--concurrency N] scan recent hosts for SSH host keys."
+        "    ssh-scan [--recent-hours N] [--stale-hours N] [--limit N] [--concurrency N] scan recent hosts for SSH, auxiliary HTTP, IRC, and FTP services."
     );
     eprintln!(
         "    work [--onion-only] [--concurrency N] process pending work units and store page metadata."
