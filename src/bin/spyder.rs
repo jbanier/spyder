@@ -1026,21 +1026,6 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                     }
                     Err(error) => {
                         let status = classify_ssh_probe_error(&error);
-                        save_host_ssh_observation(
-                            &mut connection,
-                            &NewHostSshObservation {
-                                host: result.job.host.clone(),
-                                port: i32::from(result.job.port),
-                                status: status.to_string(),
-                                host_key_algorithm: None,
-                                host_key: None,
-                                host_key_fingerprint: None,
-                                server_banner: None,
-                                last_error: Some(truncate_for_storage(&error.to_string(), 500)),
-                                last_attempt_at: String::new(),
-                                last_success_at: None,
-                            },
-                        )?;
                         failures += 1;
                         eprintln!(
                             "[{current}/{attempted}] SSH scan failed for {}:{} ({status})",
@@ -1057,7 +1042,11 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                             .map(|value| value.to_string())
                             .unwrap_or_else(|| "ok".to_string());
                         save_host_http_observation(&mut connection, &capture.http_observation)?;
-                        if let Some(tls_observation) = capture.tls_observation.as_ref() {
+                        if let Some(tls_observation) = capture
+                            .tls_observation
+                            .as_ref()
+                            .filter(|row| row.status == SSH_STATUS_SUCCESS)
+                        {
                             save_host_tls_observation(&mut connection, tls_observation)?;
                         }
                         successes += 1;
@@ -1072,32 +1061,6 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                     }
                     Err(error) => {
                         let status = classify_service_probe_error(&error);
-                        save_host_http_observation(
-                            &mut connection,
-                            &NewHostHttpObservation {
-                                host: result.job.host.clone(),
-                                scheme: "http".to_string(),
-                                port: i32::from(result.job.port),
-                                status: status.to_string(),
-                                http_status_code: None,
-                                final_url: None,
-                                server_header: None,
-                                powered_by_header: None,
-                                content_type_header: None,
-                                location_header: None,
-                                via_header: None,
-                                alt_svc_header: None,
-                                www_authenticate_header: None,
-                                set_cookie_names: None,
-                                response_headers: None,
-                                header_fingerprint: None,
-                                favicon_url: None,
-                                favicon_hash: None,
-                                last_error: Some(truncate_for_storage(&error.to_string(), 500)),
-                                last_attempt_at: String::new(),
-                                last_success_at: None,
-                            },
-                        )?;
                         failures += 1;
                         eprintln!(
                             "[{current}/{attempted}] HTTP probe failed for {}:{} ({status})",
@@ -1113,22 +1076,21 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                             HostProbeKind::Irc => "irc",
                             _ => "service",
                         };
-                        let is_success = capture.status == SSH_STATUS_SUCCESS;
-                        save_host_service_observation(
-                            &mut connection,
-                            &NewHostServiceObservation {
-                                host: result.job.host.clone(),
-                                service: service.to_string(),
-                                port: i32::from(result.job.port),
-                                status: capture.status.clone(),
-                                banner: capture.banner.clone(),
-                                banner_fingerprint: capture.banner_fingerprint.clone(),
-                                last_error: None,
-                                last_attempt_at: String::new(),
-                                last_success_at: None,
-                            },
-                        )?;
-                        if is_success {
+                        if capture.status == SSH_STATUS_SUCCESS {
+                            save_host_service_observation(
+                                &mut connection,
+                                &NewHostServiceObservation {
+                                    host: result.job.host.clone(),
+                                    service: service.to_string(),
+                                    port: i32::from(result.job.port),
+                                    status: capture.status.clone(),
+                                    banner: capture.banner.clone(),
+                                    banner_fingerprint: capture.banner_fingerprint.clone(),
+                                    last_error: None,
+                                    last_attempt_at: String::new(),
+                                    last_success_at: None,
+                                },
+                            )?;
                             successes += 1;
                             print_progress(
                                 current,
@@ -1158,20 +1120,6 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                             _ => "service",
                         };
                         let status = classify_service_probe_error(&error);
-                        save_host_service_observation(
-                            &mut connection,
-                            &NewHostServiceObservation {
-                                host: result.job.host.clone(),
-                                service: service.to_string(),
-                                port: i32::from(result.job.port),
-                                status: status.to_string(),
-                                banner: None,
-                                banner_fingerprint: None,
-                                last_error: Some(truncate_for_storage(&error.to_string(), 500)),
-                                last_attempt_at: String::new(),
-                                last_success_at: None,
-                            },
-                        )?;
                         failures += 1;
                         eprintln!(
                             "[{current}/{attempted}] {} probe failed for {}:{} ({status})",

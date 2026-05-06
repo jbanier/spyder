@@ -2357,10 +2357,12 @@ pub fn list_host_http_observations(
         MAX_PAGE_LIMIT,
     );
     let total_count = host_http_dsl::host_http_observation
+        .filter(host_http_dsl::last_success_at.is_not_null())
         .select(count_star())
         .first::<i64>(conn)
         .context("error counting host http observations")?;
     let rows = host_http_dsl::host_http_observation
+        .filter(host_http_dsl::last_success_at.is_not_null())
         .order(host_http_dsl::last_success_at.desc().nulls_last())
         .then_order_by(host_http_dsl::last_attempt_at.desc())
         .then_order_by(host_http_dsl::host.asc())
@@ -2617,10 +2619,12 @@ pub fn list_host_service_observations(
         MAX_PAGE_LIMIT,
     );
     let total_count = host_service_dsl::host_service_observation
+        .filter(host_service_dsl::last_success_at.is_not_null())
         .select(count_star())
         .first::<i64>(conn)
         .context("error counting host service observations")?;
     let rows = host_service_dsl::host_service_observation
+        .filter(host_service_dsl::last_success_at.is_not_null())
         .order(host_service_dsl::last_success_at.desc().nulls_last())
         .then_order_by(host_service_dsl::last_attempt_at.desc())
         .then_order_by(host_service_dsl::service.asc())
