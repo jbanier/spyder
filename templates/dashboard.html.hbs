@@ -110,23 +110,91 @@
 
     <section class="card">
         <div class="section-heading">
-            <h2>Shared SSH Host Keys</h2>
-            <a href="/entities/ssh" class="muted-link">All keys</a>
+            <h2>Services</h2>
+            <a href="/entities/services" class="muted-link">All services</a>
         </div>
-        {{#if has_ssh_host_keys}}
-        <div class="compact-list">
-            {{#each ssh_host_keys}}
-            <a class="compact-row" href="{{detail_url}}">
-                <div class="table-cell-stack">
-                    <span class="compact-title">{{algorithm}}</span>
-                    <span class="compact-meta">{{fingerprint}}</span>
-                </div>
-                <span class="count-pill">{{host_count}} hosts</span>
-            </a>
-            {{/each}}
-        </div>
+        {{#if has_any_service_intel}}
+        <section class="card card-nested">
+            <div class="section-heading">
+                <h2>HTTP</h2>
+                <a href="/entities/http" class="muted-link">All HTTP</a>
+            </div>
+            {{#if has_http_observations}}
+            <div class="compact-list">
+                {{#each http_observations}}
+                <a class="compact-row" href="{{detail_url}}">
+                    <div class="table-cell-stack">
+                        <span class="compact-title">{{host}}:{{port}}</span>
+                        <span class="compact-meta">{{endpoint_url}}</span>
+                        {{#if server_header}}
+                        <span class="compact-meta">Server: {{server_header}}</span>
+                        {{/if}}
+                    </div>
+                    <div class="table-cell-stack">
+                        {{#if http_status_code}}
+                        <span class="count-pill">{{http_status_code}}</span>
+                        {{/if}}
+                        {{#if favicon_hash}}
+                        <span class="compact-meta">{{favicon_hash}}</span>
+                        {{/if}}
+                    </div>
+                </a>
+                {{/each}}
+            </div>
+            {{else}}
+            <p class="empty-copy">No auxiliary HTTP services captured yet.</p>
+            {{/if}}
+        </section>
+
+        <section class="card card-nested">
+            <div class="section-heading">
+                <h2>SSH</h2>
+                <a href="/entities/ssh" class="muted-link">All keys</a>
+            </div>
+            {{#if has_ssh_host_keys}}
+            <div class="compact-list">
+                {{#each ssh_host_keys}}
+                <a class="compact-row" href="{{detail_url}}">
+                    <div class="table-cell-stack">
+                        <span class="compact-title">{{algorithm}}</span>
+                        <span class="compact-meta">{{fingerprint}}</span>
+                    </div>
+                    <span class="count-pill">{{host_count}} hosts</span>
+                </a>
+                {{/each}}
+            </div>
+            {{else}}
+            <p class="empty-copy">No SSH host keys have been captured yet.</p>
+            {{/if}}
+        </section>
+
+        <section class="card card-nested">
+            <div class="section-heading">
+                <h2>Other Services</h2>
+                <a href="/entities/services" class="muted-link">IRC / FTP</a>
+            </div>
+            {{#if has_service_observations}}
+            <div class="compact-list">
+                {{#each service_observations}}
+                <a class="compact-row" href="{{detail_url}}">
+                    <div class="table-cell-stack">
+                        <span class="compact-title">{{service}} · {{host}}:{{port}}</span>
+                        {{#if banner}}
+                        <span class="compact-meta">{{banner}}</span>
+                        {{/if}}
+                    </div>
+                    {{#if banner_fingerprint}}
+                    <span class="compact-meta">{{banner_fingerprint}}</span>
+                    {{/if}}
+                </a>
+                {{/each}}
+            </div>
+            {{else}}
+            <p class="empty-copy">No IRC or FTP services have been captured yet.</p>
+            {{/if}}
+        </section>
         {{else}}
-        <p class="empty-copy">No SSH host keys have been captured yet.</p>
+        <p class="empty-copy">No exposed services have been captured yet.</p>
         {{/if}}
     </section>
 

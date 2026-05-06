@@ -223,6 +223,10 @@ fn index() -> HtmlResult {
         .frontend_context("loading dashboard crypto entities")?;
     let relationships = list_site_relationships(&mut connection, Some(8), Some(0))
         .frontend_context("loading dashboard relationships")?;
+    let http_observations = list_host_http_observations(&mut connection, Some(6), Some(0))
+        .frontend_context("loading dashboard http observations")?;
+    let service_observations = list_host_service_observations(&mut connection, Some(6), Some(0))
+        .frontend_context("loading dashboard service observations")?;
     let ssh_host_keys = list_ssh_host_keys(&mut connection, Some(8), Some(0))
         .frontend_context("loading dashboard ssh host keys")?;
 
@@ -236,12 +240,17 @@ fn index() -> HtmlResult {
             email_entities: email_entities.items,
             crypto_entities: crypto_entities.items,
             relationships: relationships.items,
+            http_observations: http_observations.items,
+            service_observations: service_observations.items,
             ssh_host_keys: ssh_host_keys.items,
             has_pages: pages.total_count > 0,
             has_email_entities: email_entities.total_count > 0,
             has_crypto_entities: crypto_entities.total_count > 0,
             has_relationships: relationships.total_count > 0,
+            has_http_observations: http_observations.total_count > 0,
+            has_service_observations: service_observations.total_count > 0,
             has_ssh_host_keys: ssh_host_keys.total_count > 0,
+            has_any_service_intel: http_observations.total_count > 0 || service_observations.total_count > 0 || ssh_host_keys.total_count > 0,
         },
     ))
 }
