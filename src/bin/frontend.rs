@@ -1161,26 +1161,26 @@ fn build_category_legend_items(
 
 fn analytics_chart_color(series_key: &str) -> &'static str {
     match series_key {
-        "search-engine" => "#1f6c5c",
-        "forum" => "#0f5b73",
-        "market" => "#a35d10",
-        "directory" => "#3f6c1f",
-        "wiki" => "#4c5f9c",
-        "blog" => "#b24f6b",
-        "escrow" => "#7f4db8",
-        "shop" => "#b2492c",
-        "vendor-page" => "#8b5e34",
-        "docs" => "#366b87",
-        "indexer" => "#6e4d34",
-        "content" => "#677a74",
+        "search-engine" => "#00ff88",
+        "forum" => "#00d4ff",
+        "market" => "#ff00ff",
+        "directory" => "#d7ff00",
+        "wiki" => "#8b5cf6",
+        "blog" => "#ff3366",
+        "escrow" => "#ffb000",
+        "shop" => "#f97316",
+        "vendor-page" => "#f472b6",
+        "docs" => "#7dd3fc",
+        "indexer" => "#66f2ff",
+        "content" => "#98a2b3",
         _ => fallback_chart_color(series_key),
     }
 }
 
 fn fallback_chart_color(series_key: &str) -> &'static str {
     const PALETTE: [&str; 12] = [
-        "#1f6c5c", "#0f5b73", "#a35d10", "#3f6c1f", "#4c5f9c", "#b24f6b", "#7f4db8", "#b2492c",
-        "#8b5e34", "#366b87", "#6e4d34", "#677a74",
+        "#00ff88", "#00d4ff", "#ff00ff", "#d7ff00", "#8b5cf6", "#ff3366", "#ffb000", "#f97316",
+        "#f472b6", "#7dd3fc", "#66f2ff", "#98a2b3",
     ];
 
     let hash = series_key.bytes().fold(0_usize, |acc, byte| {
@@ -1200,9 +1200,9 @@ fn render_distribution_pie_chart(
         return format!(
             r##"
 <svg class="chart-svg" viewBox="0 0 320 320" role="img" aria-label="{aria_label}">
-  <circle cx="160" cy="160" r="96" fill="none" stroke="#d8e0d2" stroke-width="46"></circle>
-  <text x="160" y="154" text-anchor="middle" font-size="18" font-weight="700" fill="#5c6c68">{empty_title}</text>
-  <text x="160" y="176" text-anchor="middle" font-size="12" fill="#5c6c68">{empty_subtitle}</text>
+  <circle cx="160" cy="160" r="96" fill="none" stroke="#2a2a3a" stroke-width="46"></circle>
+  <text x="160" y="154" text-anchor="middle" font-size="18" font-weight="700" fill="#e0e0e0">{empty_title}</text>
+  <text x="160" y="176" text-anchor="middle" font-size="12" fill="#98a2b3">{empty_subtitle}</text>
 </svg>
 "##,
             aria_label = aria_label,
@@ -1244,11 +1244,11 @@ fn render_distribution_pie_chart(
     format!(
         r##"
 <svg class="chart-svg" viewBox="0 0 320 320" role="img" aria-label="{aria_label}">
-  <circle cx="160" cy="160" r="{radius}" fill="none" stroke="#e8ece2" stroke-width="46"></circle>
+  <circle cx="160" cy="160" r="{radius}" fill="none" stroke="#242438" stroke-width="46"></circle>
   {slices}
-  <circle cx="160" cy="160" r="62" fill="#fbfcf8" stroke="#d8e0d2" stroke-width="1.5"></circle>
-  <text x="160" y="150" text-anchor="middle" font-size="14" fill="#5c6c68">{center_label}</text>
-  <text x="160" y="176" text-anchor="middle" font-size="34" font-weight="700" fill="#17211f">{total_hosts}</text>
+  <circle cx="160" cy="160" r="62" fill="#0a0a0f" stroke="#00ff88" stroke-width="1.5"></circle>
+  <text x="160" y="150" text-anchor="middle" font-size="14" fill="#98a2b3">{center_label}</text>
+  <text x="160" y="176" text-anchor="middle" font-size="34" font-weight="700" fill="#e0e0e0">{total_hosts}</text>
 </svg>
 "##,
         aria_label = aria_label,
@@ -1272,9 +1272,9 @@ fn render_timeline_histogram(
         return format!(
             r##"
 <svg class="chart-svg" viewBox="0 0 920 320" role="img" aria-label="{aria_label}">
-  <rect x="0" y="0" width="920" height="320" rx="18" fill="#fbfcf8"></rect>
-  <text x="460" y="150" text-anchor="middle" font-size="18" font-weight="700" fill="#5c6c68">{empty_title}</text>
-  <text x="460" y="176" text-anchor="middle" font-size="12" fill="#5c6c68">{empty_subtitle}</text>
+  <rect x="0" y="0" width="920" height="320" rx="4" fill="#101018"></rect>
+  <text x="460" y="150" text-anchor="middle" font-size="18" font-weight="700" fill="#e0e0e0">{empty_title}</text>
+  <text x="460" y="176" text-anchor="middle" font-size="12" fill="#98a2b3">{empty_subtitle}</text>
 </svg>
 "##,
             aria_label = aria_label,
@@ -1330,7 +1330,7 @@ fn render_timeline_histogram(
         let value = ((max_total as f64) * (tick as f64) / 4.0).round() as usize;
         let y = top + chart_height - ((value as f64 / max_total as f64) * chart_height);
         grid.push_str(&format!(
-            r##"<line x1="{left:.1}" y1="{y:.1}" x2="{right_x:.1}" y2="{y:.1}" stroke="#d8e0d2" stroke-width="1"></line><text x="{label_x:.1}" y="{label_y:.1}" text-anchor="end" font-size="11" fill="#5c6c68">{value}</text>"##,
+            r##"<line x1="{left:.1}" y1="{y:.1}" x2="{right_x:.1}" y2="{y:.1}" stroke="#2a2a3a" stroke-width="1"></line><text x="{label_x:.1}" y="{label_y:.1}" text-anchor="end" font-size="11" fill="#98a2b3">{value}</text>"##,
             left = left,
             y = y,
             right_x = width - right,
@@ -1372,7 +1372,7 @@ fn render_timeline_histogram(
         }
 
         bars.push_str(&format!(
-            r##"<text x="{x:.1}" y="{y:.1}" text-anchor="middle" font-size="10" fill="#5c6c68">{label}</text>"##,
+            r##"<text x="{x:.1}" y="{y:.1}" text-anchor="middle" font-size="10" fill="#98a2b3">{label}</text>"##,
             x = x + (bar_width / 2.0),
             y = top + chart_height - ((total as f64 / max_total as f64) * chart_height) - 6.0,
             label = total,
@@ -1380,7 +1380,7 @@ fn render_timeline_histogram(
 
         if index % step == 0 || index + 1 == buckets.len() {
             bars.push_str(&format!(
-                r##"<text x="{x:.1}" y="{y:.1}" text-anchor="middle" font-size="11" fill="#5c6c68">{label}</text>"##,
+                r##"<text x="{x:.1}" y="{y:.1}" text-anchor="middle" font-size="11" fill="#98a2b3">{label}</text>"##,
                 x = x + (bar_width / 2.0),
                 y = height - 12.0,
                 label = short_day_label(day),
@@ -1391,9 +1391,9 @@ fn render_timeline_histogram(
     format!(
         r##"
 <svg class="chart-svg chart-svg-wide" viewBox="0 0 {width:.1} {height:.1}" role="img" aria-label="{aria_label}">
-  <rect x="0" y="0" width="{width:.1}" height="{height:.1}" rx="18" fill="#fbfcf8"></rect>
+  <rect x="0" y="0" width="{width:.1}" height="{height:.1}" rx="4" fill="#101018"></rect>
   {grid}
-  <line x1="{left:.1}" y1="{axis_y:.1}" x2="{axis_right:.1}" y2="{axis_y:.1}" stroke="#9fb0aa" stroke-width="1.2"></line>
+  <line x1="{left:.1}" y1="{axis_y:.1}" x2="{axis_right:.1}" y2="{axis_y:.1}" stroke="#00d4ff" stroke-width="1.2"></line>
   {bars}
 </svg>
 "##,
