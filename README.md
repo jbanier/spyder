@@ -127,6 +127,16 @@ For each pending work unit, Spyder:
 - refreshes normalized link/email/crypto observations
 - marks the work unit as `done`, reschedules transient failures, or marks terminal failures as `failed`
 
+### Rescan already-known pages
+
+If the crawl queue is empty or has been truncated, rebuild it from pages already stored in `page` and scan them for updates:
+
+```bash
+cargo run --bin spyder -- rescan-known
+```
+
+Use `--queue-only` to repopulate `work_unit` without immediately processing it, `--limit N` to bound the number of known pages queued, and `--onion-only` to only rescan known `.onion` sites.
+
 ## Domain Blacklist
 
 Manage the blacklist from the CLI:
@@ -262,7 +272,8 @@ Source and target hosts also show category badges when the host has been classif
 
 - primary category
 - confidence tier
-- number of supporting pages
+- first-found and last-scanned timestamps
+- number of scanned pages
 - short evidence markers explaining the classification
 - the page that contributed the strongest evidence
 

@@ -21,10 +21,10 @@ use spyder::{
     find_matching_blacklist_domain, get_host_http_observation, get_host_service_observation,
     get_host_ssh_observation, get_pending_work_units, list_domain_blacklist_rules,
     list_forum_keyword_rules, list_recent_responding_hosts, mark_work_unit_as_done,
-    normalize_crawl_url, record_work_unit_failure, remove_domain_blacklist_entry,
-    remove_forum_keyword_rule, save_host_http_observation, save_host_service_observation,
-    save_host_ssh_observation, save_host_tls_observation, save_page_info, AppConnection,
-    SqlDialect, SSH_STATUS_SUCCESS,
+    normalize_crawl_url, queue_known_pages_for_rescan, record_work_unit_failure,
+    remove_domain_blacklist_entry, remove_forum_keyword_rule, save_host_http_observation,
+    save_host_service_observation, save_host_ssh_observation, save_host_tls_observation,
+    save_page_info, AppConnection, SqlDialect, SSH_STATUS_SUCCESS,
 };
 use ssh2::{HashType, HostKeyType, Session};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -48,6 +48,14 @@ enum FailureKind {
 struct WorkOptions {
     onion_only: bool,
     concurrency: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RescanKnownOptions {
+    onion_only: bool,
+    concurrency: usize,
+    limit: Option<i64>,
+    queue_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -206,6 +214,7 @@ impl_has_id!(
     PageCrypto,
     PageClassificationRecord,
     SiteProfileRecord,
+    SourceSiteProfile,
     DomainBlacklistRule,
     HostSshObservationRecord,
     ForumKeywordRule,
@@ -326,6 +335,22 @@ struct ImportedSiteProfile {
     confidence: String,
     score: i32,
     page_count: i32,
+    first_found_at: String,
+    last_scanned_at: String,
+    evidence: String,
+    source_page_id: Option<i32>,
+    last_classified_at: String,
+    created_at: String,
+}
+
+#[derive(Queryable)]
+struct SourceSiteProfile {
+    id: i32,
+    host: String,
+    category: String,
+    confidence: String,
+    score: i32,
+    page_count: i32,
     evidence: String,
     source_page_id: Option<i32>,
     last_classified_at: String,
@@ -391,6 +416,17 @@ impl Default for WorkOptions {
         Self {
             onion_only: false,
             concurrency: DEFAULT_WORK_CONCURRENCY,
+        }
+    }
+}
+
+impl Default for RescanKnownOptions {
+    fn default() -> Self {
+        Self {
+            onion_only: false,
+            concurrency: DEFAULT_WORK_CONCURRENCY,
+            limit: None,
+            queue_only: false,
         }
     }
 }
@@ -803,6 +839,31 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+fn rescan_known_pages(client: &Client, options: RescanKnownOptions) -> Result<()> {
+    let mut connection = establish_connection()?;
+    print_status("Queueing known pages for rescan");
+    let queued_count =
+        queue_known_pages_for_rescan(&mut connection, options.limit, options.onion_only)?;
+    println!(
+        "Queued {} known page{} for rescan",
+        queued_count,
+        if queued_count == 1 { "" } else { "s" }
+    );
+    drop(connection);
+
+    if queued_count == 0 || options.queue_only {
+        return Ok(());
+    }
+
+    work_queue(
+        client,
+        WorkOptions {
+            onion_only: options.onion_only,
+            concurrency: options.concurrency,
+        },
+    )
 }
 
 fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
@@ -2320,8 +2381,19 @@ fn import_sqlite(sqlite_path: &str) -> Result<()> {
                 .filter(site_profile_dsl::id.gt(last_id))
                 .order(site_profile_dsl::id.asc())
                 .limit(limit)
-                .select(SiteProfileRecord::as_select())
-                .load::<SiteProfileRecord>(conn)
+                .select((
+                    site_profile_dsl::id,
+                    site_profile_dsl::host,
+                    site_profile_dsl::category,
+                    site_profile_dsl::confidence,
+                    site_profile_dsl::score,
+                    site_profile_dsl::page_count,
+                    site_profile_dsl::evidence,
+                    site_profile_dsl::source_page_id,
+                    site_profile_dsl::last_classified_at,
+                    site_profile_dsl::created_at,
+                ))
+                .load::<SourceSiteProfile>(conn)
                 .map_err(Into::into)
         },
         |row| ImportedSiteProfile {
@@ -2331,6 +2403,8 @@ fn import_sqlite(sqlite_path: &str) -> Result<()> {
             confidence: row.confidence,
             score: row.score,
             page_count: row.page_count,
+            first_found_at: row.created_at.clone(),
+            last_scanned_at: row.last_classified_at.clone(),
             evidence: row.evidence,
             source_page_id: row.source_page_id,
             last_classified_at: row.last_classified_at,
@@ -2467,7 +2541,35 @@ fn import_sqlite(sqlite_path: &str) -> Result<()> {
         },
     )?;
 
+    refresh_imported_site_profile_scan_stats(&mut target)?;
     println!("SQLite import completed successfully");
+    Ok(())
+}
+
+fn refresh_imported_site_profile_scan_stats(conn: &mut PgConnection) -> Result<()> {
+    diesel::sql_query(
+        "
+        WITH page_stats AS (
+            SELECT
+                split_part(split_part(url, '://', 2), '/', 1) AS host,
+                COUNT(*)::INTEGER AS page_count,
+                MIN(created_at) AS first_found_at,
+                MAX(last_scanned_at) AS last_scanned_at
+            FROM page
+            WHERE position('://' IN url) > 0
+            GROUP BY split_part(split_part(url, '://', 2), '/', 1)
+        )
+        UPDATE site_profile sp
+        SET
+            page_count = page_stats.page_count,
+            first_found_at = page_stats.first_found_at,
+            last_scanned_at = page_stats.last_scanned_at
+        FROM page_stats
+        WHERE page_stats.host = sp.host
+        ",
+    )
+    .execute(conn)
+    .context("error refreshing imported site scan metadata")?;
     Ok(())
 }
 
@@ -2605,6 +2707,9 @@ fn usage(program: &str) {
     eprintln!(
         "    work [--onion-only] [--concurrency N] process pending work units and store page metadata."
     );
+    eprintln!(
+        "    rescan-known [--onion-only] [--limit N] [--concurrency N] [--queue-only] queue known pages and scan them for updates."
+    );
 }
 
 fn print_error(error: &anyhow::Error) {
@@ -2662,6 +2767,35 @@ fn parse_work_options(args: impl IntoIterator<Item = String>) -> Result<WorkOpti
                     parse_usize_option_value(args.next(), "--concurrency", 1, 64)?;
             }
             _ => anyhow::bail!("invalid work option: {arg}"),
+        }
+    }
+
+    Ok(options)
+}
+
+fn parse_rescan_known_options(
+    args: impl IntoIterator<Item = String>,
+) -> Result<RescanKnownOptions> {
+    let mut options = RescanKnownOptions::default();
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--onion-only" => options.onion_only = true,
+            "--queue-only" => options.queue_only = true,
+            "--limit" => {
+                options.limit = Some(parse_i64_option_value(
+                    args.next(),
+                    "--limit",
+                    1,
+                    1_000_000,
+                )?);
+            }
+            "--concurrency" => {
+                options.concurrency =
+                    parse_usize_option_value(args.next(), "--concurrency", 1, 64)?;
+            }
+            _ => anyhow::bail!("invalid rescan-known option: {arg}"),
         }
     }
 
@@ -2822,6 +2956,15 @@ fn main() {
         },
         Some("work") => match parse_work_options(args) {
             Ok(options) => build_http_client().and_then(|client| work_queue(&client, options)),
+            Err(error) => {
+                usage(&program);
+                Err(error)
+            }
+        },
+        Some("rescan-known") => match parse_rescan_known_options(args) {
+            Ok(options) => {
+                build_http_client().and_then(|client| rescan_known_pages(&client, options))
+            }
             Err(error) => {
                 usage(&program);
                 Err(error)

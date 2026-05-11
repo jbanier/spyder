@@ -270,6 +270,10 @@ struct SiteProfileListRow {
     #[diesel(sql_type = diesel::sql_types::Integer)]
     page_count: i32,
     #[diesel(sql_type = Text)]
+    first_found_at: String,
+    #[diesel(sql_type = Text)]
+    last_scanned_at: String,
+    #[diesel(sql_type = Text)]
     evidence: String,
     #[diesel(sql_type = Nullable<diesel::sql_types::Integer>)]
     source_page_id: Option<i32>,
@@ -277,6 +281,23 @@ struct SiteProfileListRow {
     last_classified_at: String,
     #[diesel(sql_type = Text)]
     created_at: String,
+}
+
+#[derive(QueryableByName)]
+struct SiteScanStatsRow {
+    #[diesel(sql_type = BigInt)]
+    page_count: i64,
+    #[diesel(sql_type = Text)]
+    first_found_at: String,
+    #[diesel(sql_type = Text)]
+    last_scanned_at: String,
+}
+
+#[derive(Clone)]
+struct SiteScanStats {
+    page_count: i32,
+    first_found_at: String,
+    last_scanned_at: String,
 }
 
 #[derive(Clone, Copy)]
@@ -632,7 +653,6 @@ pub fn list_site_profiles(
         .select(count_star())
         .first(conn)
         .context("error counting site profiles")?;
-    let host_expr = sql_host_expr("p.url", conn);
     let query = format!(
         "
         SELECT
@@ -642,20 +662,14 @@ pub fn list_site_profiles(
             sp.confidence,
             sp.score,
             sp.page_count,
+            sp.first_found_at,
+            sp.last_scanned_at,
             sp.evidence,
             sp.source_page_id,
             sp.last_classified_at,
             sp.created_at
         FROM site_profile sp
-        LEFT JOIN (
-            SELECT
-                {host_expr} AS host,
-                MAX(p.last_scanned_at) AS last_scanned_at
-            FROM page p
-            WHERE {host_expr} != ''
-            GROUP BY {host_expr}
-        ) recent_pages ON recent_pages.host = sp.host
-        ORDER BY COALESCE(recent_pages.last_scanned_at, '') DESC, sp.host ASC
+        ORDER BY sp.last_scanned_at DESC, sp.host ASC
         LIMIT $1 OFFSET $2
         "
     );
@@ -692,6 +706,62 @@ pub fn create_work_unit(conn: &mut PgConnection, url: &str) -> Result<()> {
         .context("error saving work unit")?;
 
     Ok(())
+}
+
+pub fn requeue_work_unit(conn: &mut PgConnection, url: &str) -> Result<()> {
+    use crate::schema::work_unit::dsl as work_unit_dsl;
+
+    let normalized_url = normalize_crawl_url(url);
+    let work_unit = NewUnit {
+        url: &normalized_url,
+        status: STATUS_PENDING,
+    };
+
+    diesel::insert_into(crate::schema::work_unit::table)
+        .values(work_unit)
+        .on_conflict(work_unit_dsl::url)
+        .do_update()
+        .set((
+            work_unit_dsl::status.eq(STATUS_PENDING),
+            work_unit_dsl::retry_count.eq(0),
+            work_unit_dsl::next_attempt_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+            work_unit_dsl::last_attempt_at.eq::<Option<String>>(None),
+            work_unit_dsl::last_error.eq::<Option<String>>(None),
+        ))
+        .execute(conn)
+        .context("error requeueing work unit")?;
+
+    Ok(())
+}
+
+pub fn queue_known_pages_for_rescan(
+    conn: &mut PgConnection,
+    requested_limit: Option<i64>,
+    onion_only: bool,
+) -> Result<usize> {
+    use crate::schema::page::dsl as page_dsl;
+
+    let limit = requested_limit.map(|value| value.max(0) as usize);
+    let urls = page_dsl::page
+        .order(page_dsl::last_scanned_at.asc())
+        .then_order_by(page_dsl::id.asc())
+        .select(page_dsl::url)
+        .load::<String>(conn)
+        .context("error loading known page URLs for rescan")?;
+
+    let mut queued_count = 0usize;
+    for page_url in urls {
+        if onion_only && !host_from_url(&page_url).ends_with(".onion") {
+            continue;
+        }
+        if limit.is_some_and(|max_count| queued_count >= max_count) {
+            break;
+        }
+        requeue_work_unit(conn, &page_url)?;
+        queued_count += 1;
+    }
+
+    Ok(queued_count)
 }
 
 fn normalize_link_observations(links: &[LinkObservation]) -> Vec<LinkObservation> {
@@ -978,6 +1048,8 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                     confidence: site_profile_record.confidence.clone(),
                     score: site_profile_record.score,
                     page_count: site_profile_record.page_count,
+                    first_found_at: site_profile_record.first_found_at.clone(),
+                    last_scanned_at: site_profile_record.last_scanned_at.clone(),
                     evidence: site_profile_record.evidence.clone(),
                     source_page_id: site_profile_record.source_page_id,
                 })
@@ -988,6 +1060,7 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                     site_profile::confidence.eq(excluded(site_profile::confidence)),
                     site_profile::score.eq(excluded(site_profile::score)),
                     site_profile::page_count.eq(excluded(site_profile::page_count)),
+                    site_profile::last_scanned_at.eq(excluded(site_profile::last_scanned_at)),
                     site_profile::evidence.eq(excluded(site_profile::evidence)),
                     site_profile::source_page_id.eq(excluded(site_profile::source_page_id)),
                     site_profile::last_classified_at
@@ -3420,6 +3493,7 @@ fn recompute_site_profile_record(
     }
     evidence.truncate(6);
 
+    let scan_stats = load_site_scan_stats(conn, host_value)?;
     let confidence = if category == CATEGORY_UNKNOWN {
         CONFIDENCE_LOW.to_string()
     } else if score >= 18 && supporting_pages >= 2 && score - runner_up_score >= 4 {
@@ -3435,9 +3509,36 @@ fn recompute_site_profile_record(
         category,
         confidence,
         score,
-        page_count: rows.len() as i32,
+        page_count: scan_stats.page_count,
+        first_found_at: scan_stats.first_found_at,
+        last_scanned_at: scan_stats.last_scanned_at,
         evidence: serialize_evidence(&evidence),
         source_page_id: source_row.map(|row| row.page_id),
+    })
+}
+
+fn load_site_scan_stats(conn: &mut PgConnection, host_value: &str) -> Result<SiteScanStats> {
+    let host_expr = sql_host_expr("p.url", conn);
+    let query = format!(
+        "
+        SELECT
+            COUNT(*) AS page_count,
+            COALESCE(MIN(p.created_at), {current_timestamp}) AS first_found_at,
+            COALESCE(MAX(p.last_scanned_at), {current_timestamp}) AS last_scanned_at
+        FROM page p
+        WHERE {host_expr} = $1
+        ",
+        current_timestamp = sql_current_timestamp_expr(conn),
+    );
+    let row = sql_query(query)
+        .bind::<Text, _>(host_value)
+        .get_result::<SiteScanStatsRow>(conn)
+        .context("error loading site scan stats")?;
+
+    Ok(SiteScanStats {
+        page_count: row.page_count.max(0) as i32,
+        first_found_at: row.first_found_at,
+        last_scanned_at: row.last_scanned_at,
     })
 }
 
@@ -3449,6 +3550,8 @@ fn site_profile_record_from_row(row: SiteProfileListRow) -> SiteProfileRecord {
         confidence: row.confidence,
         score: row.score,
         page_count: row.page_count,
+        first_found_at: row.first_found_at,
+        last_scanned_at: row.last_scanned_at,
         evidence: row.evidence,
         source_page_id: row.source_page_id,
         last_classified_at: row.last_classified_at,
@@ -3529,13 +3632,6 @@ fn build_site_profile_summaries(
             .map(|record| record.host.clone())
             .collect::<Vec<_>>(),
     )?;
-    let host_contexts = load_host_page_contexts_by_hosts(
-        conn,
-        &records
-            .iter()
-            .map(|record| record.host.clone())
-            .collect::<Vec<_>>(),
-    )?;
     let source_page_ids = records
         .iter()
         .filter_map(|record| record.source_page_id)
@@ -3551,11 +3647,6 @@ fn build_site_profile_summaries(
             let source_page = record
                 .source_page_id
                 .and_then(|page_id| source_pages.get(&page_id));
-            let last_scanned_at = host_contexts
-                .get(&record.host)
-                .map(|context| context.last_scanned_at.clone())
-                .or_else(|| source_page.map(|page| page.last_scanned_at.clone()))
-                .unwrap_or_else(|| "Never".to_string());
             SiteProfileSummary {
                 host: record.host.clone(),
                 category: record.category.clone(),
@@ -3571,10 +3662,11 @@ fn build_site_profile_summaries(
                     Vec::new()
                 },
                 page_count: record.page_count.max(0) as usize,
+                first_found_at: record.first_found_at.clone(),
                 source_page_id: record.source_page_id,
                 source_page_title: source_page.map(|page| page.title.clone()),
                 source_page_url: source_page.map(|page| page.url.clone()),
-                last_scanned_at,
+                last_scanned_at: record.last_scanned_at.clone(),
                 last_classified_at: record.last_classified_at.clone(),
             }
         })
@@ -4485,6 +4577,8 @@ mod tests {
               confidence VARCHAR NOT NULL,
               score INTEGER NOT NULL DEFAULT 0,
               page_count INTEGER NOT NULL DEFAULT 0,
+              first_found_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
               evidence VARCHAR NOT NULL DEFAULT '',
               source_page_id INTEGER,
               last_classified_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -5056,6 +5150,9 @@ mod tests {
             UPDATE page SET last_scanned_at = '2026-05-02 08:00:00' WHERE url = 'http://alpha.onion';
             UPDATE page SET last_scanned_at = '2026-05-03 09:00:00' WHERE url = 'http://beta.onion';
             UPDATE page SET last_scanned_at = '2026-05-01 07:00:00' WHERE url = 'http://gamma.onion';
+            UPDATE site_profile SET last_scanned_at = '2026-05-02 08:00:00' WHERE host = 'alpha.onion';
+            UPDATE site_profile SET last_scanned_at = '2026-05-03 09:00:00' WHERE host = 'beta.onion';
+            UPDATE site_profile SET last_scanned_at = '2026-05-01 07:00:00' WHERE host = 'gamma.onion';
             ",
         )
         .expect("update page recency");
@@ -5105,6 +5202,9 @@ mod tests {
             UPDATE page SET last_scanned_at = '2026-05-02 08:00:00' WHERE url = 'http://alpha.onion';
             UPDATE page SET last_scanned_at = '2026-05-03 09:00:00' WHERE url = 'http://beta.onion';
             UPDATE page SET last_scanned_at = '2026-05-01 07:00:00' WHERE url = 'http://gamma.onion';
+            UPDATE site_profile SET last_scanned_at = '2026-05-02 08:00:00' WHERE host = 'alpha.onion';
+            UPDATE site_profile SET last_scanned_at = '2026-05-03 09:00:00' WHERE host = 'beta.onion';
+            UPDATE site_profile SET last_scanned_at = '2026-05-01 07:00:00' WHERE host = 'gamma.onion';
             ",
         )
         .expect("update page recency");

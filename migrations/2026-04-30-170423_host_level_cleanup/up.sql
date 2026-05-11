@@ -378,6 +378,8 @@ CREATE TABLE site_profile_new(
   confidence VARCHAR NOT NULL,
   score INTEGER NOT NULL DEFAULT 0,
   page_count INTEGER NOT NULL DEFAULT 0,
+  first_found_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
   evidence VARCHAR NOT NULL DEFAULT '',
   source_page_id INTEGER,
   last_classified_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -551,6 +553,8 @@ INSERT INTO site_profile_new (
   confidence,
   score,
   page_count,
+  first_found_at,
+  last_scanned_at,
   evidence,
   source_page_id,
   last_classified_at,
@@ -566,6 +570,18 @@ SELECT
     FROM page_classification_new pcn
     WHERE pcn.host = sp.host
   ), 0) AS page_count,
+  COALESCE((
+    SELECT MIN(p.created_at)
+    FROM page_classification_new pcn
+    JOIN page_new p ON p.id = pcn.page_id
+    WHERE pcn.host = sp.host
+  ), sp.created_at) AS first_found_at,
+  COALESCE((
+    SELECT MAX(p.last_scanned_at)
+    FROM page_classification_new pcn
+    JOIN page_new p ON p.id = pcn.page_id
+    WHERE pcn.host = sp.host
+  ), sp.last_classified_at) AS last_scanned_at,
   sp.evidence,
   (
     SELECT pim.canonical_page_id
@@ -583,6 +599,8 @@ INSERT OR IGNORE INTO site_profile_new (
   confidence,
   score,
   page_count,
+  first_found_at,
+  last_scanned_at,
   evidence,
   source_page_id,
   last_classified_at,
@@ -598,6 +616,18 @@ SELECT
     FROM page_classification_new pcn2
     WHERE pcn2.host = pcn.host
   ) AS page_count,
+  COALESCE((
+    SELECT MIN(p.created_at)
+    FROM page_classification_new pcn2
+    JOIN page_new p ON p.id = pcn2.page_id
+    WHERE pcn2.host = pcn.host
+  ), CURRENT_TIMESTAMP) AS first_found_at,
+  COALESCE((
+    SELECT MAX(p.last_scanned_at)
+    FROM page_classification_new pcn2
+    JOIN page_new p ON p.id = pcn2.page_id
+    WHERE pcn2.host = pcn.host
+  ), pcn.last_classified_at) AS last_scanned_at,
   pcn.evidence,
   pcn.page_id,
   pcn.last_classified_at,

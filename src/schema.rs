@@ -201,6 +201,8 @@ diesel::table! {
         confidence -> Text,
         score -> Int4,
         page_count -> Int4,
+        first_found_at -> Text,
+        last_scanned_at -> Text,
         evidence -> Text,
         source_page_id -> Nullable<Int4>,
         last_classified_at -> Text,

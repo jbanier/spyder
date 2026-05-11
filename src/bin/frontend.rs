@@ -1615,6 +1615,8 @@ mod tests {
               confidence VARCHAR NOT NULL,
               score INTEGER NOT NULL DEFAULT 0,
               page_count INTEGER NOT NULL DEFAULT 0,
+              first_found_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
               evidence VARCHAR NOT NULL DEFAULT '',
               source_page_id INTEGER,
               last_classified_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1722,6 +1724,9 @@ mod tests {
             UPDATE page SET last_scanned_at = '2026-05-02 08:00:00' WHERE url = 'http://alpha.onion';
             UPDATE page SET last_scanned_at = '2026-05-03 09:00:00' WHERE url = 'http://beta.onion';
             UPDATE page SET last_scanned_at = '2026-05-01 07:00:00' WHERE url = 'http://gamma.onion';
+            UPDATE site_profile SET last_scanned_at = '2026-05-02 08:00:00' WHERE host = 'alpha.onion';
+            UPDATE site_profile SET last_scanned_at = '2026-05-03 09:00:00' WHERE host = 'beta.onion';
+            UPDATE site_profile SET last_scanned_at = '2026-05-01 07:00:00' WHERE host = 'gamma.onion';
             ",
         )
         .expect("update page recency");
