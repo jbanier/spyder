@@ -69,6 +69,21 @@
         {{/if}}
     </section>
 
+    {{#unless show_dashboard_deep_sections}}
+    <section class="card">
+        <div class="section-heading">
+            <h2>Explore</h2>
+        </div>
+        <div class="actions">
+            <a href="/entities/emails" class="btn btn-secondary">Shared Emails</a>
+            <a href="/entities/crypto" class="btn btn-secondary">Shared Wallets</a>
+            <a href="/entities/services" class="btn btn-secondary">Services</a>
+            <a href="/relationships" class="btn btn-secondary">Relationships</a>
+        </div>
+    </section>
+    {{/unless}}
+
+    {{#if show_dashboard_deep_sections}}
     <section class="card">
         <div class="section-heading">
             <h2>Shared Emails</h2>
@@ -238,6 +253,7 @@
         <p class="empty-copy">No cross-site references have been observed yet.</p>
         {{/if}}
     </section>
+    {{/if}}
 </div>
 {{/inline}}
 

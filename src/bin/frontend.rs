@@ -23,6 +23,7 @@ use spyder::{
     list_work_units, search_pages,
 };
 use std::collections::{BTreeMap, HashMap};
+use std::env;
 use url::form_urlencoded;
 use url::Url;
 
@@ -214,21 +215,46 @@ fn render_pages(title: &str, description: &str, list_query: Option<ListQuery>) -
 fn index() -> HtmlResult {
     let mut connection = open_connection()?;
     let stats = collect_stats(&mut connection).frontend_context("loading dashboard stats")?;
+    let show_deep_sections = dashboard_deep_sections_enabled();
 
     let pages = list_page_summaries(&mut connection, Some(8), Some(0))
         .frontend_context("loading dashboard pages")?;
-    let email_entities = list_email_entities(&mut connection, Some(8), Some(0))
-        .frontend_context("loading dashboard email entities")?;
-    let crypto_entities = list_crypto_entities(&mut connection, Some(8), Some(0))
-        .frontend_context("loading dashboard crypto entities")?;
-    let relationships = list_site_relationships(&mut connection, Some(8), Some(0))
-        .frontend_context("loading dashboard relationships")?;
-    let http_observations = list_host_http_observations(&mut connection, Some(6), Some(0))
-        .frontend_context("loading dashboard http observations")?;
-    let service_observations = list_host_service_observations(&mut connection, Some(6), Some(0))
-        .frontend_context("loading dashboard service observations")?;
-    let ssh_host_keys = list_ssh_host_keys(&mut connection, Some(8), Some(0))
-        .frontend_context("loading dashboard ssh host keys")?;
+    let email_entities = if show_deep_sections {
+        list_email_entities(&mut connection, Some(8), Some(0))
+            .frontend_context("loading dashboard email entities")?
+    } else {
+        empty_paginated_result()
+    };
+    let crypto_entities = if show_deep_sections {
+        list_crypto_entities(&mut connection, Some(8), Some(0))
+            .frontend_context("loading dashboard crypto entities")?
+    } else {
+        empty_paginated_result()
+    };
+    let relationships = if show_deep_sections {
+        list_site_relationships(&mut connection, Some(8), Some(0))
+            .frontend_context("loading dashboard relationships")?
+    } else {
+        empty_paginated_result()
+    };
+    let http_observations = if show_deep_sections {
+        list_host_http_observations(&mut connection, Some(6), Some(0))
+            .frontend_context("loading dashboard http observations")?
+    } else {
+        empty_paginated_result()
+    };
+    let service_observations = if show_deep_sections {
+        list_host_service_observations(&mut connection, Some(6), Some(0))
+            .frontend_context("loading dashboard service observations")?
+    } else {
+        empty_paginated_result()
+    };
+    let ssh_host_keys = if show_deep_sections {
+        list_ssh_host_keys(&mut connection, Some(8), Some(0))
+            .frontend_context("loading dashboard ssh host keys")?
+    } else {
+        empty_paginated_result()
+    };
 
     Ok(Template::render(
         "dashboard",
@@ -251,8 +277,29 @@ fn index() -> HtmlResult {
             has_service_observations: service_observations.total_count > 0,
             has_ssh_host_keys: ssh_host_keys.total_count > 0,
             has_any_service_intel: http_observations.total_count > 0 || service_observations.total_count > 0 || ssh_host_keys.total_count > 0,
+            show_dashboard_deep_sections: show_deep_sections,
         },
     ))
+}
+
+fn dashboard_deep_sections_enabled() -> bool {
+    env::var("SPYDER_DASHBOARD_DEEP")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn empty_paginated_result<T>() -> PaginatedResult<T> {
+    PaginatedResult {
+        items: Vec::new(),
+        total_count: 0,
+        limit: 0,
+        offset: 0,
+    }
 }
 
 #[get("/data?<list_query..>")]

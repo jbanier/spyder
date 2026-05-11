@@ -1200,39 +1200,49 @@ pub fn list_page_summaries(
         DEFAULT_PAGE_LIMIT,
         MAX_PAGE_LIMIT,
     );
-    let total_count = scalar_count(conn, "SELECT COUNT(*) AS count FROM page")
-        .context("error counting pages for summary")?;
-    let host_expr = sql_host_expr("p.url", conn);
+    let total_count = scalar_count(
+        conn,
+        "SELECT COALESCE(SUM(page_count), 0) AS count FROM site_profile",
+    )
+    .context("error counting pages for summary")?;
+    let host_expr = sql_host_expr("selected_pages.url", conn);
     let query = format!(
         "
+        WITH selected_pages AS (
+            SELECT
+                p.id,
+                p.title,
+                p.url,
+                p.language,
+                p.last_scanned_at
+            FROM page p
+            ORDER BY p.last_scanned_at DESC, p.id DESC
+            LIMIT $1 OFFSET $2
+        )
         SELECT
-            p.id,
-            p.title,
-            p.url,
+            selected_pages.id,
+            selected_pages.title,
+            selected_pages.url,
             {host_expr} AS host,
-            p.language,
-            p.last_scanned_at,
-            COALESCE(pl.link_count, 0) AS outbound_link_count,
-            COALESCE(pe.email_count, 0) AS email_count,
-            COALESCE(pc.crypto_count, 0) AS crypto_count
-        FROM page p
-        LEFT JOIN (
-            SELECT source_page_id, COUNT(*) AS link_count
-            FROM page_link
-            GROUP BY source_page_id
-        ) pl ON pl.source_page_id = p.id
-        LEFT JOIN (
-            SELECT page_id, COUNT(*) AS email_count
-            FROM page_email
-            GROUP BY page_id
-        ) pe ON pe.page_id = p.id
-        LEFT JOIN (
-            SELECT page_id, COUNT(*) AS crypto_count
-            FROM page_crypto
-            GROUP BY page_id
-        ) pc ON pc.page_id = p.id
-        ORDER BY p.last_scanned_at DESC, p.id DESC
-        LIMIT $1 OFFSET $2
+            selected_pages.language,
+            selected_pages.last_scanned_at,
+            (
+                SELECT COUNT(*)
+                FROM page_link pl
+                WHERE pl.source_page_id = selected_pages.id
+            ) AS outbound_link_count,
+            (
+                SELECT COUNT(*)
+                FROM page_email pe
+                WHERE pe.page_id = selected_pages.id
+            ) AS email_count,
+            (
+                SELECT COUNT(*)
+                FROM page_crypto pc
+                WHERE pc.page_id = selected_pages.id
+            ) AS crypto_count
+        FROM selected_pages
+        ORDER BY selected_pages.last_scanned_at DESC, selected_pages.id DESC
         "
     );
     let rows = sql_query(query)
@@ -1651,8 +1661,11 @@ pub fn get_page_scan_detail(
 pub fn collect_stats(conn: &mut PgConnection) -> Result<Stats> {
     use crate::schema::work_unit::dsl as work_dsl;
 
-    let total_pages =
-        scalar_count(conn, "SELECT COUNT(*) AS count FROM page").context("error counting pages")?;
+    let total_pages = scalar_count(
+        conn,
+        "SELECT COALESCE(SUM(page_count), 0) AS count FROM site_profile",
+    )
+    .context("error counting pages from site profiles")?;
     let pending_work_units = work_dsl::work_unit
         .filter(work_dsl::status.eq(STATUS_PENDING))
         .select(count_star())
@@ -1664,17 +1677,14 @@ pub fn collect_stats(conn: &mut PgConnection) -> Result<Stats> {
         .first(conn)
         .context("error counting failed work units")?;
 
-    let host_expr = sql_host_expr("url", conn);
-    let total_domains = scalar_count(
+    let total_domains = scalar_count(conn, "SELECT COUNT(*) AS count FROM site_profile")
+        .context("error counting site profiles")?;
+    let last_scrape = scalar_nullable_text(
         conn,
-        &format!(
-            "SELECT COUNT(*) AS count FROM (SELECT DISTINCT {host_expr} AS host FROM page WHERE {host_expr} != '') AS distinct_hosts"
-        ),
+        "SELECT MAX(last_scanned_at) AS value FROM site_profile",
     )
-    .context("error counting distinct domains")?;
-    let last_scrape = scalar_nullable_text(conn, "SELECT MAX(last_scanned_at) AS value FROM page")
-        .context("error loading last scrape")?
-        .unwrap_or_else(|| "Never".to_string());
+    .context("error loading last scrape")?
+    .unwrap_or_else(|| "Never".to_string());
 
     Ok(Stats {
         total_pages,

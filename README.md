@@ -198,6 +198,14 @@ cargo run --bin frontend
 
 Rocket listens on `127.0.0.1:8000` by default.
 
+The dashboard keeps its default request path light for large databases. It shows scan stats, recent pages, and links to dedicated rollup views. To restore the older dashboard behavior that also renders entity, service, and relationship rollups on `/`, set:
+
+```bash
+SPYDER_DASHBOARD_DEEP=1 cargo run --bin frontend
+```
+
+On large PostgreSQL databases, run new index migrations during a maintenance window. If writes must continue while indexes build, create the same indexes manually with PostgreSQL `CREATE INDEX CONCURRENTLY` before marking the migration applied.
+
 Main pages:
 
 - `http://127.0.0.1:8000/`: dashboard
