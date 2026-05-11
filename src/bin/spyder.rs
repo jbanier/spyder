@@ -704,9 +704,19 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
     let mut processed_urls = HashSet::new();
     let mut jobs = Vec::new();
     let mut duplicate_count = 0usize;
+    let mut blacklisted_count = 0usize;
+    let blacklist_domains = list_domain_blacklist_rules(&mut connection)?
+        .into_iter()
+        .map(|rule| rule.domain)
+        .collect::<Vec<_>>();
 
     for work_unit in work_units {
         let crawl_url = normalize_crawl_url(&work_unit.url);
+        if url_matches_blacklist(&crawl_url, &blacklist_domains) {
+            mark_work_unit_as_done(&mut connection, work_unit.id)?;
+            blacklisted_count += 1;
+            continue;
+        }
         if processed_urls.contains(&crawl_url) {
             mark_work_unit_as_done(&mut connection, work_unit.id)?;
             duplicate_count += 1;
@@ -724,8 +734,8 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
     let attempted = jobs.len();
     if attempted == 0 {
         println!(
-            "No unique pending work units to process ({} duplicates skipped)",
-            duplicate_count
+            "No unique pending work units to process ({} duplicates skipped, {} blacklisted skipped)",
+            duplicate_count, blacklisted_count
         );
         return Ok(());
     }
@@ -734,6 +744,13 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
             "Skipped {} duplicate work unit{} before fetching",
             duplicate_count,
             if duplicate_count == 1 { "" } else { "s" }
+        ));
+    }
+    if blacklisted_count > 0 {
+        print_status(format!(
+            "Skipped {} blacklisted work unit{} before fetching",
+            blacklisted_count,
+            if blacklisted_count == 1 { "" } else { "s" }
         ));
     }
 
@@ -1945,6 +1962,14 @@ fn url_targets_onion(url: &str) -> bool {
         })
         .map(|host| host.to_ascii_lowercase().ends_with(".onion"))
         .unwrap_or(false)
+}
+
+fn url_matches_blacklist(url: &str, blacklist_domains: &[String]) -> bool {
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+        .and_then(|host| find_matching_blacklist_domain(&host, blacklist_domains))
+        .is_some()
 }
 
 fn enqueue_discovered_links(

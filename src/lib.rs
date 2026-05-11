@@ -748,10 +748,15 @@ pub fn queue_known_pages_for_rescan(
         .select(page_dsl::url)
         .load::<String>(conn)
         .context("error loading known page URLs for rescan")?;
+    let blacklist_domains = load_blacklist_domains(conn)?;
 
     let mut queued_count = 0usize;
     for page_url in urls {
-        if onion_only && !host_from_url(&page_url).ends_with(".onion") {
+        let host = host_from_url(&page_url);
+        if onion_only && !host.ends_with(".onion") {
+            continue;
+        }
+        if find_matching_blacklist_domain(&host, &blacklist_domains).is_some() {
             continue;
         }
         if limit.is_some_and(|max_count| queued_count >= max_count) {
