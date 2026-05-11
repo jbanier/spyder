@@ -18,6 +18,7 @@
                     <th>Source Site</th>
                     <th>Target Site</th>
                     <th>Observed Links</th>
+                    <th>Leads</th>
                 </tr>
             </thead>
             <tbody>
@@ -50,6 +51,17 @@
                         </div>
                     </td>
                     <td><span class="count-pill">{{reference_count}}</span></td>
+                    <td>
+                        {{#if intel_leads}}
+                        <div class="inline-badges">
+                            {{#each intel_leads}}
+                            <a class="lead-badge severity-{{severity}}" href="{{detail_url}}">{{severity}}</a>
+                            {{/each}}
+                        </div>
+                        {{else}}
+                        <span class="muted">None</span>
+                        {{/if}}
+                    </td>
                 </tr>
                 {{/each}}
             </tbody>

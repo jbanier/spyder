@@ -21,6 +21,7 @@
                     <th>Pages</th>
                     <th>First Found</th>
                     <th>Last Scan</th>
+                    <th>Leads</th>
                     <th>Evidence</th>
                     <th>Evidence Source</th>
                     <th>Last Classified</th>
@@ -47,6 +48,17 @@
                     <td><span class="count-pill">{{page_count}}</span></td>
                     <td>{{first_found_at}}</td>
                     <td>{{last_scanned_at}}</td>
+                    <td>
+                        {{#if intel_leads}}
+                        <div class="inline-badges">
+                            {{#each intel_leads}}
+                            <a class="lead-badge severity-{{severity}}" href="{{detail_url}}">{{severity}}</a>
+                            {{/each}}
+                        </div>
+                        {{else}}
+                        <span class="muted">None</span>
+                        {{/if}}
+                    </td>
                     <td>
                         <div class="site-evidence-list">
                             {{#each evidence}}

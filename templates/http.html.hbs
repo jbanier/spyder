@@ -75,6 +75,13 @@
             </div>
         </div>
         <p class="detail-reference">{{selected.endpoint_url}}</p>
+        {{#if selected.intel_leads}}
+        <div class="inline-badges entity-leads">
+            {{#each selected.intel_leads}}
+            <a class="lead-badge severity-{{severity}}" href="{{detail_url}}">{{severity}} · {{rule_id}}</a>
+            {{/each}}
+        </div>
+        {{/if}}
         {{#if selected.source_page_id}}
         <p class="detail-reference">
             Indexed page:

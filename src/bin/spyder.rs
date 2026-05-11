@@ -21,10 +21,11 @@ use spyder::{
     find_matching_blacklist_domain, get_host_http_observation, get_host_service_observation,
     get_host_ssh_observation, get_pending_work_units, list_domain_blacklist_rules,
     list_forum_keyword_rules, list_recent_responding_hosts, mark_work_unit_as_done,
-    normalize_crawl_url, queue_known_pages_for_rescan, record_work_unit_failure,
-    remove_domain_blacklist_entry, remove_forum_keyword_rule, save_host_http_observation,
-    save_host_service_observation, save_host_ssh_observation, save_host_tls_observation,
-    save_page_info, AppConnection, SqlDialect, SSH_STATUS_SUCCESS,
+    normalize_crawl_url, queue_known_pages_for_rescan, recompute_intel_leads,
+    record_work_unit_failure, remove_domain_blacklist_entry, remove_forum_keyword_rule,
+    save_host_http_observation, save_host_service_observation, save_host_ssh_observation,
+    save_host_tls_observation, save_page_info, suppress_intel_lead, AppConnection,
+    IntelLeadRecomputeOptions, SqlDialect, SSH_STATUS_SUCCESS,
 };
 use ssh2::{HashType, HostKeyType, Session};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -64,6 +65,12 @@ struct SshScanOptions {
     stale_hours: i64,
     limit: i64,
     concurrency: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct LeadsRecomputeCliOptions {
+    limit: Option<i64>,
+    since_scan_id: Option<i32>,
 }
 
 struct CrawlFailure {
@@ -2713,6 +2720,39 @@ where
     Ok(total)
 }
 
+fn recompute_leads(options: LeadsRecomputeCliOptions) -> Result<()> {
+    let mut connection = establish_connection()?;
+    let summary = recompute_intel_leads(
+        &mut connection,
+        IntelLeadRecomputeOptions {
+            limit: options.limit,
+            since_scan_id: options.since_scan_id,
+        },
+    )?;
+    println!(
+        "Recomputed intel leads: {} candidates, {} created, {} updated, {} evidence rows touched",
+        summary.candidate_count,
+        summary.created_count,
+        summary.updated_count,
+        summary.evidence_count
+    );
+    Ok(())
+}
+
+fn suppress_lead(lead_id: i32) -> Result<()> {
+    let mut connection = establish_connection()?;
+    match suppress_intel_lead(&mut connection, lead_id)? {
+        Some(lead) => {
+            println!(
+                "Suppressed lead #{} [{}] {}",
+                lead.id, lead.severity, lead.title
+            );
+            Ok(())
+        }
+        None => anyhow::bail!("intel lead {lead_id} was not found"),
+    }
+}
+
 fn usage(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
@@ -2735,6 +2775,8 @@ fn usage(program: &str) {
     eprintln!(
         "    rescan-known [--onion-only] [--limit N] [--concurrency N] [--queue-only] queue known pages and scan them for updates."
     );
+    eprintln!("    leads recompute [--limit N] [--since-scan-id ID]");
+    eprintln!("    leads suppress <lead_id>");
 }
 
 fn print_error(error: &anyhow::Error) {
@@ -2855,6 +2897,37 @@ fn parse_ssh_scan_options(args: impl IntoIterator<Item = String>) -> Result<SshS
     Ok(options)
 }
 
+fn parse_leads_recompute_options(
+    args: impl IntoIterator<Item = String>,
+) -> Result<LeadsRecomputeCliOptions> {
+    let mut options = LeadsRecomputeCliOptions::default();
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--limit" => {
+                options.limit = Some(parse_i64_option_value(
+                    args.next(),
+                    "--limit",
+                    1,
+                    1_000_000,
+                )?);
+            }
+            "--since-scan-id" => {
+                options.since_scan_id = Some(parse_i32_option_value(
+                    args.next(),
+                    "--since-scan-id",
+                    0,
+                    i32::MAX,
+                )?);
+            }
+            _ => anyhow::bail!("invalid leads recompute option: {arg}"),
+        }
+    }
+
+    Ok(options)
+}
+
 fn parse_i64_option_value(value: Option<String>, option: &str, min: i64, max: i64) -> Result<i64> {
     let raw = value.with_context(|| format!("missing value for {option}"))?;
     let parsed = raw
@@ -2876,6 +2949,18 @@ fn parse_usize_option_value(
     let raw = value.with_context(|| format!("missing value for {option}"))?;
     let parsed = raw
         .parse::<usize>()
+        .with_context(|| format!("invalid integer value for {option}: {raw}"))?;
+    anyhow::ensure!(
+        parsed >= min && parsed <= max,
+        "{option} must be between {min} and {max}"
+    );
+    Ok(parsed)
+}
+
+fn parse_i32_option_value(value: Option<String>, option: &str, min: i32, max: i32) -> Result<i32> {
+    let raw = value.with_context(|| format!("missing value for {option}"))?;
+    let parsed = raw
+        .parse::<i32>()
         .with_context(|| format!("invalid integer value for {option}: {raw}"))?;
     anyhow::ensure!(
         parsed >= min && parsed <= max,
@@ -2993,6 +3078,32 @@ fn main() {
             Err(error) => {
                 usage(&program);
                 Err(error)
+            }
+        },
+        Some("leads") => match args.next().as_deref() {
+            Some("recompute") => match parse_leads_recompute_options(args) {
+                Ok(options) => recompute_leads(options),
+                Err(error) => {
+                    usage(&program);
+                    Err(error)
+                }
+            },
+            Some("suppress") => match args.next() {
+                Some(lead_id) => match lead_id.parse::<i32>() {
+                    Ok(lead_id) => suppress_lead(lead_id),
+                    Err(_) => {
+                        usage(&program);
+                        Err(anyhow::anyhow!("invalid lead id: {lead_id}"))
+                    }
+                },
+                None => {
+                    usage(&program);
+                    Err(anyhow::anyhow!("leads suppress requires <lead_id>"))
+                }
+            },
+            Some(_) | None => {
+                usage(&program);
+                Err(anyhow::anyhow!("invalid or missing leads subcommand"))
             }
         },
         Some(_) | None => {

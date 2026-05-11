@@ -14,6 +14,13 @@
         <span class="site-category-badge site-confidence-{{page.site_profile.confidence}}">{{page.site_profile.label}} · {{page.site_profile.confidence}}</span>
     </div>
     {{/if}}
+    {{#if page.intel_leads}}
+    <div class="meta-badges">
+        {{#each page.intel_leads}}
+        <a class="lead-badge severity-{{severity}}" href="{{detail_url}}">{{severity}} · {{rule_id}}</a>
+        {{/each}}
+    </div>
+    {{/if}}
     <div class="actions">
         <a href="{{history_url}}" class="btn btn-secondary">Scan History</a>
     </div>
@@ -45,6 +52,26 @@
     <div class="site-evidence-list">
         {{#each page.site_profile.evidence}}
         <span class="evidence-pill">{{this}}</span>
+        {{/each}}
+    </div>
+</section>
+{{/if}}
+
+{{#if page.intel_leads}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Intel Leads</h2>
+        <span class="count-pill">active</span>
+    </div>
+    <div class="compact-list">
+        {{#each page.intel_leads}}
+        <a class="compact-row" href="{{detail_url}}">
+            <div>
+                <span class="compact-title">{{title}}</span>
+                <div class="cell-subtitle">{{rule_id}} · score {{score}} · confidence {{confidence}}</div>
+            </div>
+            <span class="lead-badge severity-{{severity}}">{{severity}}</span>
+        </a>
         {{/each}}
     </div>
 </section>

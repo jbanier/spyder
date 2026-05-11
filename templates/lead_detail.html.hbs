@@ -1,0 +1,122 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Intel Lead</p>
+    <h1>{{detail.lead.title}}</h1>
+    <p class="lead">{{detail.lead.summary}}</p>
+    <div class="meta-strip">
+        <span><strong>Rule:</strong> {{detail.lead.rule_id}}</span>
+        <span><strong>Score:</strong> {{detail.lead.score}}</span>
+        <span><strong>Confidence:</strong> {{detail.lead.confidence}}</span>
+        <span><strong>First Seen:</strong> {{detail.lead.first_seen_at}}</span>
+        <span><strong>Last Seen:</strong> {{detail.lead.last_seen_at}}</span>
+    </div>
+    <div class="meta-badges">
+        <span class="lead-badge severity-{{detail.lead.severity}}">{{detail.lead.severity}}</span>
+        <span class="status-pill status-{{detail.lead.status}}">{{detail.lead.status}}</span>
+    </div>
+    <form class="status-actions" action="/leads/{{detail.lead.id}}/status" method="post">
+        <button class="btn btn-secondary" type="submit" name="status" value="new">New</button>
+        <button class="btn btn-secondary" type="submit" name="status" value="triaged">Triaged</button>
+        <button class="btn btn-secondary" type="submit" name="status" value="monitoring">Monitoring</button>
+        <button class="btn btn-secondary" type="submit" name="status" value="suppressed">Suppress</button>
+    </form>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Primary Entity</h2>
+        <span class="count-pill">{{detail.lead.primary_entity_type}}</span>
+    </div>
+    <p class="detail-reference">{{detail.lead.primary_entity_value}}</p>
+    {{#if detail.lead.related_entity_value}}
+    <div class="inline-badges">
+        <span class="tag">{{detail.lead.related_entity_type}}</span>
+        <span class="tag">{{detail.lead.related_entity_value}}</span>
+    </div>
+    {{/if}}
+</section>
+
+{{#if has_evidence}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Evidence Timeline</h2>
+        <span class="count-pill">{{detail.lead.evidence_count}}</span>
+    </div>
+    <div class="compact-list">
+        {{#each detail.evidence}}
+        <div class="compact-row compact-row-static">
+            <div>
+                <span class="compact-title">{{evidence_text}}</span>
+                <div class="cell-subtitle">{{observed_at}} · {{source_type}} · {{source_key}}</div>
+            </div>
+            {{#if source_url}}
+            <a class="inline-link" href="{{source_url}}">Open</a>
+            {{/if}}
+        </div>
+        {{/each}}
+    </div>
+</section>
+{{/if}}
+
+<div class="dashboard-grid dashboard-grid-stacked">
+    <section class="card">
+        <div class="section-heading">
+            <h2>Related Pages</h2>
+        </div>
+        {{#if has_related_pages}}
+        <div class="compact-list">
+            {{#each detail.related_pages}}
+            <a class="compact-row" href="/pages/{{id}}">
+                <span class="compact-title">{{title}}</span>
+                <span class="compact-meta">{{url}}</span>
+            </a>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No page evidence is attached to this lead.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Related Sites</h2>
+        </div>
+        {{#if has_related_sites}}
+        <div class="tag-list">
+            {{#each detail.related_sites}}
+            <span class="tag">{{this}}</span>
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No host-level evidence is attached to this lead.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <h2>Related Entities</h2>
+        </div>
+        {{#if has_related_entities}}
+        <div class="compact-list">
+            {{#each detail.related_entities}}
+            {{#if detail_url}}
+            <a class="compact-row" href="{{detail_url}}">
+                <span class="compact-title">{{entity_type}}</span>
+                <span class="compact-meta">{{entity_value}}</span>
+            </a>
+            {{else}}
+            <div class="compact-row compact-row-static">
+                <span class="compact-title">{{entity_type}}</span>
+                <span class="compact-meta">{{entity_value}}</span>
+            </div>
+            {{/if}}
+            {{/each}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No entity references are attached to this lead.</p>
+        {{/if}}
+    </section>
+</div>
+{{/inline}}
+
+{{> base}}

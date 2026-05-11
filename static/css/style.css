@@ -655,6 +655,7 @@ code {
 .tag,
 .status-pill,
 .site-category-badge,
+.lead-badge,
 .evidence-pill,
 .blacklist-badge,
 .change-pill {
@@ -710,6 +711,42 @@ code {
     border-color: rgba(255, 176, 0, 0.35);
     color: var(--warning);
     width: fit-content;
+}
+
+.lead-badge {
+    background: rgba(18, 18, 26, 0.86);
+    text-decoration: none;
+    width: fit-content;
+}
+
+.severity-low {
+    border-color: rgba(152, 162, 179, 0.35);
+    color: var(--muted-foreground);
+}
+
+.severity-medium {
+    border-color: rgba(0, 212, 255, 0.45);
+    color: var(--accent-tertiary);
+}
+
+.severity-high {
+    border-color: rgba(255, 176, 0, 0.45);
+    color: var(--warning);
+}
+
+.severity-critical {
+    background: var(--red-soft);
+    border-color: rgba(255, 51, 102, 0.55);
+    color: var(--destructive);
+}
+
+.status-suppressed {
+    border-color: rgba(152, 162, 179, 0.3);
+    color: var(--muted-foreground);
+}
+
+.entity-leads {
+    margin: 0 0 1rem;
 }
 
 .tag-list {
@@ -776,6 +813,25 @@ code {
     display: flex;
     flex-wrap: wrap;
     gap: 0.9rem;
+}
+
+.filter-form,
+.status-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+}
+
+.filter-form input {
+    background: var(--input);
+    border: 1px solid var(--border);
+    clip-path: var(--chamfer-sm);
+    color: var(--foreground);
+    font-family: var(--font-body);
+    min-height: 44px;
+    min-width: 150px;
+    padding: 0.75rem 0.9rem;
 }
 
 .search-field,

@@ -1,11 +1,12 @@
 use diesel::pg::PgConnection;
-use rocket::form::FromForm;
+use rocket::form::{Form, FromForm};
 use rocket::fs::{relative, FileServer};
 use rocket::http::Status;
 use rocket::request::Request;
+use rocket::response::Redirect;
 use rocket::response::{self, Responder};
-use rocket::serde::{json::Json, Serialize};
-use rocket::{get, launch, routes};
+use rocket::serde::{json::Json, Deserialize, Serialize};
+use rocket::{get, launch, post, routes};
 use rocket_dyn_templates::{context, Template};
 use spyder::models::{
     CategoryDistributionEntry, CategoryTimelinePoint, PaginatedResult, TopSiteSection,
@@ -13,14 +14,14 @@ use spyder::models::{
 use spyder::{
     collect_stats, establish_connection, find_matching_blacklist_domain, get_crypto_entity_detail,
     get_email_entity_detail, get_host_http_observation_detail, get_host_service_observation_detail,
-    get_page_detail, get_page_scan_detail, get_ssh_host_key_detail, list_crypto_entities,
-    list_domain_blacklist_rules, list_domain_blacklist_summaries, list_email_entities,
-    list_host_http_observations, list_host_service_observations, list_page_scan_summaries,
-    list_page_summaries, list_site_category_distribution, list_site_category_timeline,
-    list_site_keyword_distribution, list_site_keyword_timeline, list_site_profiles,
-    list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
-    list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
-    list_work_units, search_pages,
+    get_intel_lead_detail, get_page_detail, get_page_scan_detail, get_ssh_host_key_detail,
+    list_crypto_entities, list_domain_blacklist_rules, list_domain_blacklist_summaries,
+    list_email_entities, list_host_http_observations, list_host_service_observations,
+    list_intel_leads, list_page_scan_summaries, list_page_summaries,
+    list_site_category_distribution, list_site_category_timeline, list_site_keyword_distribution,
+    list_site_keyword_timeline, list_site_profiles, list_site_relationships, list_ssh_host_keys,
+    list_top_referenced_sites, list_top_sites_by_crypto_refs, list_top_sites_by_email_refs,
+    list_top_sites_by_outgoing_links, list_work_units, search_pages, update_intel_lead_status,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -183,6 +184,30 @@ struct ServiceQuery {
     port: Option<i32>,
     limit: Option<i64>,
     offset: Option<i64>,
+}
+
+#[derive(FromForm, Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+struct LeadQuery {
+    status: Option<String>,
+    severity: Option<String>,
+    rule_id: Option<String>,
+    entity: Option<String>,
+    sort: Option<String>,
+    direction: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(FromForm)]
+struct LeadStatusForm {
+    status: String,
+}
+
+#[derive(Deserialize)]
+#[serde(crate = "rocket::serde")]
+struct LeadStatusRequest {
+    status: String,
 }
 
 fn render_pages(title: &str, description: &str, list_query: Option<ListQuery>) -> HtmlResult {
@@ -704,6 +729,113 @@ fn sites(list_query: Option<ListQuery>) -> HtmlResult {
     ))
 }
 
+#[get("/leads?<query..>")]
+fn leads(query: Option<LeadQuery>) -> HtmlResult {
+    let query = query.unwrap_or(LeadQuery {
+        status: None,
+        severity: None,
+        rule_id: None,
+        entity: None,
+        sort: None,
+        direction: None,
+        limit: None,
+        offset: None,
+    });
+    let mut connection = open_connection()?;
+    let leads = list_intel_leads(
+        &mut connection,
+        query.status.as_deref(),
+        query.severity.as_deref(),
+        query.rule_id.as_deref(),
+        query.entity.as_deref(),
+        query.sort.as_deref(),
+        query.direction.as_deref(),
+        query.limit,
+        query.offset,
+    )
+    .frontend_context("loading intel leads")?;
+    let has_leads = !leads.items.is_empty();
+    let extra_values = lead_query_extra_params(&query);
+    let extra_refs = extra_values
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect::<Vec<_>>();
+    let pagination = pagination_context("/leads", &leads, &extra_refs);
+    let has_pagination = pagination.has_previous_page || pagination.has_next_page;
+    let sort_severity_url = lead_sort_url(&query, "severity");
+    let sort_confidence_url = lead_sort_url(&query, "confidence");
+    let sort_last_seen_url = lead_sort_url(&query, "last_seen");
+    let sort_status_url = lead_sort_url(&query, "status");
+    let sort_rule_url = lead_sort_url(&query, "rule");
+    let sort_entity_url = lead_sort_url(&query, "entity");
+
+    Ok(Template::render(
+        "leads",
+        context! {
+            title: "Intel Leads",
+            description: "Local deterministic leads generated from crawl observations, entity reuse, page diffs, blacklist hits, and service fingerprints.",
+            leads: leads.items,
+            lead_count: leads.total_count,
+            has_leads: has_leads,
+            filters: query,
+            pagination: pagination,
+            has_pagination: has_pagination,
+            sort_severity_url: sort_severity_url,
+            sort_confidence_url: sort_confidence_url,
+            sort_last_seen_url: sort_last_seen_url,
+            sort_status_url: sort_status_url,
+            sort_rule_url: sort_rule_url,
+            sort_entity_url: sort_entity_url,
+        },
+    ))
+}
+
+#[get("/leads/<lead_id>")]
+fn lead_detail(lead_id: i32) -> HtmlResult {
+    let mut connection = open_connection()?;
+    let detail = get_intel_lead_detail(&mut connection, lead_id)
+        .frontend_context("loading intel lead detail")?;
+    let Some(detail) = detail else {
+        return Err(FrontendError {
+            status: Status::NotFound,
+            title: "Lead Not Found",
+            detail: format!("intel lead {lead_id} was not found"),
+        });
+    };
+    let has_evidence = !detail.evidence.is_empty();
+    let has_related_pages = !detail.related_pages.is_empty();
+    let has_related_sites = !detail.related_sites.is_empty();
+    let has_related_entities = !detail.related_entities.is_empty();
+
+    Ok(Template::render(
+        "lead_detail",
+        context! {
+            title: detail.lead.title.clone(),
+            description: detail.lead.summary.clone(),
+            detail: detail,
+            has_evidence: has_evidence,
+            has_related_pages: has_related_pages,
+            has_related_sites: has_related_sites,
+            has_related_entities: has_related_entities,
+        },
+    ))
+}
+
+#[post("/leads/<lead_id>/status", data = "<form>")]
+fn lead_status_form(lead_id: i32, form: Form<LeadStatusForm>) -> Result<Redirect, FrontendError> {
+    let mut connection = open_connection()?;
+    let updated = update_intel_lead_status(&mut connection, lead_id, &form.status)
+        .frontend_context("updating intel lead status")?;
+    if updated.is_none() {
+        return Err(FrontendError {
+            status: Status::NotFound,
+            title: "Lead Not Found",
+            detail: format!("intel lead {lead_id} was not found"),
+        });
+    }
+    Ok(Redirect::to(format!("/leads/{lead_id}")))
+}
+
 #[get("/relationships?<list_query..>")]
 fn relationships(list_query: Option<ListQuery>) -> HtmlResult {
     let list_query = list_query.unwrap_or(ListQuery {
@@ -1123,6 +1255,120 @@ fn api_page_scan_detail(
     }))
 }
 
+#[get("/api/leads?<query..>")]
+fn api_leads(
+    query: Option<LeadQuery>,
+) -> Result<Json<ApiResponse<PaginatedResult<spyder::models::IntelLeadSummary>>>, Status> {
+    let query = query.unwrap_or(LeadQuery {
+        status: None,
+        severity: None,
+        rule_id: None,
+        entity: None,
+        sort: None,
+        direction: None,
+        limit: None,
+        offset: None,
+    });
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let leads = list_intel_leads(
+        &mut connection,
+        query.status.as_deref(),
+        query.severity.as_deref(),
+        query.rule_id.as_deref(),
+        query.entity.as_deref(),
+        query.sort.as_deref(),
+        query.direction.as_deref(),
+        query.limit,
+        query.offset,
+    )
+    .map_err(|_| Status::InternalServerError)?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: leads,
+    }))
+}
+
+#[get("/api/leads/<lead_id>")]
+fn api_lead_detail(
+    lead_id: i32,
+) -> Result<Json<ApiResponse<spyder::models::IntelLeadDetail>>, Status> {
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let detail =
+        get_intel_lead_detail(&mut connection, lead_id).map_err(|_| Status::InternalServerError)?;
+    let Some(detail) = detail else {
+        return Err(Status::NotFound);
+    };
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: detail,
+    }))
+}
+
+#[post("/api/leads/<lead_id>/status", data = "<request>")]
+fn api_lead_status(
+    lead_id: i32,
+    request: Json<LeadStatusRequest>,
+) -> Result<Json<ApiResponse<spyder::models::IntelLeadDetail>>, Status> {
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let detail = update_intel_lead_status(&mut connection, lead_id, &request.status)
+        .map_err(|_| Status::BadRequest)?;
+    let Some(detail) = detail else {
+        return Err(Status::NotFound);
+    };
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: detail,
+    }))
+}
+
+fn lead_query_extra_params(query: &LeadQuery) -> Vec<(String, String)> {
+    let mut params = Vec::new();
+    push_optional_param(&mut params, "status", query.status.as_deref());
+    push_optional_param(&mut params, "severity", query.severity.as_deref());
+    push_optional_param(&mut params, "rule_id", query.rule_id.as_deref());
+    push_optional_param(&mut params, "entity", query.entity.as_deref());
+    push_optional_param(&mut params, "sort", query.sort.as_deref());
+    push_optional_param(&mut params, "direction", query.direction.as_deref());
+    params
+}
+
+fn push_optional_param(params: &mut Vec<(String, String)>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        params.push((key.to_string(), value.to_string()));
+    }
+}
+
+fn lead_sort_url(query: &LeadQuery, sort: &str) -> String {
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    push_sort_query_pair(&mut serializer, "status", query.status.as_deref());
+    push_sort_query_pair(&mut serializer, "severity", query.severity.as_deref());
+    push_sort_query_pair(&mut serializer, "rule_id", query.rule_id.as_deref());
+    push_sort_query_pair(&mut serializer, "entity", query.entity.as_deref());
+    serializer.append_pair("sort", sort);
+    let next_direction = if query.sort.as_deref() == Some(sort)
+        && query.direction.as_deref().unwrap_or("desc") == "desc"
+    {
+        "asc"
+    } else {
+        "desc"
+    };
+    serializer.append_pair("direction", next_direction);
+    format!("/leads?{}", serializer.finish())
+}
+
+fn push_sort_query_pair(
+    serializer: &mut form_urlencoded::Serializer<'_, String>,
+    key: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        serializer.append_pair(key, value);
+    }
+}
+
 fn pagination_context<T>(
     base_path: &str,
     page: &PaginatedResult<T>,
@@ -1486,6 +1732,9 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 top,
                 analytics,
                 sites,
+                leads,
+                lead_detail,
+                lead_status_form,
                 relationships,
                 email_entities,
                 crypto_entities,
@@ -1498,7 +1747,10 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 api_blacklist,
                 api_sites,
                 api_page_history,
-                api_page_scan_detail
+                api_page_scan_detail,
+                api_leads,
+                api_lead_detail,
+                api_lead_status
             ],
         )
         .mount("/static", FileServer::from(relative!("static")))

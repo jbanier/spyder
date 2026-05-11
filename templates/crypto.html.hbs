@@ -43,6 +43,13 @@
             <span class="count-pill">{{selected_page_count}} pages</span>
         </div>
         <p class="detail-reference">{{selected.reference}}</p>
+        {{#if selected.intel_leads}}
+        <div class="inline-badges entity-leads">
+            {{#each selected.intel_leads}}
+            <a class="lead-badge severity-{{severity}}" href="{{detail_url}}">{{severity}} · {{rule_id}}</a>
+            {{/each}}
+        </div>
+        {{/if}}
         <div class="compact-list">
             {{#each selected.pages}}
             <a class="compact-row" href="/pages/{{id}}">

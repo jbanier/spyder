@@ -93,6 +93,41 @@ diesel::table! {
 }
 
 diesel::table! {
+    intel_lead (id) {
+        id -> Int4,
+        rule_id -> Text,
+        lead_key -> Text,
+        title -> Text,
+        summary -> Text,
+        severity -> Text,
+        confidence -> Int4,
+        score -> Int4,
+        status -> Text,
+        primary_entity_type -> Text,
+        primary_entity_value -> Text,
+        related_entity_type -> Nullable<Text>,
+        related_entity_value -> Nullable<Text>,
+        first_seen_at -> Text,
+        last_seen_at -> Text,
+        created_at -> Text,
+        updated_at -> Text,
+    }
+}
+
+diesel::table! {
+    intel_lead_evidence (id) {
+        id -> Int4,
+        lead_id -> Int4,
+        source_type -> Text,
+        source_id -> Int4,
+        source_key -> Text,
+        evidence_text -> Text,
+        observed_at -> Text,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
     page (id) {
         id -> Int4,
         title -> Text,
@@ -228,6 +263,7 @@ diesel::joinable!(page_crypto -> page (page_id));
 diesel::joinable!(page_email -> page (page_id));
 diesel::joinable!(page_keyword_tag -> page (page_id));
 diesel::joinable!(page_link -> page (source_page_id));
+diesel::joinable!(intel_lead_evidence -> intel_lead (lead_id));
 diesel::joinable!(page_scan -> page (page_id));
 diesel::joinable!(page_scan_crypto -> page_scan (scan_id));
 diesel::joinable!(page_scan_email -> page_scan (scan_id));
@@ -241,6 +277,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     host_service_observation,
     host_ssh_observation,
     host_tls_observation,
+    intel_lead,
+    intel_lead_evidence,
     page,
     page_classification,
     page_crypto,

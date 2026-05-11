@@ -1,0 +1,84 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Threat Intel</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Lead Queue</h2>
+        <span class="muted">{{lead_count}} records</span>
+    </div>
+    <form class="filter-form" action="/leads" method="get">
+        <input type="text" name="status" value="{{filters.status}}" placeholder="status">
+        <input type="text" name="severity" value="{{filters.severity}}" placeholder="severity">
+        <input type="text" name="rule_id" value="{{filters.rule_id}}" placeholder="rule">
+        <input type="text" name="entity" value="{{filters.entity}}" placeholder="entity">
+        <input type="hidden" name="sort" value="{{filters.sort}}">
+        <input type="hidden" name="direction" value="{{filters.direction}}">
+        <button class="btn" type="submit">Filter</button>
+        <a class="btn btn-secondary" href="/leads">Reset</a>
+    </form>
+</section>
+
+{{#if has_leads}}
+<section class="card">
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th><a href="{{sort_severity_url}}">Severity</a></th>
+                    <th>Lead</th>
+                    <th><a href="{{sort_confidence_url}}">Confidence</a></th>
+                    <th><a href="{{sort_status_url}}">Status</a></th>
+                    <th><a href="{{sort_rule_url}}">Rule</a></th>
+                    <th><a href="{{sort_entity_url}}">Entity</a></th>
+                    <th><a href="{{sort_last_seen_url}}">Last Seen</a></th>
+                    <th>Evidence</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each leads}}
+                <tr>
+                    <td><span class="lead-badge severity-{{severity}}">{{severity}}</span></td>
+                    <td>
+                        <a class="row-link" href="{{detail_url}}">{{title}}</a>
+                        <div class="cell-subtitle">{{summary}}</div>
+                    </td>
+                    <td><span class="count-pill">{{confidence}}</span></td>
+                    <td><span class="status-pill status-{{status}}">{{status}}</span></td>
+                    <td>{{rule_id}}</td>
+                    <td>
+                        <div class="table-cell-stack">
+                            <span>{{primary_entity_type}}</span>
+                            <span class="cell-subtitle">{{primary_entity_value}}</span>
+                        </div>
+                    </td>
+                    <td>{{last_seen_at}}</td>
+                    <td><span class="count-pill">{{evidence_count}}</span></td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+</section>
+{{#if has_pagination}}
+<section class="pagination-bar">
+    {{#if pagination.has_previous_page}}
+    <a class="btn btn-secondary" href="{{pagination.previous_page_url}}">Previous</a>
+    {{/if}}
+    {{#if pagination.has_next_page}}
+    <a class="btn btn-secondary" href="{{pagination.next_page_url}}">Next</a>
+    {{/if}}
+</section>
+{{/if}}
+{{else}}
+<section class="empty-state">
+    <h2>No intel leads yet</h2>
+    <p>Run <code>cargo run --bin spyder -- leads recompute --limit 250</code> after collecting crawl and service observations.</p>
+</section>
+{{/if}}
+{{/inline}}
+
+{{> base}}

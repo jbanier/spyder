@@ -45,6 +45,20 @@ const CATEGORY_UNKNOWN: &str = "unknown";
 const CONFIDENCE_HIGH: &str = "high";
 const CONFIDENCE_MEDIUM: &str = "medium";
 const CONFIDENCE_LOW: &str = "low";
+pub const LEAD_STATUS_NEW: &str = "new";
+pub const LEAD_STATUS_TRIAGED: &str = "triaged";
+pub const LEAD_STATUS_MONITORING: &str = "monitoring";
+pub const LEAD_STATUS_SUPPRESSED: &str = "suppressed";
+const LEAD_SEVERITY_LOW: &str = "low";
+const LEAD_SEVERITY_MEDIUM: &str = "medium";
+const LEAD_SEVERITY_HIGH: &str = "high";
+const LEAD_SEVERITY_CRITICAL: &str = "critical";
+const DEFAULT_LEAD_LIMIT: i64 = 50;
+const MAX_LEAD_LIMIT: i64 = 200;
+const DEFAULT_RECOMPUTE_LIMIT: i64 = 250;
+const MAX_RECOMPUTE_LIMIT: i64 = 5_000;
+const MANY_NEW_OUTBOUND_LINK_THRESHOLD: usize = 25;
+const HIGH_DEGREE_SOURCE_HOST_THRESHOLD: i64 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SqlDialect {
@@ -256,6 +270,184 @@ struct HostPageContextRow {
 }
 
 #[derive(QueryableByName)]
+struct LeadPageEvidenceRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    page_id: i32,
+    #[diesel(sql_type = Text)]
+    page_title: String,
+    #[diesel(sql_type = Text)]
+    page_url: String,
+    #[diesel(sql_type = Text)]
+    host: String,
+    #[diesel(sql_type = Text)]
+    observed_at: String,
+}
+
+#[derive(QueryableByName)]
+struct SharedEmailLeadRow {
+    #[diesel(sql_type = Text)]
+    email: String,
+    #[diesel(sql_type = BigInt)]
+    host_count: i64,
+    #[diesel(sql_type = BigInt)]
+    page_count: i64,
+    #[diesel(sql_type = Text)]
+    first_seen_at: String,
+    #[diesel(sql_type = Text)]
+    last_seen_at: String,
+}
+
+#[derive(QueryableByName)]
+struct SharedCryptoLeadRow {
+    #[diesel(sql_type = Text)]
+    asset_type: String,
+    #[diesel(sql_type = Text)]
+    reference: String,
+    #[diesel(sql_type = BigInt)]
+    host_count: i64,
+    #[diesel(sql_type = BigInt)]
+    page_count: i64,
+    #[diesel(sql_type = Text)]
+    first_seen_at: String,
+    #[diesel(sql_type = Text)]
+    last_seen_at: String,
+}
+
+#[derive(QueryableByName)]
+struct RecentScanLeadRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    scan_id: i32,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    page_id: i32,
+    #[diesel(sql_type = Text)]
+    page_title: String,
+    #[diesel(sql_type = Text)]
+    page_url: String,
+    #[diesel(sql_type = Text)]
+    page_host: String,
+    #[diesel(sql_type = Text)]
+    scanned_at: String,
+    #[diesel(sql_type = Nullable<diesel::sql_types::Integer>)]
+    previous_scan_id: Option<i32>,
+}
+
+#[derive(QueryableByName)]
+struct BlacklistedLinkLeadRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    page_id: i32,
+    #[diesel(sql_type = Text)]
+    page_title: String,
+    #[diesel(sql_type = Text)]
+    page_url: String,
+    #[diesel(sql_type = Text)]
+    source_host: String,
+    #[diesel(sql_type = Text)]
+    target_url: String,
+    #[diesel(sql_type = Text)]
+    target_host: String,
+    #[diesel(sql_type = Text)]
+    observed_at: String,
+}
+
+#[derive(QueryableByName)]
+struct SharedFingerprintLeadRow {
+    #[diesel(sql_type = Text)]
+    fingerprint_value: String,
+    #[diesel(sql_type = BigInt)]
+    host_count: i64,
+    #[diesel(sql_type = BigInt)]
+    endpoint_count: i64,
+    #[diesel(sql_type = Text)]
+    first_seen_at: String,
+    #[diesel(sql_type = Text)]
+    last_seen_at: String,
+}
+
+#[derive(QueryableByName)]
+struct FingerprintEndpointEvidenceRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    source_id: i32,
+    #[diesel(sql_type = Text)]
+    host: String,
+    #[diesel(sql_type = Text)]
+    endpoint: String,
+    #[diesel(sql_type = Text)]
+    observed_at: String,
+}
+
+#[derive(QueryableByName)]
+struct SharedSshLeadRow {
+    #[diesel(sql_type = Text)]
+    algorithm: String,
+    #[diesel(sql_type = Text)]
+    fingerprint: String,
+    #[diesel(sql_type = BigInt)]
+    host_count: i64,
+    #[diesel(sql_type = BigInt)]
+    endpoint_count: i64,
+    #[diesel(sql_type = Text)]
+    first_seen_at: String,
+    #[diesel(sql_type = Text)]
+    last_seen_at: String,
+}
+
+#[derive(QueryableByName)]
+struct SshEndpointEvidenceRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    source_id: i32,
+    #[diesel(sql_type = Text)]
+    host: String,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    port: i32,
+    #[diesel(sql_type = Text)]
+    observed_at: String,
+}
+
+#[derive(QueryableByName)]
+struct CategoryChangeLeadRow {
+    #[diesel(sql_type = Text)]
+    host: String,
+    #[diesel(sql_type = Text)]
+    current_category: String,
+    #[diesel(sql_type = Text)]
+    previous_category: String,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    page_id: i32,
+    #[diesel(sql_type = Text)]
+    page_title: String,
+    #[diesel(sql_type = Text)]
+    page_url: String,
+    #[diesel(sql_type = Text)]
+    observed_at: String,
+}
+
+#[derive(QueryableByName)]
+struct HighDegreeTargetLeadRow {
+    #[diesel(sql_type = Text)]
+    target_host: String,
+    #[diesel(sql_type = BigInt)]
+    source_host_count: i64,
+    #[diesel(sql_type = BigInt)]
+    reference_count: i64,
+    #[diesel(sql_type = Text)]
+    first_seen_at: String,
+    #[diesel(sql_type = Text)]
+    last_seen_at: String,
+}
+
+#[derive(QueryableByName)]
+struct RelationshipEvidenceRow {
+    #[diesel(sql_type = Text)]
+    source_host: String,
+    #[diesel(sql_type = Text)]
+    target_host: String,
+    #[diesel(sql_type = BigInt)]
+    reference_count: i64,
+    #[diesel(sql_type = Text)]
+    observed_at: String,
+}
+
+#[derive(QueryableByName)]
 struct SiteProfileListRow {
     #[diesel(sql_type = diesel::sql_types::Integer)]
     id: i32,
@@ -326,6 +518,45 @@ struct ScanObservationSet {
     links: BTreeSet<(String, String)>,
     emails: BTreeSet<String>,
     crypto_refs: BTreeSet<(String, String)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IntelLeadRecomputeOptions {
+    pub limit: Option<i64>,
+    pub since_scan_id: Option<i32>,
+}
+
+#[derive(Clone)]
+struct IntelLeadCandidate {
+    rule_id: String,
+    lead_key: String,
+    title: String,
+    summary: String,
+    score: i32,
+    confidence: i32,
+    primary_entity_type: String,
+    primary_entity_value: String,
+    related_entity_type: Option<String>,
+    related_entity_value: Option<String>,
+    first_seen_at: String,
+    last_seen_at: String,
+    evidence: Vec<IntelLeadEvidenceCandidate>,
+}
+
+#[derive(Clone)]
+struct IntelLeadEvidenceCandidate {
+    source_type: String,
+    source_id: i32,
+    source_key: String,
+    evidence_text: String,
+    observed_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct LeadEvidenceSource {
+    source_type: String,
+    source_id: i32,
+    source_key: String,
 }
 
 pub fn establish_connection() -> Result<PgConnection> {
@@ -1391,6 +1622,13 @@ pub fn get_page_detail(conn: &mut PgConnection, page_id: i32) -> Result<Option<P
         }
         None => None,
     };
+    let intel_leads = load_active_lead_badges_for_sources(
+        conn,
+        &[
+            source_ref("page", page.id, page.url.clone()),
+            source_ref("site", 0, page_host.clone()),
+        ],
+    )?;
 
     Ok(Some(PageDetail {
         id: page.id,
@@ -1406,6 +1644,7 @@ pub fn get_page_detail(conn: &mut PgConnection, page_id: i32) -> Result<Option<P
         crypto_refs,
         site_profile,
         host_http_observation,
+        intel_leads,
     }))
 }
 
@@ -1698,6 +1937,1971 @@ pub fn collect_stats(conn: &mut PgConnection) -> Result<Stats> {
         failed_work_units,
         last_scrape,
     })
+}
+
+pub fn severity_for_intel_score(score: i32) -> &'static str {
+    match score.clamp(0, 100) {
+        90..=100 => LEAD_SEVERITY_CRITICAL,
+        70..=89 => LEAD_SEVERITY_HIGH,
+        40..=69 => LEAD_SEVERITY_MEDIUM,
+        1..=39 => LEAD_SEVERITY_LOW,
+        _ => LEAD_SEVERITY_LOW,
+    }
+}
+
+pub fn valid_intel_lead_statuses() -> [&'static str; 4] {
+    [
+        LEAD_STATUS_NEW,
+        LEAD_STATUS_TRIAGED,
+        LEAD_STATUS_MONITORING,
+        LEAD_STATUS_SUPPRESSED,
+    ]
+}
+
+pub fn normalize_intel_lead_status(raw_status: &str) -> Result<String> {
+    let status = raw_status.trim().to_ascii_lowercase();
+    anyhow::ensure!(
+        valid_intel_lead_statuses().contains(&status.as_str()),
+        "invalid lead status: {raw_status}"
+    );
+    Ok(status)
+}
+
+pub fn list_intel_leads(
+    conn: &mut PgConnection,
+    status_filter: Option<&str>,
+    severity_filter: Option<&str>,
+    rule_filter: Option<&str>,
+    entity_filter: Option<&str>,
+    sort: Option<&str>,
+    direction: Option<&str>,
+    requested_limit: Option<i64>,
+    requested_offset: Option<i64>,
+) -> Result<PaginatedResult<IntelLeadSummary>> {
+    use crate::schema::intel_lead::dsl as lead_dsl;
+
+    let pagination = normalize_pagination(
+        requested_limit,
+        requested_offset,
+        DEFAULT_LEAD_LIMIT,
+        MAX_LEAD_LIMIT,
+    );
+    let status_filter = normalize_optional_filter(status_filter);
+    let severity_filter = normalize_optional_filter(severity_filter);
+    let rule_filter = normalize_optional_filter(rule_filter);
+    let entity_filter = normalize_optional_filter(entity_filter);
+
+    let mut count_query = lead_dsl::intel_lead.into_boxed::<diesel::pg::Pg>();
+    count_query = apply_lead_filters(
+        count_query,
+        status_filter.as_deref(),
+        severity_filter.as_deref(),
+        rule_filter.as_deref(),
+        entity_filter.as_deref(),
+    );
+    let total_count = count_query
+        .select(count_star())
+        .first::<i64>(conn)
+        .context("error counting intel leads")?;
+
+    let mut query = lead_dsl::intel_lead.into_boxed::<diesel::pg::Pg>();
+    query = apply_lead_filters(
+        query,
+        status_filter.as_deref(),
+        severity_filter.as_deref(),
+        rule_filter.as_deref(),
+        entity_filter.as_deref(),
+    );
+    let descending = !matches!(
+        direction
+            .unwrap_or("desc")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "asc"
+    );
+    query = match (sort.unwrap_or("last_seen"), descending) {
+        ("severity", true) | ("score", true) => query
+            .order(lead_dsl::score.desc())
+            .then_order_by(lead_dsl::last_seen_at.desc())
+            .then_order_by(lead_dsl::id.desc()),
+        ("severity", false) | ("score", false) => query
+            .order(lead_dsl::score.asc())
+            .then_order_by(lead_dsl::last_seen_at.desc())
+            .then_order_by(lead_dsl::id.desc()),
+        ("confidence", true) => query
+            .order(lead_dsl::confidence.desc())
+            .then_order_by(lead_dsl::last_seen_at.desc())
+            .then_order_by(lead_dsl::id.desc()),
+        ("confidence", false) => query
+            .order(lead_dsl::confidence.asc())
+            .then_order_by(lead_dsl::last_seen_at.desc())
+            .then_order_by(lead_dsl::id.desc()),
+        ("status", true) => query
+            .order(lead_dsl::status.desc())
+            .then_order_by(lead_dsl::score.desc())
+            .then_order_by(lead_dsl::last_seen_at.desc()),
+        ("status", false) => query
+            .order(lead_dsl::status.asc())
+            .then_order_by(lead_dsl::score.desc())
+            .then_order_by(lead_dsl::last_seen_at.desc()),
+        ("rule", true) => query
+            .order(lead_dsl::rule_id.desc())
+            .then_order_by(lead_dsl::score.desc())
+            .then_order_by(lead_dsl::last_seen_at.desc()),
+        ("rule", false) => query
+            .order(lead_dsl::rule_id.asc())
+            .then_order_by(lead_dsl::score.desc())
+            .then_order_by(lead_dsl::last_seen_at.desc()),
+        ("entity", true) => query
+            .order(lead_dsl::primary_entity_value.desc())
+            .then_order_by(lead_dsl::score.desc())
+            .then_order_by(lead_dsl::last_seen_at.desc()),
+        ("entity", false) => query
+            .order(lead_dsl::primary_entity_value.asc())
+            .then_order_by(lead_dsl::score.desc())
+            .then_order_by(lead_dsl::last_seen_at.desc()),
+        ("last_seen", false) => query
+            .order(lead_dsl::last_seen_at.asc())
+            .then_order_by(lead_dsl::id.asc()),
+        _ => query
+            .order(lead_dsl::last_seen_at.desc())
+            .then_order_by(lead_dsl::id.desc()),
+    };
+
+    let records = query
+        .limit(pagination.limit)
+        .offset(pagination.offset)
+        .select(IntelLeadRecord::as_select())
+        .load::<IntelLeadRecord>(conn)
+        .context("error loading intel leads")?;
+    let evidence_counts = load_lead_evidence_counts(
+        conn,
+        &records.iter().map(|record| record.id).collect::<Vec<_>>(),
+    )?;
+    let items = records
+        .into_iter()
+        .map(|record| {
+            let lead_id = record.id;
+            intel_lead_summary_from_record(record, *evidence_counts.get(&lead_id).unwrap_or(&0))
+        })
+        .collect();
+
+    Ok(PaginatedResult {
+        items,
+        total_count,
+        limit: pagination.limit,
+        offset: pagination.offset,
+    })
+}
+
+pub fn get_intel_lead_detail(
+    conn: &mut PgConnection,
+    lead_id: i32,
+) -> Result<Option<IntelLeadDetail>> {
+    use crate::schema::intel_lead::dsl as lead_dsl;
+    use crate::schema::intel_lead_evidence::dsl as evidence_dsl;
+
+    let record = lead_dsl::intel_lead
+        .filter(lead_dsl::id.eq(lead_id))
+        .select(IntelLeadRecord::as_select())
+        .first::<IntelLeadRecord>(conn)
+        .optional()
+        .context("error loading intel lead")?;
+    let Some(record) = record else {
+        return Ok(None);
+    };
+
+    let evidence_records = evidence_dsl::intel_lead_evidence
+        .filter(evidence_dsl::lead_id.eq(record.id))
+        .order(evidence_dsl::observed_at.desc())
+        .then_order_by(evidence_dsl::id.desc())
+        .select(IntelLeadEvidenceRecord::as_select())
+        .load::<IntelLeadEvidenceRecord>(conn)
+        .context("error loading intel lead evidence")?;
+    let evidence_count = evidence_records.len();
+    let mut page_ids = evidence_records
+        .iter()
+        .filter(|row| row.source_type == "page" && row.source_id > 0)
+        .map(|row| row.source_id)
+        .collect::<HashSet<_>>();
+    let scan_ids = evidence_records
+        .iter()
+        .filter(|row| row.source_type == "page_scan" && row.source_id > 0)
+        .map(|row| row.source_id)
+        .collect::<Vec<_>>();
+    for page_id in load_page_ids_for_scan_ids(conn, &scan_ids)? {
+        page_ids.insert(page_id);
+    }
+    let mut related_pages = load_pages_by_ids(conn, &page_ids.into_iter().collect::<Vec<_>>())?
+        .into_iter()
+        .map(page_reference_from_page)
+        .collect::<Vec<_>>();
+    related_pages.sort_by(|left, right| {
+        right
+            .last_scanned_at
+            .cmp(&left.last_scanned_at)
+            .then_with(|| left.url.cmp(&right.url))
+    });
+
+    let mut related_sites = evidence_records
+        .iter()
+        .filter(|row| row.source_type == "site" && !row.source_key.is_empty())
+        .map(|row| row.source_key.clone())
+        .collect::<BTreeSet<_>>();
+    if record.primary_entity_type == "site" || record.primary_entity_type == "host" {
+        related_sites.insert(record.primary_entity_value.clone());
+    }
+    if matches!(
+        record.related_entity_type.as_deref(),
+        Some("site") | Some("host")
+    ) {
+        if let Some(value) = record.related_entity_value.as_ref() {
+            related_sites.insert(value.clone());
+        }
+    }
+
+    let mut related_entities = Vec::new();
+    push_entity_reference(
+        &mut related_entities,
+        &record.primary_entity_type,
+        &record.primary_entity_value,
+    );
+    if let (Some(entity_type), Some(entity_value)) = (
+        record.related_entity_type.as_ref(),
+        record.related_entity_value.as_ref(),
+    ) {
+        push_entity_reference(&mut related_entities, entity_type, entity_value);
+    }
+    for row in &evidence_records {
+        if matches!(
+            row.source_type.as_str(),
+            "email"
+                | "crypto"
+                | "ssh_host_key"
+                | "http_fingerprint"
+                | "favicon_hash"
+                | "service_fingerprint"
+        ) {
+            push_entity_reference(&mut related_entities, &row.source_type, &row.source_key);
+        }
+    }
+    related_entities.sort_by(|left, right| {
+        left.entity_type
+            .cmp(&right.entity_type)
+            .then_with(|| left.entity_value.cmp(&right.entity_value))
+    });
+    related_entities.dedup_by(|left, right| {
+        left.entity_type == right.entity_type && left.entity_value == right.entity_value
+    });
+
+    let evidence = evidence_records
+        .into_iter()
+        .map(|row| {
+            let source_url = intel_evidence_source_url(conn, &row)?;
+            Ok(IntelLeadEvidenceView {
+                id: row.id,
+                source_type: row.source_type,
+                source_id: row.source_id,
+                source_key: row.source_key,
+                evidence_text: row.evidence_text,
+                observed_at: row.observed_at,
+                source_url,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(Some(IntelLeadDetail {
+        lead: intel_lead_summary_from_record(record, evidence_count),
+        evidence,
+        related_pages,
+        related_sites: related_sites.into_iter().collect(),
+        related_entities,
+    }))
+}
+
+pub fn update_intel_lead_status(
+    conn: &mut PgConnection,
+    lead_id: i32,
+    raw_status: &str,
+) -> Result<Option<IntelLeadDetail>> {
+    use crate::schema::intel_lead::dsl as lead_dsl;
+
+    let status = normalize_intel_lead_status(raw_status)?;
+    let changed = diesel::update(lead_dsl::intel_lead.filter(lead_dsl::id.eq(lead_id)))
+        .set((
+            lead_dsl::status.eq(status),
+            lead_dsl::updated_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+        ))
+        .execute(conn)
+        .context("error updating intel lead status")?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    get_intel_lead_detail(conn, lead_id)
+}
+
+pub fn suppress_intel_lead(
+    conn: &mut PgConnection,
+    lead_id: i32,
+) -> Result<Option<IntelLeadSummary>> {
+    Ok(update_intel_lead_status(conn, lead_id, LEAD_STATUS_SUPPRESSED)?.map(|detail| detail.lead))
+}
+
+pub fn recompute_intel_leads(
+    conn: &mut PgConnection,
+    options: IntelLeadRecomputeOptions,
+) -> Result<IntelLeadRecomputeSummary> {
+    let rule_limit = options
+        .limit
+        .unwrap_or(DEFAULT_RECOMPUTE_LIMIT)
+        .clamp(1, MAX_RECOMPUTE_LIMIT);
+    let mut candidates = Vec::new();
+    candidates.extend(build_shared_email_lead_candidates(
+        conn,
+        options.since_scan_id,
+        rule_limit,
+    )?);
+    candidates.extend(build_shared_crypto_lead_candidates(
+        conn,
+        options.since_scan_id,
+        rule_limit,
+    )?);
+    candidates.extend(build_scan_update_lead_candidates(
+        conn,
+        options.since_scan_id,
+        rule_limit,
+    )?);
+    candidates.extend(build_blacklisted_site_link_lead_candidates(
+        conn, rule_limit,
+    )?);
+    candidates.extend(build_shared_ssh_lead_candidates(conn, rule_limit)?);
+    candidates.extend(build_shared_http_fingerprint_lead_candidates(
+        conn,
+        "header_fingerprint",
+        "shared-http-header-fingerprint",
+        "http_fingerprint",
+        "HTTP header fingerprint",
+        rule_limit,
+    )?);
+    candidates.extend(build_shared_http_fingerprint_lead_candidates(
+        conn,
+        "favicon_hash",
+        "shared-favicon-hash",
+        "favicon_hash",
+        "favicon hash",
+        rule_limit,
+    )?);
+    candidates.extend(build_shared_service_fingerprint_lead_candidates(
+        conn, rule_limit,
+    )?);
+    candidates.extend(build_category_change_lead_candidates(conn, rule_limit)?);
+    candidates.extend(build_high_degree_target_lead_candidates(
+        conn,
+        options.since_scan_id,
+        rule_limit,
+    )?);
+
+    let mut created_count = 0usize;
+    let mut updated_count = 0usize;
+    let mut evidence_count = 0usize;
+    conn.transaction::<_, anyhow::Error, _>(|conn| {
+        for candidate in &candidates {
+            let result = upsert_intel_lead_candidate(conn, candidate)?;
+            if result.created {
+                created_count += 1;
+            } else {
+                updated_count += 1;
+            }
+            evidence_count += result.evidence_count;
+        }
+        Ok(())
+    })?;
+
+    Ok(IntelLeadRecomputeSummary {
+        candidate_count: candidates.len(),
+        created_count,
+        updated_count,
+        evidence_count,
+    })
+}
+
+fn normalize_optional_filter(value: Option<&str>) -> Option<String> {
+    value
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+}
+
+fn apply_lead_filters<'a>(
+    mut query: crate::schema::intel_lead::BoxedQuery<'a, diesel::pg::Pg>,
+    status_filter: Option<&str>,
+    severity_filter: Option<&str>,
+    rule_filter: Option<&str>,
+    entity_filter: Option<&str>,
+) -> crate::schema::intel_lead::BoxedQuery<'a, diesel::pg::Pg> {
+    if let Some(status_filter) = status_filter {
+        query = query.filter(sql::<Bool>(&format!(
+            "status = {}",
+            quote_sql_text_literal(status_filter)
+        )));
+    }
+    if let Some(severity_filter) = severity_filter {
+        query = query.filter(sql::<Bool>(&format!(
+            "severity = {}",
+            quote_sql_text_literal(severity_filter)
+        )));
+    }
+    if let Some(rule_filter) = rule_filter {
+        query = query.filter(sql::<Bool>(&format!(
+            "rule_id = {}",
+            quote_sql_text_literal(rule_filter)
+        )));
+    }
+    if let Some(entity_filter) = entity_filter {
+        let pattern = quote_sql_text_literal(&format!("%{}%", escape_like(entity_filter)));
+        query = query.filter(sql::<Bool>(&format!(
+            "(lead_key LIKE {pattern} ESCAPE '\\' \
+              OR title LIKE {pattern} ESCAPE '\\' \
+              OR summary LIKE {pattern} ESCAPE '\\' \
+              OR primary_entity_value LIKE {pattern} ESCAPE '\\' \
+              OR COALESCE(related_entity_value, '') LIKE {pattern} ESCAPE '\\')"
+        )));
+    }
+    query
+}
+
+fn load_lead_evidence_counts(
+    conn: &mut PgConnection,
+    lead_ids: &[i32],
+) -> Result<HashMap<i32, usize>> {
+    if lead_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = crate::schema::intel_lead_evidence::table
+        .filter(crate::schema::intel_lead_evidence::lead_id.eq_any(lead_ids))
+        .group_by(crate::schema::intel_lead_evidence::lead_id)
+        .select((crate::schema::intel_lead_evidence::lead_id, count_star()))
+        .load::<(i32, i64)>(conn)
+        .context("error loading intel lead evidence counts")?;
+    Ok(rows
+        .into_iter()
+        .map(|(lead_id, count)| (lead_id, count.max(0) as usize))
+        .collect())
+}
+
+fn intel_lead_summary_from_record(
+    record: IntelLeadRecord,
+    evidence_count: usize,
+) -> IntelLeadSummary {
+    IntelLeadSummary {
+        id: record.id,
+        rule_id: record.rule_id,
+        lead_key: record.lead_key,
+        title: record.title,
+        summary: record.summary,
+        severity: record.severity,
+        confidence: record.confidence,
+        score: record.score,
+        status: record.status,
+        primary_entity_type: record.primary_entity_type,
+        primary_entity_value: record.primary_entity_value,
+        related_entity_type: record.related_entity_type,
+        related_entity_value: record.related_entity_value,
+        first_seen_at: record.first_seen_at,
+        last_seen_at: record.last_seen_at,
+        updated_at: record.updated_at,
+        evidence_count,
+        detail_url: build_intel_lead_detail_url(record.id),
+    }
+}
+
+fn intel_lead_badge_from_record(record: IntelLeadRecord) -> IntelLeadBadge {
+    IntelLeadBadge {
+        id: record.id,
+        rule_id: record.rule_id,
+        title: record.title,
+        severity: record.severity,
+        confidence: record.confidence,
+        score: record.score,
+        status: record.status,
+        detail_url: build_intel_lead_detail_url(record.id),
+    }
+}
+
+struct IntelLeadUpsertOutcome {
+    created: bool,
+    evidence_count: usize,
+}
+
+fn upsert_intel_lead_candidate(
+    conn: &mut PgConnection,
+    candidate: &IntelLeadCandidate,
+) -> Result<IntelLeadUpsertOutcome> {
+    use crate::schema::intel_lead::dsl as lead_dsl;
+    use crate::schema::intel_lead_evidence::dsl as evidence_dsl;
+
+    let existing = lead_dsl::intel_lead
+        .filter(lead_dsl::lead_key.eq(&candidate.lead_key))
+        .select(IntelLeadRecord::as_select())
+        .first::<IntelLeadRecord>(conn)
+        .optional()
+        .context("error loading existing intel lead")?;
+    let severity = severity_for_intel_score(candidate.score).to_string();
+    let status = match existing.as_ref().map(|record| record.status.as_str()) {
+        Some(LEAD_STATUS_SUPPRESSED) if severity == LEAD_SEVERITY_CRITICAL => {
+            LEAD_STATUS_NEW.to_string()
+        }
+        Some(existing_status) => existing_status.to_string(),
+        None => LEAD_STATUS_NEW.to_string(),
+    };
+    let first_seen_at = existing
+        .as_ref()
+        .map(|record| record.first_seen_at.clone())
+        .unwrap_or_else(|| candidate.first_seen_at.clone());
+    let lead = NewIntelLead {
+        rule_id: candidate.rule_id.clone(),
+        lead_key: candidate.lead_key.clone(),
+        title: truncate(&candidate.title, 240),
+        summary: truncate(&candidate.summary, 1000),
+        severity,
+        confidence: candidate.confidence.clamp(0, 100),
+        score: candidate.score.clamp(0, 100),
+        status,
+        primary_entity_type: candidate.primary_entity_type.clone(),
+        primary_entity_value: candidate.primary_entity_value.clone(),
+        related_entity_type: candidate.related_entity_type.clone(),
+        related_entity_value: candidate.related_entity_value.clone(),
+        first_seen_at,
+        last_seen_at: candidate.last_seen_at.clone(),
+    };
+
+    diesel::insert_into(lead_dsl::intel_lead)
+        .values(&lead)
+        .on_conflict(lead_dsl::lead_key)
+        .do_update()
+        .set((
+            lead_dsl::rule_id.eq(excluded(lead_dsl::rule_id)),
+            lead_dsl::title.eq(excluded(lead_dsl::title)),
+            lead_dsl::summary.eq(excluded(lead_dsl::summary)),
+            lead_dsl::severity.eq(excluded(lead_dsl::severity)),
+            lead_dsl::confidence.eq(excluded(lead_dsl::confidence)),
+            lead_dsl::score.eq(excluded(lead_dsl::score)),
+            lead_dsl::status.eq(excluded(lead_dsl::status)),
+            lead_dsl::primary_entity_type.eq(excluded(lead_dsl::primary_entity_type)),
+            lead_dsl::primary_entity_value.eq(excluded(lead_dsl::primary_entity_value)),
+            lead_dsl::related_entity_type.eq(excluded(lead_dsl::related_entity_type)),
+            lead_dsl::related_entity_value.eq(excluded(lead_dsl::related_entity_value)),
+            lead_dsl::last_seen_at.eq(excluded(lead_dsl::last_seen_at)),
+            lead_dsl::updated_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+        ))
+        .execute(conn)
+        .context("error upserting intel lead")?;
+
+    let stored_lead = lead_dsl::intel_lead
+        .filter(lead_dsl::lead_key.eq(&candidate.lead_key))
+        .select(IntelLeadRecord::as_select())
+        .first::<IntelLeadRecord>(conn)
+        .context("error loading upserted intel lead")?;
+    let evidence_rows = candidate
+        .evidence
+        .iter()
+        .map(|evidence| NewIntelLeadEvidence {
+            lead_id: stored_lead.id,
+            source_type: evidence.source_type.clone(),
+            source_id: evidence.source_id,
+            source_key: truncate(&evidence.source_key, 500),
+            evidence_text: truncate(&evidence.evidence_text, 1000),
+            observed_at: evidence.observed_at.clone(),
+        })
+        .collect::<Vec<_>>();
+    if !evidence_rows.is_empty() {
+        diesel::insert_into(evidence_dsl::intel_lead_evidence)
+            .values(&evidence_rows)
+            .on_conflict((
+                evidence_dsl::lead_id,
+                evidence_dsl::source_type,
+                evidence_dsl::source_id,
+                evidence_dsl::source_key,
+                evidence_dsl::evidence_text,
+            ))
+            .do_update()
+            .set(evidence_dsl::observed_at.eq(excluded(evidence_dsl::observed_at)))
+            .execute(conn)
+            .context("error upserting intel lead evidence")?;
+    }
+
+    Ok(IntelLeadUpsertOutcome {
+        created: existing.is_none(),
+        evidence_count: evidence_rows.len(),
+    })
+}
+
+fn evidence_candidate(
+    source_type: &str,
+    source_id: i32,
+    source_key: impl Into<String>,
+    evidence_text: impl Into<String>,
+    observed_at: impl Into<String>,
+) -> IntelLeadEvidenceCandidate {
+    IntelLeadEvidenceCandidate {
+        source_type: source_type.to_string(),
+        source_id,
+        source_key: source_key.into(),
+        evidence_text: evidence_text.into(),
+        observed_at: observed_at.into(),
+    }
+}
+
+fn build_intel_lead_detail_url(lead_id: i32) -> String {
+    format!("/leads/{lead_id}")
+}
+
+fn load_page_ids_for_scan_ids(conn: &mut PgConnection, scan_ids: &[i32]) -> Result<Vec<i32>> {
+    use crate::schema::page_scan::dsl as scan_dsl;
+
+    if scan_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    scan_dsl::page_scan
+        .filter(scan_dsl::id.eq_any(scan_ids))
+        .select(scan_dsl::page_id)
+        .load::<i32>(conn)
+        .context("error loading pages for scan ids")
+}
+
+fn push_entity_reference(
+    references: &mut Vec<IntelLeadEntityReference>,
+    entity_type: &str,
+    entity_value: &str,
+) {
+    let entity_type = entity_type.trim();
+    let entity_value = entity_value.trim();
+    if entity_type.is_empty() || entity_value.is_empty() {
+        return;
+    }
+    references.push(IntelLeadEntityReference {
+        entity_type: entity_type.to_string(),
+        entity_value: entity_value.to_string(),
+        detail_url: intel_entity_detail_url(entity_type, entity_value),
+    });
+}
+
+fn intel_entity_detail_url(entity_type: &str, entity_value: &str) -> Option<String> {
+    match entity_type {
+        "email" => Some(build_query_url(
+            "/entities/emails",
+            &[("value", entity_value)],
+        )),
+        "crypto" => {
+            let (asset_type, reference) = entity_value.split_once(':')?;
+            Some(build_query_url(
+                "/entities/crypto",
+                &[("asset_type", asset_type), ("reference", reference)],
+            ))
+        }
+        "ssh_host_key" => {
+            let (algorithm, fingerprint) = entity_value.split_once(':')?;
+            Some(build_query_url(
+                "/entities/ssh",
+                &[("algorithm", algorithm), ("fingerprint", fingerprint)],
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn intel_evidence_source_url(
+    conn: &mut PgConnection,
+    evidence: &IntelLeadEvidenceRecord,
+) -> Result<Option<String>> {
+    match evidence.source_type.as_str() {
+        "page" if evidence.source_id > 0 => Ok(Some(format!("/pages/{}", evidence.source_id))),
+        "page_scan" if evidence.source_id > 0 => {
+            use crate::schema::page_scan::dsl as scan_dsl;
+            let page_id = scan_dsl::page_scan
+                .filter(scan_dsl::id.eq(evidence.source_id))
+                .select(scan_dsl::page_id)
+                .first::<i32>(conn)
+                .optional()
+                .context("error loading page scan source url")?;
+            Ok(page_id.map(|page_id| build_page_scan_detail_url(page_id, evidence.source_id)))
+        }
+        "email" => Ok(Some(build_query_url(
+            "/entities/emails",
+            &[("value", &evidence.source_key)],
+        ))),
+        "crypto" => {
+            let Some((asset_type, reference)) = evidence.source_key.split_once(':') else {
+                return Ok(None);
+            };
+            Ok(Some(build_query_url(
+                "/entities/crypto",
+                &[("asset_type", asset_type), ("reference", reference)],
+            )))
+        }
+        "ssh_host_key" => {
+            let Some((algorithm, fingerprint)) = evidence.source_key.split_once(':') else {
+                return Ok(None);
+            };
+            Ok(Some(build_query_url(
+                "/entities/ssh",
+                &[("algorithm", algorithm), ("fingerprint", fingerprint)],
+            )))
+        }
+        "ssh_endpoint" => Ok(Some("/entities/ssh".to_string())),
+        "http_endpoint" => Ok(http_detail_url_from_endpoint(&evidence.source_key)),
+        "service_endpoint" => Ok(service_detail_url_from_endpoint(&evidence.source_key)),
+        "relationship" => Ok(Some("/relationships".to_string())),
+        _ => Ok(None),
+    }
+}
+
+fn http_detail_url_from_endpoint(endpoint: &str) -> Option<String> {
+    let endpoint = endpoint_from_url(endpoint)?;
+    let port = endpoint.port.to_string();
+    Some(build_query_url(
+        "/entities/http",
+        &[
+            ("host", &endpoint.host),
+            ("scheme", &endpoint.scheme),
+            ("port", &port),
+        ],
+    ))
+}
+
+fn service_detail_url_from_endpoint(endpoint: &str) -> Option<String> {
+    let parsed = Url::parse(endpoint).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let service = parsed.scheme().to_ascii_lowercase();
+    let port = parsed.port()?.to_string();
+    Some(build_query_url(
+        "/entities/services",
+        &[("host", &host), ("service", &service), ("port", &port)],
+    ))
+}
+
+fn load_active_lead_badges_for_sources(
+    conn: &mut PgConnection,
+    sources: &[LeadEvidenceSource],
+) -> Result<Vec<IntelLeadBadge>> {
+    use crate::schema::intel_lead::dsl as lead_dsl;
+    use crate::schema::intel_lead_evidence::dsl as evidence_dsl;
+
+    let mut seen_sources = HashSet::new();
+    let mut seen_leads = HashSet::new();
+    let mut badges = Vec::new();
+    for source in sources {
+        if !seen_sources.insert(source.clone()) {
+            continue;
+        }
+        let records = lead_dsl::intel_lead
+            .inner_join(evidence_dsl::intel_lead_evidence)
+            .filter(lead_dsl::status.ne(LEAD_STATUS_SUPPRESSED))
+            .filter(evidence_dsl::source_type.eq(&source.source_type))
+            .filter(evidence_dsl::source_id.eq(source.source_id))
+            .filter(evidence_dsl::source_key.eq(&source.source_key))
+            .select(IntelLeadRecord::as_select())
+            .load::<IntelLeadRecord>(conn)
+            .context("error loading active lead badges")?;
+        for record in records {
+            if seen_leads.insert(record.id) {
+                badges.push(intel_lead_badge_from_record(record));
+            }
+        }
+    }
+    badges.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| right.confidence.cmp(&left.confidence))
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    Ok(badges)
+}
+
+fn source_ref(
+    source_type: &str,
+    source_id: i32,
+    source_key: impl Into<String>,
+) -> LeadEvidenceSource {
+    LeadEvidenceSource {
+        source_type: source_type.to_string(),
+        source_id,
+        source_key: source_key.into(),
+    }
+}
+
+fn build_shared_email_lead_candidates(
+    conn: &mut PgConnection,
+    since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    let host_expr = sql_host_expr("p.url", conn);
+    let sql = format!(
+        "
+        WITH candidate_emails AS (
+            SELECT DISTINCT email
+            FROM page_scan_email
+            WHERE $1 <= 0 OR scan_id > $1
+            LIMIT $2
+        )
+        SELECT
+            pe.email,
+            COUNT(DISTINCT {host_expr}) AS host_count,
+            COUNT(DISTINCT pe.page_id) AS page_count,
+            MIN(p.created_at) AS first_seen_at,
+            MAX(p.last_scanned_at) AS last_seen_at
+        FROM page_email pe
+        JOIN page p ON p.id = pe.page_id
+        WHERE pe.email != ''
+            AND ($1 <= 0 OR pe.email IN (SELECT email FROM candidate_emails))
+            AND {host_expr} != ''
+        GROUP BY pe.email
+        HAVING COUNT(DISTINCT {host_expr}) > 1
+        ORDER BY host_count DESC, page_count DESC, last_seen_at DESC, pe.email ASC
+        LIMIT $2
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<diesel::sql_types::Integer, _>(since_scan_id.unwrap_or(0))
+        .bind::<BigInt, _>(rule_limit)
+        .load::<SharedEmailLeadRow>(conn)
+        .context("error building shared email lead candidates")?;
+
+    rows.into_iter()
+        .map(|row| {
+            let mut evidence = vec![evidence_candidate(
+                "email",
+                0,
+                row.email.clone(),
+                format!(
+                    "Email {} appears on {} hosts across {} pages",
+                    row.email, row.host_count, row.page_count
+                ),
+                row.last_seen_at.clone(),
+            )];
+            evidence.extend(load_entity_page_evidence(
+                conn,
+                "page_email",
+                "email",
+                &row.email,
+                rule_limit.min(20),
+            )?);
+            let score =
+                (45 + (row.host_count as i32 * 10) + (row.page_count as i32 * 2)).clamp(1, 92);
+            Ok(IntelLeadCandidate {
+                rule_id: "shared-email".to_string(),
+                lead_key: format!("shared-email:{}", row.email.to_ascii_lowercase()),
+                title: format!("Shared email across {} hosts", row.host_count),
+                summary: format!(
+                    "{} appears on {} unrelated hosts and {} pages.",
+                    row.email, row.host_count, row.page_count
+                ),
+                score,
+                confidence: (60 + (row.host_count as i32 * 8)).clamp(50, 95),
+                primary_entity_type: "email".to_string(),
+                primary_entity_value: row.email,
+                related_entity_type: None,
+                related_entity_value: None,
+                first_seen_at: row.first_seen_at,
+                last_seen_at: row.last_seen_at,
+                evidence,
+            })
+        })
+        .collect()
+}
+
+fn build_shared_crypto_lead_candidates(
+    conn: &mut PgConnection,
+    since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    let host_expr = sql_host_expr("p.url", conn);
+    let sql = format!(
+        "
+        WITH candidate_crypto AS (
+            SELECT DISTINCT asset_type, reference
+            FROM page_scan_crypto
+            WHERE $1 <= 0 OR scan_id > $1
+            LIMIT $2
+        )
+        SELECT
+            pc.asset_type,
+            pc.reference,
+            COUNT(DISTINCT {host_expr}) AS host_count,
+            COUNT(DISTINCT pc.page_id) AS page_count,
+            MIN(p.created_at) AS first_seen_at,
+            MAX(p.last_scanned_at) AS last_seen_at
+        FROM page_crypto pc
+        JOIN page p ON p.id = pc.page_id
+        WHERE pc.reference != ''
+            AND {host_expr} != ''
+            AND (
+                $1 <= 0
+                OR EXISTS (
+                    SELECT 1
+                    FROM candidate_crypto cc
+                    WHERE cc.asset_type = pc.asset_type
+                      AND cc.reference = pc.reference
+                )
+            )
+        GROUP BY pc.asset_type, pc.reference
+        HAVING COUNT(DISTINCT {host_expr}) > 1
+        ORDER BY host_count DESC, page_count DESC, last_seen_at DESC, pc.asset_type ASC, pc.reference ASC
+        LIMIT $2
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<diesel::sql_types::Integer, _>(since_scan_id.unwrap_or(0))
+        .bind::<BigInt, _>(rule_limit)
+        .load::<SharedCryptoLeadRow>(conn)
+        .context("error building shared crypto lead candidates")?;
+
+    rows.into_iter()
+        .map(|row| {
+            let entity_key = crypto_entity_key(&row.asset_type, &row.reference);
+            let mut evidence = vec![evidence_candidate(
+                "crypto",
+                0,
+                entity_key.clone(),
+                format!(
+                    "{} reference appears on {} hosts across {} pages",
+                    row.asset_type, row.host_count, row.page_count
+                ),
+                row.last_seen_at.clone(),
+            )];
+            evidence.extend(load_crypto_page_evidence(
+                conn,
+                &row.asset_type,
+                &row.reference,
+                rule_limit.min(20),
+            )?);
+            let score =
+                (50 + (row.host_count as i32 * 11) + (row.page_count as i32 * 2)).clamp(1, 94);
+            Ok(IntelLeadCandidate {
+                rule_id: "shared-crypto".to_string(),
+                lead_key: format!(
+                    "shared-crypto:{}:{}",
+                    row.asset_type.to_ascii_lowercase(),
+                    row.reference.to_ascii_lowercase()
+                ),
+                title: format!("Shared {} reference", row.asset_type),
+                summary: format!(
+                    "{} appears on {} unrelated hosts and {} pages.",
+                    row.reference, row.host_count, row.page_count
+                ),
+                score,
+                confidence: (62 + (row.host_count as i32 * 8)).clamp(50, 96),
+                primary_entity_type: "crypto".to_string(),
+                primary_entity_value: entity_key,
+                related_entity_type: None,
+                related_entity_value: None,
+                first_seen_at: row.first_seen_at,
+                last_seen_at: row.last_seen_at,
+                evidence,
+            })
+        })
+        .collect()
+}
+
+fn load_entity_page_evidence(
+    conn: &mut PgConnection,
+    table_name: &str,
+    column_name: &str,
+    value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let host_expr = sql_host_expr("p.url", conn);
+    let sql = format!(
+        "
+        SELECT
+            p.id AS page_id,
+            p.title AS page_title,
+            p.url AS page_url,
+            {host_expr} AS host,
+            p.last_scanned_at AS observed_at
+        FROM {table_name} entity
+        JOIN page p ON p.id = entity.page_id
+        WHERE entity.{column_name} = $1
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        LIMIT $2
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<Text, _>(value)
+        .bind::<BigInt, _>(limit)
+        .load::<LeadPageEvidenceRow>(conn)
+        .context("error loading entity page lead evidence")?;
+    Ok(page_evidence_candidates(rows, value))
+}
+
+fn load_crypto_page_evidence(
+    conn: &mut PgConnection,
+    asset_type: &str,
+    reference: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let host_expr = sql_host_expr("p.url", conn);
+    let sql = format!(
+        "
+        SELECT
+            p.id AS page_id,
+            p.title AS page_title,
+            p.url AS page_url,
+            {host_expr} AS host,
+            p.last_scanned_at AS observed_at
+        FROM page_crypto pc
+        JOIN page p ON p.id = pc.page_id
+        WHERE pc.asset_type = $1
+          AND pc.reference = $2
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        LIMIT $3
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<Text, _>(asset_type)
+        .bind::<Text, _>(reference)
+        .bind::<BigInt, _>(limit)
+        .load::<LeadPageEvidenceRow>(conn)
+        .context("error loading crypto page lead evidence")?;
+    Ok(page_evidence_candidates(rows, reference))
+}
+
+fn page_evidence_candidates(
+    rows: Vec<LeadPageEvidenceRow>,
+    value: &str,
+) -> Vec<IntelLeadEvidenceCandidate> {
+    let mut evidence = Vec::new();
+    let mut seen_sites = HashSet::new();
+    for row in rows {
+        evidence.push(evidence_candidate(
+            "page",
+            row.page_id,
+            row.page_url.clone(),
+            format!(
+                "{} observed on {} ({})",
+                value, row.page_url, row.page_title
+            ),
+            row.observed_at.clone(),
+        ));
+        if !row.host.is_empty() && seen_sites.insert(row.host.clone()) {
+            evidence.push(evidence_candidate(
+                "site",
+                0,
+                row.host.clone(),
+                format!("{} observed on host {}", value, row.host),
+                row.observed_at.clone(),
+            ));
+        }
+    }
+    evidence
+}
+
+fn crypto_entity_key(asset_type: &str, reference: &str) -> String {
+    format!("{asset_type}:{reference}")
+}
+
+fn build_scan_update_lead_candidates(
+    conn: &mut PgConnection,
+    since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    let host_expr = sql_host_expr("p.url", conn);
+    let sql = format!(
+        "
+        SELECT
+            ps.id AS scan_id,
+            ps.page_id,
+            ps.title AS page_title,
+            p.url AS page_url,
+            {host_expr} AS page_host,
+            ps.scanned_at,
+            (
+                SELECT previous.id
+                FROM page_scan previous
+                WHERE previous.page_id = ps.page_id
+                  AND previous.id < ps.id
+                ORDER BY previous.id DESC
+                LIMIT 1
+            ) AS previous_scan_id
+        FROM page_scan ps
+        JOIN page p ON p.id = ps.page_id
+        WHERE $1 <= 0 OR ps.id > $1
+        ORDER BY ps.id DESC
+        LIMIT $2
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<diesel::sql_types::Integer, _>(since_scan_id.unwrap_or(0))
+        .bind::<BigInt, _>(rule_limit)
+        .load::<RecentScanLeadRow>(conn)
+        .context("error loading recent scans for intel leads")?;
+    let scan_ids = rows
+        .iter()
+        .flat_map(|row| [Some(row.scan_id), row.previous_scan_id])
+        .flatten()
+        .collect::<Vec<_>>();
+    let scan_links = load_scan_link_rows(conn, &scan_ids)?;
+    let scan_emails = load_scan_email_rows(conn, &scan_ids)?;
+    let scan_crypto_refs = load_scan_crypto_rows(conn, &scan_ids)?;
+    let blacklist_domains = load_blacklist_domains(conn)?;
+    let mut candidates = Vec::new();
+
+    for row in rows {
+        let Some(previous_scan_id) = row.previous_scan_id else {
+            continue;
+        };
+        let current_links = scan_links.get(&row.scan_id).cloned().unwrap_or_default();
+        let previous_links = scan_links
+            .get(&previous_scan_id)
+            .cloned()
+            .unwrap_or_default();
+        let current_emails = scan_emails.get(&row.scan_id).cloned().unwrap_or_default();
+        let previous_emails = scan_emails
+            .get(&previous_scan_id)
+            .cloned()
+            .unwrap_or_default();
+        let current_crypto = scan_crypto_refs
+            .get(&row.scan_id)
+            .cloned()
+            .unwrap_or_default();
+        let previous_crypto = scan_crypto_refs
+            .get(&previous_scan_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let current_link_set = link_set_from_scan_rows(&current_links);
+        let previous_link_set = link_set_from_scan_rows(&previous_links);
+        let current_email_set = email_set_from_scan_rows(&current_emails);
+        let previous_email_set = email_set_from_scan_rows(&previous_emails);
+        let current_crypto_set = crypto_set_from_scan_rows(&current_crypto);
+        let previous_crypto_set = crypto_set_from_scan_rows(&previous_crypto);
+        let added_links = current_link_set
+            .difference(&previous_link_set)
+            .cloned()
+            .collect::<Vec<_>>();
+        let added_emails = current_email_set
+            .difference(&previous_email_set)
+            .cloned()
+            .collect::<Vec<_>>();
+        let added_crypto = current_crypto_set
+            .difference(&previous_crypto_set)
+            .cloned()
+            .collect::<Vec<_>>();
+        let added_blacklisted_links = added_links
+            .iter()
+            .filter_map(|(_, target_host)| {
+                find_matching_blacklist_domain(target_host, &blacklist_domains)
+            })
+            .collect::<HashSet<_>>();
+
+        if added_emails.is_empty()
+            && added_crypto.is_empty()
+            && added_blacklisted_links.is_empty()
+            && added_links.len() < MANY_NEW_OUTBOUND_LINK_THRESHOLD
+        {
+            continue;
+        }
+
+        let mut evidence = vec![
+            evidence_candidate(
+                "page_scan",
+                row.scan_id,
+                row.page_url.clone(),
+                format!("Scan {} added notable observations", row.scan_id),
+                row.scanned_at.clone(),
+            ),
+            evidence_candidate(
+                "page",
+                row.page_id,
+                row.page_url.clone(),
+                format!("Page {} changed during scan {}", row.page_url, row.scan_id),
+                row.scanned_at.clone(),
+            ),
+        ];
+        if !row.page_host.is_empty() {
+            evidence.push(evidence_candidate(
+                "site",
+                0,
+                row.page_host.clone(),
+                format!("Host {} had a notable scan update", row.page_host),
+                row.scanned_at.clone(),
+            ));
+        }
+        for email in added_emails.iter().take(10) {
+            evidence.push(evidence_candidate(
+                "email",
+                0,
+                email.clone(),
+                format!("New email observed: {email}"),
+                row.scanned_at.clone(),
+            ));
+        }
+        for (asset_type, reference) in added_crypto.iter().take(10) {
+            evidence.push(evidence_candidate(
+                "crypto",
+                0,
+                crypto_entity_key(asset_type, reference),
+                format!("New {asset_type} reference observed: {reference}"),
+                row.scanned_at.clone(),
+            ));
+        }
+        for (target_url, target_host) in added_links.iter().take(10) {
+            if find_matching_blacklist_domain(target_host, &blacklist_domains).is_some() {
+                evidence.push(evidence_candidate(
+                    "relationship",
+                    0,
+                    relationship_key(&row.page_host, target_host),
+                    format!("New blacklisted outbound link: {target_url}"),
+                    row.scanned_at.clone(),
+                ));
+            }
+        }
+
+        let score = (35
+            + (added_emails.len() as i32 * 8)
+            + (added_crypto.len() as i32 * 10)
+            + (added_blacklisted_links.len() as i32 * 18)
+            + if added_links.len() >= MANY_NEW_OUTBOUND_LINK_THRESHOLD {
+                20
+            } else {
+                0
+            })
+        .clamp(1, 94);
+        candidates.push(IntelLeadCandidate {
+            rule_id: "scan-new-observations".to_string(),
+            lead_key: format!("scan-new-observations:{}", row.scan_id),
+            title: format!("Notable update on {}", row.page_title),
+            summary: format!(
+                "Scan {} added {} links, {} emails, {} crypto refs, and links to {} blacklisted domains.",
+                row.scan_id,
+                added_links.len(),
+                added_emails.len(),
+                added_crypto.len(),
+                added_blacklisted_links.len()
+            ),
+            score,
+            confidence: 82,
+            primary_entity_type: "page".to_string(),
+            primary_entity_value: row.page_url,
+            related_entity_type: Some("site".to_string()),
+            related_entity_value: Some(row.page_host),
+            first_seen_at: row.scanned_at.clone(),
+            last_seen_at: row.scanned_at,
+            evidence,
+        });
+    }
+
+    Ok(candidates)
+}
+
+fn build_blacklisted_site_link_lead_candidates(
+    conn: &mut PgConnection,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    let blacklist_domains = load_blacklist_domains(conn)?;
+    if blacklist_domains.is_empty() {
+        return Ok(Vec::new());
+    }
+    let host_expr = sql_host_expr("p.url", conn);
+    let mut grouped = HashMap::<(String, String), Vec<BlacklistedLinkLeadRow>>::new();
+    for domain in blacklist_domains {
+        let pattern = format!("%.{}", domain);
+        let sql = format!(
+            "
+            SELECT
+                p.id AS page_id,
+                p.title AS page_title,
+                p.url AS page_url,
+                {host_expr} AS source_host,
+                pl.target_url,
+                pl.target_host,
+                p.last_scanned_at AS observed_at
+            FROM page_link pl
+            JOIN page p ON p.id = pl.source_page_id
+            WHERE {host_expr} != ''
+              AND (pl.target_host = $1 OR pl.target_host LIKE $2)
+              AND {host_expr} != pl.target_host
+            ORDER BY p.last_scanned_at DESC, p.id DESC
+            LIMIT $3
+            "
+        );
+        let rows = sql_query(sql)
+            .bind::<Text, _>(&domain)
+            .bind::<Text, _>(&pattern)
+            .bind::<BigInt, _>(rule_limit)
+            .load::<BlacklistedLinkLeadRow>(conn)
+            .with_context(|| format!("error loading links to blacklisted domain {domain}"))?;
+        for row in rows {
+            grouped
+                .entry((row.source_host.clone(), domain.clone()))
+                .or_default()
+                .push(row);
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for ((source_host, blacklist_domain), rows) in grouped {
+        let Some(last_seen_at) = rows.iter().map(|row| row.observed_at.clone()).max() else {
+            continue;
+        };
+        let Some(first_seen_at) = rows.iter().map(|row| row.observed_at.clone()).min() else {
+            continue;
+        };
+        let mut evidence = vec![
+            evidence_candidate(
+                "site",
+                0,
+                source_host.clone(),
+                format!("{source_host} links to blacklisted domain {blacklist_domain}"),
+                last_seen_at.clone(),
+            ),
+            evidence_candidate(
+                "site",
+                0,
+                blacklist_domain.clone(),
+                format!("{blacklist_domain} is configured in the domain blacklist"),
+                last_seen_at.clone(),
+            ),
+        ];
+        for row in rows.iter().take(20) {
+            evidence.push(evidence_candidate(
+                "page",
+                row.page_id,
+                row.page_url.clone(),
+                format!(
+                    "{} ({}) links to {}",
+                    row.page_url, row.page_title, row.target_url
+                ),
+                row.observed_at.clone(),
+            ));
+            evidence.push(evidence_candidate(
+                "relationship",
+                0,
+                relationship_key(&source_host, &row.target_host),
+                format!("{} -> {}", source_host, row.target_host),
+                row.observed_at.clone(),
+            ));
+        }
+        let reference_count = rows.len();
+        candidates.push(IntelLeadCandidate {
+            rule_id: "blacklisted-site-link".to_string(),
+            lead_key: format!("blacklisted-site-link:{source_host}->{blacklist_domain}"),
+            title: format!("{source_host} links to blacklisted domain"),
+            summary: format!(
+                "{source_host} has {reference_count} observed links to {blacklist_domain}."
+            ),
+            score: (62 + (reference_count as i32 * 3)).clamp(1, 92),
+            confidence: 90,
+            primary_entity_type: "site".to_string(),
+            primary_entity_value: source_host,
+            related_entity_type: Some("site".to_string()),
+            related_entity_value: Some(blacklist_domain),
+            first_seen_at,
+            last_seen_at,
+            evidence,
+        });
+    }
+
+    Ok(candidates)
+}
+
+fn relationship_key(source_host: &str, target_host: &str) -> String {
+    format!("{source_host}->{target_host}")
+}
+
+fn build_shared_ssh_lead_candidates(
+    conn: &mut PgConnection,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    let rows = sql_query(
+        "
+        SELECT
+            host_key_algorithm AS algorithm,
+            host_key_fingerprint AS fingerprint,
+            COUNT(DISTINCT host) AS host_count,
+            COUNT(*) AS endpoint_count,
+            MIN(COALESCE(last_success_at, last_attempt_at)) AS first_seen_at,
+            MAX(COALESCE(last_success_at, last_attempt_at)) AS last_seen_at
+        FROM host_ssh_observation
+        WHERE host_key_algorithm IS NOT NULL
+          AND host_key_algorithm != ''
+          AND host_key_fingerprint IS NOT NULL
+          AND host_key_fingerprint != ''
+          AND last_success_at IS NOT NULL
+        GROUP BY host_key_algorithm, host_key_fingerprint
+        HAVING COUNT(DISTINCT host) > 1
+        ORDER BY host_count DESC, endpoint_count DESC, last_seen_at DESC
+        LIMIT $1
+        ",
+    )
+    .bind::<BigInt, _>(rule_limit)
+    .load::<SharedSshLeadRow>(conn)
+    .context("error building shared ssh host-key lead candidates")?;
+
+    rows.into_iter()
+        .map(|row| {
+            let key = format!("{}:{}", row.algorithm, row.fingerprint);
+            let mut evidence = vec![evidence_candidate(
+                "ssh_host_key",
+                0,
+                key.clone(),
+                format!(
+                    "SSH host key appears on {} hosts and {} endpoints",
+                    row.host_count, row.endpoint_count
+                ),
+                row.last_seen_at.clone(),
+            )];
+            evidence.extend(load_ssh_endpoint_evidence(
+                conn,
+                &row.algorithm,
+                &row.fingerprint,
+                20,
+            )?);
+            evidence.extend(host_site_evidence_from_fingerprint_evidence(
+                &evidence,
+                "SSH key reused on host",
+            ));
+            Ok(IntelLeadCandidate {
+                rule_id: "shared-ssh-host-key".to_string(),
+                lead_key: format!(
+                    "shared-ssh-host-key:{}:{}",
+                    row.algorithm.to_ascii_lowercase(),
+                    row.fingerprint.to_ascii_lowercase()
+                ),
+                title: format!("Shared SSH host key across {} hosts", row.host_count),
+                summary: format!(
+                    "{} {} appears on {} hosts and {} endpoints.",
+                    row.algorithm, row.fingerprint, row.host_count, row.endpoint_count
+                ),
+                score: (58 + (row.host_count as i32 * 10)).clamp(1, 95),
+                confidence: 88,
+                primary_entity_type: "ssh_host_key".to_string(),
+                primary_entity_value: key,
+                related_entity_type: None,
+                related_entity_value: None,
+                first_seen_at: row.first_seen_at,
+                last_seen_at: row.last_seen_at,
+                evidence,
+            })
+        })
+        .collect()
+}
+
+fn load_ssh_endpoint_evidence(
+    conn: &mut PgConnection,
+    algorithm: &str,
+    fingerprint: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let rows = sql_query(
+        "
+        SELECT
+            id AS source_id,
+            host,
+            port,
+            COALESCE(last_success_at, last_attempt_at) AS observed_at
+        FROM host_ssh_observation
+        WHERE host_key_algorithm = $1
+          AND host_key_fingerprint = $2
+          AND last_success_at IS NOT NULL
+        ORDER BY host ASC, port ASC
+        LIMIT $3
+        ",
+    )
+    .bind::<Text, _>(algorithm)
+    .bind::<Text, _>(fingerprint)
+    .bind::<BigInt, _>(limit)
+    .load::<SshEndpointEvidenceRow>(conn)
+    .context("error loading ssh endpoint lead evidence")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let endpoint = format_service_endpoint_url("ssh", &row.host, row.port);
+            evidence_candidate(
+                "ssh_endpoint",
+                row.source_id,
+                endpoint.clone(),
+                format!("SSH endpoint {endpoint} presented the shared host key"),
+                row.observed_at,
+            )
+        })
+        .collect())
+}
+
+fn build_shared_http_fingerprint_lead_candidates(
+    conn: &mut PgConnection,
+    column_name: &str,
+    rule_id: &str,
+    source_type: &str,
+    label: &str,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    anyhow::ensure!(
+        matches!(column_name, "header_fingerprint" | "favicon_hash"),
+        "unsupported http fingerprint column"
+    );
+    let sql = format!(
+        "
+        SELECT
+            {column_name} AS fingerprint_value,
+            COUNT(DISTINCT host) AS host_count,
+            COUNT(*) AS endpoint_count,
+            MIN(COALESCE(last_success_at, last_attempt_at)) AS first_seen_at,
+            MAX(COALESCE(last_success_at, last_attempt_at)) AS last_seen_at
+        FROM host_http_observation
+        WHERE {column_name} IS NOT NULL
+          AND {column_name} != ''
+          AND last_success_at IS NOT NULL
+        GROUP BY {column_name}
+        HAVING COUNT(DISTINCT host) > 1
+        ORDER BY host_count DESC, endpoint_count DESC, last_seen_at DESC
+        LIMIT $1
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<BigInt, _>(rule_limit)
+        .load::<SharedFingerprintLeadRow>(conn)
+        .with_context(|| format!("error building shared {label} lead candidates"))?;
+
+    rows.into_iter()
+        .map(|row| {
+            let mut evidence = vec![evidence_candidate(
+                source_type,
+                0,
+                row.fingerprint_value.clone(),
+                format!(
+                    "{label} appears on {} hosts and {} endpoints",
+                    row.host_count, row.endpoint_count
+                ),
+                row.last_seen_at.clone(),
+            )];
+            evidence.extend(load_http_endpoint_fingerprint_evidence(
+                conn,
+                column_name,
+                &row.fingerprint_value,
+                20,
+            )?);
+            evidence.extend(host_site_evidence_from_fingerprint_evidence(
+                &evidence,
+                "HTTP fingerprint reused on host",
+            ));
+            Ok(IntelLeadCandidate {
+                rule_id: rule_id.to_string(),
+                lead_key: format!("{rule_id}:{}", row.fingerprint_value.to_ascii_lowercase()),
+                title: format!("Shared {label} across {} hosts", row.host_count),
+                summary: format!(
+                    "{} appears on {} hosts and {} HTTP endpoints.",
+                    row.fingerprint_value, row.host_count, row.endpoint_count
+                ),
+                score: (52 + (row.host_count as i32 * 9)).clamp(1, 92),
+                confidence: 78,
+                primary_entity_type: source_type.to_string(),
+                primary_entity_value: row.fingerprint_value,
+                related_entity_type: None,
+                related_entity_value: None,
+                first_seen_at: row.first_seen_at,
+                last_seen_at: row.last_seen_at,
+                evidence,
+            })
+        })
+        .collect()
+}
+
+fn load_http_endpoint_fingerprint_evidence(
+    conn: &mut PgConnection,
+    column_name: &str,
+    fingerprint_value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let sql = format!(
+        "
+        SELECT
+            id AS source_id,
+            host,
+            scheme || '://' || host || ':' || port AS endpoint,
+            COALESCE(last_success_at, last_attempt_at) AS observed_at
+        FROM host_http_observation
+        WHERE {column_name} = $1
+          AND last_success_at IS NOT NULL
+        ORDER BY host ASC, scheme ASC, port ASC
+        LIMIT $2
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<Text, _>(fingerprint_value)
+        .bind::<BigInt, _>(limit)
+        .load::<FingerprintEndpointEvidenceRow>(conn)
+        .context("error loading http fingerprint endpoint evidence")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            evidence_candidate(
+                "http_endpoint",
+                row.source_id,
+                row.endpoint.clone(),
+                format!(
+                    "HTTP endpoint {} on {} had the shared fingerprint",
+                    row.endpoint, row.host
+                ),
+                row.observed_at,
+            )
+        })
+        .collect())
+}
+
+fn build_shared_service_fingerprint_lead_candidates(
+    conn: &mut PgConnection,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    let rows = sql_query(
+        "
+        SELECT
+            banner_fingerprint AS fingerprint_value,
+            COUNT(DISTINCT host) AS host_count,
+            COUNT(*) AS endpoint_count,
+            MIN(COALESCE(last_success_at, last_attempt_at)) AS first_seen_at,
+            MAX(COALESCE(last_success_at, last_attempt_at)) AS last_seen_at
+        FROM host_service_observation
+        WHERE banner_fingerprint IS NOT NULL
+          AND banner_fingerprint != ''
+          AND last_success_at IS NOT NULL
+        GROUP BY banner_fingerprint
+        HAVING COUNT(DISTINCT host) > 1
+        ORDER BY host_count DESC, endpoint_count DESC, last_seen_at DESC
+        LIMIT $1
+        ",
+    )
+    .bind::<BigInt, _>(rule_limit)
+    .load::<SharedFingerprintLeadRow>(conn)
+    .context("error building shared service banner lead candidates")?;
+
+    rows.into_iter()
+        .map(|row| {
+            let mut evidence = vec![evidence_candidate(
+                "service_fingerprint",
+                0,
+                row.fingerprint_value.clone(),
+                format!(
+                    "Service banner fingerprint appears on {} hosts and {} endpoints",
+                    row.host_count, row.endpoint_count
+                ),
+                row.last_seen_at.clone(),
+            )];
+            evidence.extend(load_service_endpoint_fingerprint_evidence(
+                conn,
+                &row.fingerprint_value,
+                20,
+            )?);
+            evidence.extend(host_site_evidence_from_fingerprint_evidence(
+                &evidence,
+                "Service fingerprint reused on host",
+            ));
+            Ok(IntelLeadCandidate {
+                rule_id: "shared-service-banner".to_string(),
+                lead_key: format!(
+                    "shared-service-banner:{}",
+                    row.fingerprint_value.to_ascii_lowercase()
+                ),
+                title: format!("Shared service banner across {} hosts", row.host_count),
+                summary: format!(
+                    "{} appears on {} hosts and {} service endpoints.",
+                    row.fingerprint_value, row.host_count, row.endpoint_count
+                ),
+                score: (50 + (row.host_count as i32 * 9)).clamp(1, 90),
+                confidence: 76,
+                primary_entity_type: "service_fingerprint".to_string(),
+                primary_entity_value: row.fingerprint_value,
+                related_entity_type: None,
+                related_entity_value: None,
+                first_seen_at: row.first_seen_at,
+                last_seen_at: row.last_seen_at,
+                evidence,
+            })
+        })
+        .collect()
+}
+
+fn load_service_endpoint_fingerprint_evidence(
+    conn: &mut PgConnection,
+    fingerprint_value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let rows = sql_query(
+        "
+        SELECT
+            id AS source_id,
+            host,
+            service || '://' || host || ':' || port AS endpoint,
+            COALESCE(last_success_at, last_attempt_at) AS observed_at
+        FROM host_service_observation
+        WHERE banner_fingerprint = $1
+          AND last_success_at IS NOT NULL
+        ORDER BY host ASC, service ASC, port ASC
+        LIMIT $2
+        ",
+    )
+    .bind::<Text, _>(fingerprint_value)
+    .bind::<BigInt, _>(limit)
+    .load::<FingerprintEndpointEvidenceRow>(conn)
+    .context("error loading service fingerprint endpoint evidence")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            evidence_candidate(
+                "service_endpoint",
+                row.source_id,
+                row.endpoint.clone(),
+                format!("Service endpoint {} had the shared banner", row.endpoint),
+                row.observed_at,
+            )
+        })
+        .collect())
+}
+
+fn host_site_evidence_from_fingerprint_evidence(
+    evidence: &[IntelLeadEvidenceCandidate],
+    label: &str,
+) -> Vec<IntelLeadEvidenceCandidate> {
+    let mut seen_hosts = HashSet::new();
+    evidence
+        .iter()
+        .filter_map(|item| {
+            let host = endpoint_host_from_source_key(&item.source_key)?;
+            if seen_hosts.insert(host.clone()) {
+                Some(evidence_candidate(
+                    "site",
+                    0,
+                    host.clone(),
+                    format!("{label} {host}"),
+                    item.observed_at.clone(),
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn endpoint_host_from_source_key(source_key: &str) -> Option<String> {
+    if let Ok(parsed) = Url::parse(source_key) {
+        return parsed.host_str().map(|host| host.to_ascii_lowercase());
+    }
+    None
+}
+
+fn build_category_change_lead_candidates(
+    conn: &mut PgConnection,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    let rows = sql_query(
+        "
+        SELECT
+            sp.host,
+            sp.category AS current_category,
+            'unknown' AS previous_category,
+            p.id AS page_id,
+            p.title AS page_title,
+            p.url AS page_url,
+            sp.last_classified_at AS observed_at
+        FROM site_profile sp
+        JOIN page p ON p.id = sp.source_page_id
+        WHERE sp.category IN ('market', 'forum', 'escrow', 'shop')
+          AND EXISTS (
+              SELECT 1
+              FROM page_classification pc
+              WHERE pc.host = sp.host
+                AND pc.category = 'unknown'
+          )
+        ORDER BY sp.last_classified_at DESC, sp.score DESC, sp.host ASC
+        LIMIT $1
+        ",
+    )
+    .bind::<BigInt, _>(rule_limit)
+    .load::<CategoryChangeLeadRow>(conn)
+    .context("error building host category change lead candidates")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let evidence = vec![
+                evidence_candidate(
+                    "site",
+                    0,
+                    row.host.clone(),
+                    format!(
+                        "Host category changed materially from {} to {}",
+                        row.previous_category, row.current_category
+                    ),
+                    row.observed_at.clone(),
+                ),
+                evidence_candidate(
+                    "page",
+                    row.page_id,
+                    row.page_url.clone(),
+                    format!(
+                        "{} ({}) supports current category {}",
+                        row.page_url, row.page_title, row.current_category
+                    ),
+                    row.observed_at.clone(),
+                ),
+            ];
+            IntelLeadCandidate {
+                rule_id: "host-category-change".to_string(),
+                lead_key: format!("host-category-change:{}:{}", row.host, row.current_category),
+                title: format!("{} now classified as {}", row.host, row.current_category),
+                summary: format!(
+                    "{} has evidence of prior unknown classification and is now {}.",
+                    row.host, row.current_category
+                ),
+                score: 72,
+                confidence: 70,
+                primary_entity_type: "site".to_string(),
+                primary_entity_value: row.host,
+                related_entity_type: Some("category".to_string()),
+                related_entity_value: Some(row.current_category),
+                first_seen_at: row.observed_at.clone(),
+                last_seen_at: row.observed_at,
+                evidence,
+            }
+        })
+        .collect())
+}
+
+fn build_high_degree_target_lead_candidates(
+    conn: &mut PgConnection,
+    since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    let source_host_expr = sql_host_expr("p.url", conn);
+    let sql = format!(
+        "
+        WITH candidate_targets AS (
+            SELECT DISTINCT target_host
+            FROM page_scan_link
+            WHERE target_host != ''
+              AND ($1 <= 0 OR scan_id > $1)
+            LIMIT $2
+        )
+        SELECT
+            pl.target_host,
+            COUNT(DISTINCT {source_host_expr}) AS source_host_count,
+            COUNT(*) AS reference_count,
+            MIN(p.created_at) AS first_seen_at,
+            MAX(p.last_scanned_at) AS last_seen_at
+        FROM page_link pl
+        JOIN page p ON p.id = pl.source_page_id
+        WHERE pl.target_host != ''
+          AND {source_host_expr} != ''
+          AND {source_host_expr} != pl.target_host
+          AND ($1 <= 0 OR pl.target_host IN (SELECT target_host FROM candidate_targets))
+        GROUP BY pl.target_host
+        HAVING COUNT(DISTINCT {source_host_expr}) >= $3
+        ORDER BY source_host_count DESC, reference_count DESC, last_seen_at DESC, pl.target_host ASC
+        LIMIT $2
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<diesel::sql_types::Integer, _>(since_scan_id.unwrap_or(0))
+        .bind::<BigInt, _>(rule_limit)
+        .bind::<BigInt, _>(HIGH_DEGREE_SOURCE_HOST_THRESHOLD)
+        .load::<HighDegreeTargetLeadRow>(conn)
+        .context("error building high-degree target lead candidates")?;
+
+    rows.into_iter()
+        .map(|row| {
+            let mut evidence = vec![evidence_candidate(
+                "site",
+                0,
+                row.target_host.clone(),
+                format!(
+                    "{} is referenced by {} source hosts",
+                    row.target_host, row.source_host_count
+                ),
+                row.last_seen_at.clone(),
+            )];
+            evidence.extend(load_high_degree_relationship_evidence(
+                conn,
+                &row.target_host,
+                20,
+            )?);
+            Ok(IntelLeadCandidate {
+                rule_id: "high-degree-target".to_string(),
+                lead_key: format!("high-degree-target:{}", row.target_host),
+                title: format!("{} is a common target", row.target_host),
+                summary: format!(
+                    "{} is referenced {} times by {} distinct source hosts.",
+                    row.target_host, row.reference_count, row.source_host_count
+                ),
+                score: (45 + (row.source_host_count as i32 * 5)).clamp(1, 90),
+                confidence: 72,
+                primary_entity_type: "site".to_string(),
+                primary_entity_value: row.target_host,
+                related_entity_type: Some("relationship".to_string()),
+                related_entity_value: Some(format!("{} references", row.reference_count)),
+                first_seen_at: row.first_seen_at,
+                last_seen_at: row.last_seen_at,
+                evidence,
+            })
+        })
+        .collect()
+}
+
+fn load_high_degree_relationship_evidence(
+    conn: &mut PgConnection,
+    target_host: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let source_host_expr = sql_host_expr("p.url", conn);
+    let sql = format!(
+        "
+        SELECT
+            {source_host_expr} AS source_host,
+            pl.target_host,
+            COUNT(*) AS reference_count,
+            MAX(p.last_scanned_at) AS observed_at
+        FROM page_link pl
+        JOIN page p ON p.id = pl.source_page_id
+        WHERE pl.target_host = $1
+          AND {source_host_expr} != ''
+          AND {source_host_expr} != pl.target_host
+        GROUP BY {source_host_expr}, pl.target_host
+        ORDER BY reference_count DESC, observed_at DESC, source_host ASC
+        LIMIT $2
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<Text, _>(target_host)
+        .bind::<BigInt, _>(limit)
+        .load::<RelationshipEvidenceRow>(conn)
+        .context("error loading high-degree relationship evidence")?;
+    let mut evidence = Vec::new();
+    for row in rows {
+        evidence.push(evidence_candidate(
+            "relationship",
+            0,
+            relationship_key(&row.source_host, &row.target_host),
+            format!(
+                "{} references {} {} times",
+                row.source_host, row.target_host, row.reference_count
+            ),
+            row.observed_at.clone(),
+        ));
+        evidence.push(evidence_candidate(
+            "site",
+            0,
+            row.source_host.clone(),
+            format!(
+                "{} references common target {}",
+                row.source_host, row.target_host
+            ),
+            row.observed_at,
+        ));
+    }
+    Ok(evidence)
 }
 
 pub fn search_pages(
@@ -2011,6 +4215,10 @@ pub fn get_email_entity_detail(
     Ok(Some(EmailEntityDetail {
         value: value.to_string(),
         pages,
+        intel_leads: load_active_lead_badges_for_sources(
+            conn,
+            &[source_ref("email", 0, value.to_string())],
+        )?,
     }))
 }
 
@@ -2102,6 +4310,14 @@ pub fn get_crypto_entity_detail(
         asset_type: asset_type.to_string(),
         reference: reference.to_string(),
         pages,
+        intel_leads: load_active_lead_badges_for_sources(
+            conn,
+            &[source_ref(
+                "crypto",
+                0,
+                crypto_entity_key(asset_type, reference),
+            )],
+        )?,
     }))
 }
 
@@ -2553,6 +4769,25 @@ fn build_host_http_observation_detail(
             ("port", &port),
         ],
     );
+    let mut lead_sources = vec![
+        source_ref(
+            "http_endpoint",
+            record.id,
+            format!("{}://{}:{}", record.scheme, record.host, record.port),
+        ),
+        source_ref("site", 0, record.host.clone()),
+    ];
+    if let Some(header_fingerprint) = record.header_fingerprint.as_ref() {
+        lead_sources.push(source_ref(
+            "http_fingerprint",
+            0,
+            header_fingerprint.clone(),
+        ));
+    }
+    if let Some(favicon_hash) = record.favicon_hash.as_ref() {
+        lead_sources.push(source_ref("favicon_hash", 0, favicon_hash.clone()));
+    }
+    let intel_leads = load_active_lead_badges_for_sources(conn, &lead_sources)?;
 
     Ok(HostHttpObservationDetail {
         host: record.host.clone(),
@@ -2588,6 +4823,7 @@ fn build_host_http_observation_detail(
             .map(|context| context.page_url.clone()),
         tls_endpoint_url,
         tls_observation,
+        intel_leads,
     })
 }
 
@@ -2789,6 +5025,22 @@ pub fn get_host_service_observation_detail(
             ("port", &port_value),
         ],
     );
+    let mut lead_sources = vec![
+        source_ref(
+            "service_endpoint",
+            record.id,
+            format_service_endpoint_url(&record.service, &record.host, record.port),
+        ),
+        source_ref("site", 0, record.host.clone()),
+    ];
+    if let Some(banner_fingerprint) = record.banner_fingerprint.as_ref() {
+        lead_sources.push(source_ref(
+            "service_fingerprint",
+            0,
+            banner_fingerprint.clone(),
+        ));
+    }
+    let intel_leads = load_active_lead_badges_for_sources(conn, &lead_sources)?;
 
     Ok(Some(HostServiceObservationDetail {
         host: record.host.clone(),
@@ -2810,6 +5062,7 @@ pub fn get_host_service_observation_detail(
         source_page_url: host_context
             .as_ref()
             .map(|context| context.page_url.clone()),
+        intel_leads,
     }))
 }
 
@@ -3048,6 +5301,14 @@ pub fn get_ssh_host_key_detail(
             .len(),
         endpoint_count: endpoints.len(),
         endpoints,
+        intel_leads: load_active_lead_badges_for_sources(
+            conn,
+            &[source_ref(
+                "ssh_host_key",
+                0,
+                format!("{algorithm}:{fingerprint}"),
+            )],
+        )?,
     }))
 }
 
@@ -3359,22 +5620,29 @@ pub fn list_site_relationships(
             .flat_map(|row| [row.source_host.clone(), row.target_host.clone()])
             .collect::<Vec<_>>(),
     )?;
-    let items = rows
-        .into_iter()
-        .map(|row| {
-            let blacklist_match_domain =
-                find_matching_blacklist_domain(&row.target_host, &blacklist_domains);
-            SiteRelationship {
-                source_site_category: site_profiles.get(&row.source_host).cloned(),
-                target_site_category: site_profiles.get(&row.target_host).cloned(),
-                source_host: row.source_host,
-                target_host: row.target_host,
-                reference_count: row.reference_count.max(0) as usize,
-                is_blacklisted: blacklist_match_domain.is_some(),
-                blacklist_match_domain,
-            }
-        })
-        .collect();
+    let mut items = Vec::new();
+    for row in rows {
+        let blacklist_match_domain =
+            find_matching_blacklist_domain(&row.target_host, &blacklist_domains);
+        let intel_leads = load_active_lead_badges_for_sources(
+            conn,
+            &[source_ref(
+                "relationship",
+                0,
+                relationship_key(&row.source_host, &row.target_host),
+            )],
+        )?;
+        items.push(SiteRelationship {
+            source_site_category: site_profiles.get(&row.source_host).cloned(),
+            target_site_category: site_profiles.get(&row.target_host).cloned(),
+            source_host: row.source_host,
+            target_host: row.target_host,
+            reference_count: row.reference_count.max(0) as usize,
+            is_blacklisted: blacklist_match_domain.is_some(),
+            blacklist_match_domain,
+            intel_leads,
+        });
+    }
 
     Ok(PaginatedResult {
         items,
@@ -3640,6 +5908,13 @@ fn build_site_profile_summaries(
     conn: &mut PgConnection,
     records: &[SiteProfileRecord],
 ) -> Result<Vec<SiteProfileSummary>> {
+    let lead_badges_by_host = load_lead_badges_by_site_hosts(
+        conn,
+        &records
+            .iter()
+            .map(|record| record.host.clone())
+            .collect::<Vec<_>>(),
+    )?;
     let keyword_tags_by_host = load_forum_keyword_tags_by_hosts(
         conn,
         &records
@@ -3683,9 +5958,32 @@ fn build_site_profile_summaries(
                 source_page_url: source_page.map(|page| page.url.clone()),
                 last_scanned_at: record.last_scanned_at.clone(),
                 last_classified_at: record.last_classified_at.clone(),
+                intel_leads: lead_badges_by_host
+                    .get(&record.host)
+                    .cloned()
+                    .unwrap_or_default(),
             }
         })
         .collect())
+}
+
+fn load_lead_badges_by_site_hosts(
+    conn: &mut PgConnection,
+    hosts: &[String],
+) -> Result<HashMap<String, Vec<IntelLeadBadge>>> {
+    let mut output = HashMap::new();
+    for host in hosts
+        .iter()
+        .map(|host| host.trim().to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .collect::<HashSet<_>>()
+    {
+        output.insert(
+            host.clone(),
+            load_active_lead_badges_for_sources(conn, &[source_ref("site", 0, host.clone())])?,
+        );
+    }
+    Ok(output)
 }
 
 fn load_top_site_entries_from_query(

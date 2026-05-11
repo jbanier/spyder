@@ -51,6 +51,13 @@
             </div>
         </div>
         <p class="detail-reference">{{selected.fingerprint}}</p>
+        {{#if selected.intel_leads}}
+        <div class="inline-badges entity-leads">
+            {{#each selected.intel_leads}}
+            <a class="lead-badge severity-{{severity}}" href="{{detail_url}}">{{severity}} · {{rule_id}}</a>
+            {{/each}}
+        </div>
+        {{/if}}
         <div class="compact-list">
             {{#each selected.endpoints}}
             <div class="compact-row compact-row-static">

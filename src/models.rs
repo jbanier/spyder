@@ -59,6 +59,73 @@ pub struct NewForumKeywordRule<'a> {
     pub pattern: &'a str,
 }
 
+#[derive(Selectable, Queryable, Serialize, Clone, Debug)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::intel_lead)]
+pub struct IntelLeadRecord {
+    pub id: i32,
+    pub rule_id: String,
+    pub lead_key: String,
+    pub title: String,
+    pub summary: String,
+    pub severity: String,
+    pub confidence: i32,
+    pub score: i32,
+    pub status: String,
+    pub primary_entity_type: String,
+    pub primary_entity_value: String,
+    pub related_entity_type: Option<String>,
+    pub related_entity_value: Option<String>,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Insertable, Clone)]
+#[diesel(table_name = crate::schema::intel_lead)]
+pub struct NewIntelLead {
+    pub rule_id: String,
+    pub lead_key: String,
+    pub title: String,
+    pub summary: String,
+    pub severity: String,
+    pub confidence: i32,
+    pub score: i32,
+    pub status: String,
+    pub primary_entity_type: String,
+    pub primary_entity_value: String,
+    pub related_entity_type: Option<String>,
+    pub related_entity_value: Option<String>,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Selectable, Queryable, Serialize, Clone, Debug)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::intel_lead_evidence)]
+pub struct IntelLeadEvidenceRecord {
+    pub id: i32,
+    pub lead_id: i32,
+    pub source_type: String,
+    pub source_id: i32,
+    pub source_key: String,
+    pub evidence_text: String,
+    pub observed_at: String,
+    pub created_at: String,
+}
+
+#[derive(Insertable, Clone)]
+#[diesel(table_name = crate::schema::intel_lead_evidence)]
+pub struct NewIntelLeadEvidence {
+    pub lead_id: i32,
+    pub source_type: String,
+    pub source_id: i32,
+    pub source_key: String,
+    pub evidence_text: String,
+    pub observed_at: String,
+}
+
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::host_ssh_observation)]
@@ -564,6 +631,7 @@ pub struct PageDetail {
     pub crypto_refs: Vec<CryptoObservation>,
     pub site_profile: Option<SiteProfileSummary>,
     pub host_http_observation: Option<HostHttpObservationDetail>,
+    pub intel_leads: Vec<IntelLeadBadge>,
 }
 
 #[derive(Serialize, Clone, Debug, Default, Eq, PartialEq)]
@@ -654,6 +722,7 @@ pub struct SiteProfileSummary {
     pub source_page_url: Option<String>,
     pub last_scanned_at: String,
     pub last_classified_at: String,
+    pub intel_leads: Vec<IntelLeadBadge>,
 }
 
 #[derive(Serialize, Clone)]
@@ -709,6 +778,7 @@ pub struct HostHttpObservationDetail {
     pub source_page_url: Option<String>,
     pub tls_endpoint_url: Option<String>,
     pub tls_observation: Option<HostTlsObservationRecord>,
+    pub intel_leads: Vec<IntelLeadBadge>,
 }
 
 #[derive(Serialize, Clone)]
@@ -747,6 +817,7 @@ pub struct HostServiceObservationDetail {
     pub source_page_id: Option<i32>,
     pub source_page_title: Option<String>,
     pub source_page_url: Option<String>,
+    pub intel_leads: Vec<IntelLeadBadge>,
 }
 
 #[derive(Serialize, Clone)]
@@ -801,6 +872,7 @@ pub struct EmailEntitySummary {
 pub struct EmailEntityDetail {
     pub value: String,
     pub pages: Vec<PageReference>,
+    pub intel_leads: Vec<IntelLeadBadge>,
 }
 
 #[derive(Serialize, Clone)]
@@ -818,6 +890,7 @@ pub struct CryptoEntityDetail {
     pub asset_type: String,
     pub reference: String,
     pub pages: Vec<PageReference>,
+    pub intel_leads: Vec<IntelLeadBadge>,
 }
 
 #[derive(Serialize, Clone)]
@@ -839,6 +912,7 @@ pub struct SshHostKeyDetail {
     pub host_count: usize,
     pub endpoint_count: usize,
     pub endpoints: Vec<SshHostKeyEndpoint>,
+    pub intel_leads: Vec<IntelLeadBadge>,
 }
 
 #[derive(Serialize, Clone)]
@@ -868,6 +942,82 @@ pub struct SiteRelationship {
     pub blacklist_match_domain: Option<String>,
     pub source_site_category: Option<SiteCategoryBadge>,
     pub target_site_category: Option<SiteCategoryBadge>,
+    pub intel_leads: Vec<IntelLeadBadge>,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct IntelLeadBadge {
+    pub id: i32,
+    pub rule_id: String,
+    pub title: String,
+    pub severity: String,
+    pub confidence: i32,
+    pub score: i32,
+    pub status: String,
+    pub detail_url: String,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct IntelLeadSummary {
+    pub id: i32,
+    pub rule_id: String,
+    pub lead_key: String,
+    pub title: String,
+    pub summary: String,
+    pub severity: String,
+    pub confidence: i32,
+    pub score: i32,
+    pub status: String,
+    pub primary_entity_type: String,
+    pub primary_entity_value: String,
+    pub related_entity_type: Option<String>,
+    pub related_entity_value: Option<String>,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    pub updated_at: String,
+    pub evidence_count: usize,
+    pub detail_url: String,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct IntelLeadEvidenceView {
+    pub id: i32,
+    pub source_type: String,
+    pub source_id: i32,
+    pub source_key: String,
+    pub evidence_text: String,
+    pub observed_at: String,
+    pub source_url: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct IntelLeadEntityReference {
+    pub entity_type: String,
+    pub entity_value: String,
+    pub detail_url: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct IntelLeadDetail {
+    pub lead: IntelLeadSummary,
+    pub evidence: Vec<IntelLeadEvidenceView>,
+    pub related_pages: Vec<PageReference>,
+    pub related_sites: Vec<String>,
+    pub related_entities: Vec<IntelLeadEntityReference>,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct IntelLeadRecomputeSummary {
+    pub candidate_count: usize,
+    pub created_count: usize,
+    pub updated_count: usize,
+    pub evidence_count: usize,
 }
 
 #[derive(Serialize, Clone)]
