@@ -436,6 +436,20 @@ struct HighDegreeTargetLeadRow {
 }
 
 #[derive(QueryableByName)]
+struct DuplicateSiteTitleLeadRow {
+    #[diesel(sql_type = Text)]
+    title: String,
+    #[diesel(sql_type = BigInt)]
+    host_count: i64,
+    #[diesel(sql_type = BigInt)]
+    page_count: i64,
+    #[diesel(sql_type = Text)]
+    first_seen_at: String,
+    #[diesel(sql_type = Text)]
+    last_seen_at: String,
+}
+
+#[derive(QueryableByName)]
 struct RelationshipEvidenceRow {
     #[diesel(sql_type = Text)]
     source_host: String,
@@ -524,6 +538,7 @@ struct ScanObservationSet {
 pub struct IntelLeadRecomputeOptions {
     pub limit: Option<i64>,
     pub since_scan_id: Option<i32>,
+    pub rule_ids: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -551,6 +566,9 @@ struct IntelLeadEvidenceCandidate {
     evidence_text: String,
     observed_at: String,
 }
+
+type LeadCandidateBuilder =
+    fn(&mut PgConnection, Option<i32>, i64) -> Result<Vec<IntelLeadCandidate>>;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct LeadEvidenceSource {
@@ -2252,77 +2270,78 @@ pub fn recompute_intel_leads(
     conn: &mut PgConnection,
     options: IntelLeadRecomputeOptions,
 ) -> Result<IntelLeadRecomputeSummary> {
+    recompute_intel_leads_with_reporter(conn, options, |_| {})
+}
+
+pub fn recompute_intel_leads_with_reporter<F>(
+    conn: &mut PgConnection,
+    options: IntelLeadRecomputeOptions,
+    mut reporter: F,
+) -> Result<IntelLeadRecomputeSummary>
+where
+    F: FnMut(String),
+{
     let rule_limit = options
         .limit
         .unwrap_or(DEFAULT_RECOMPUTE_LIMIT)
         .clamp(1, MAX_RECOMPUTE_LIMIT);
-    let mut candidates = Vec::new();
-    candidates.extend(build_shared_email_lead_candidates(
-        conn,
-        options.since_scan_id,
-        rule_limit,
-    )?);
-    candidates.extend(build_shared_crypto_lead_candidates(
-        conn,
-        options.since_scan_id,
-        rule_limit,
-    )?);
-    candidates.extend(build_scan_update_lead_candidates(
-        conn,
-        options.since_scan_id,
-        rule_limit,
-    )?);
-    candidates.extend(build_blacklisted_site_link_lead_candidates(
-        conn, rule_limit,
-    )?);
-    candidates.extend(build_shared_ssh_lead_candidates(conn, rule_limit)?);
-    candidates.extend(build_shared_http_fingerprint_lead_candidates(
-        conn,
-        "header_fingerprint",
-        "shared-http-header-fingerprint",
-        "http_fingerprint",
-        "HTTP header fingerprint",
-        rule_limit,
-    )?);
-    candidates.extend(build_shared_http_fingerprint_lead_candidates(
-        conn,
-        "favicon_hash",
-        "shared-favicon-hash",
-        "favicon_hash",
-        "favicon hash",
-        rule_limit,
-    )?);
-    candidates.extend(build_shared_service_fingerprint_lead_candidates(
-        conn, rule_limit,
-    )?);
-    candidates.extend(build_category_change_lead_candidates(conn, rule_limit)?);
-    candidates.extend(build_high_degree_target_lead_candidates(
-        conn,
-        options.since_scan_id,
-        rule_limit,
-    )?);
-
+    let selected_rules = normalize_requested_lead_rules(&options.rule_ids)?;
+    let mut candidate_count = 0usize;
     let mut created_count = 0usize;
     let mut updated_count = 0usize;
     let mut evidence_count = 0usize;
-    conn.transaction::<_, anyhow::Error, _>(|conn| {
-        for candidate in &candidates {
-            let result = upsert_intel_lead_candidate(conn, candidate)?;
-            if result.created {
-                created_count += 1;
-            } else {
-                updated_count += 1;
-            }
-            evidence_count += result.evidence_count;
+    let mut rule_summaries = Vec::new();
+
+    for rule in intel_lead_rule_specs() {
+        if !selected_rules.is_empty() && !selected_rules.contains(rule.rule_id) {
+            continue;
         }
-        Ok(())
-    })?;
+        reporter(format!("lead rule {}: building candidates", rule.rule_id));
+        let candidates = (rule.builder)(conn, options.since_scan_id, rule_limit)
+            .with_context(|| format!("error recomputing lead rule {}", rule.rule_id))?;
+        reporter(format!(
+            "lead rule {}: {} candidates",
+            rule.rule_id,
+            candidates.len()
+        ));
+        let mut rule_created_count = 0usize;
+        let mut rule_updated_count = 0usize;
+        let mut rule_evidence_count = 0usize;
+        conn.transaction::<_, anyhow::Error, _>(|conn| {
+            for candidate in &candidates {
+                let result = upsert_intel_lead_candidate(conn, candidate)?;
+                if result.created {
+                    rule_created_count += 1;
+                } else {
+                    rule_updated_count += 1;
+                }
+                rule_evidence_count += result.evidence_count;
+            }
+            Ok(())
+        })?;
+        reporter(format!(
+            "lead rule {}: {} created, {} updated, {} evidence rows touched",
+            rule.rule_id, rule_created_count, rule_updated_count, rule_evidence_count
+        ));
+        candidate_count += candidates.len();
+        created_count += rule_created_count;
+        updated_count += rule_updated_count;
+        evidence_count += rule_evidence_count;
+        rule_summaries.push(IntelLeadRuleRecomputeSummary {
+            rule_id: rule.rule_id.to_string(),
+            candidate_count: candidates.len(),
+            created_count: rule_created_count,
+            updated_count: rule_updated_count,
+            evidence_count: rule_evidence_count,
+        });
+    }
 
     Ok(IntelLeadRecomputeSummary {
-        candidate_count: candidates.len(),
+        candidate_count,
         created_count,
         updated_count,
         evidence_count,
+        rule_summaries,
     })
 }
 
@@ -2330,6 +2349,143 @@ fn normalize_optional_filter(value: Option<&str>) -> Option<String> {
     value
         .map(|item| item.trim().to_string())
         .filter(|item| !item.is_empty())
+}
+
+struct IntelLeadRuleSpec {
+    rule_id: &'static str,
+    builder: LeadCandidateBuilder,
+}
+
+fn intel_lead_rule_specs() -> Vec<IntelLeadRuleSpec> {
+    vec![
+        IntelLeadRuleSpec {
+            rule_id: "shared-ssh-host-key",
+            builder: build_shared_ssh_lead_candidates_for_rule,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "shared-service-banner",
+            builder: build_shared_service_fingerprint_lead_candidates_for_rule,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "shared-http-header-fingerprint",
+            builder: build_shared_http_header_fingerprint_lead_candidates_for_rule,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "shared-favicon-hash",
+            builder: build_shared_favicon_hash_lead_candidates_for_rule,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "duplicate-site-title",
+            builder: build_duplicate_site_title_lead_candidates,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "scan-new-observations",
+            builder: build_scan_update_lead_candidates,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "blacklisted-site-link",
+            builder: build_blacklisted_site_link_lead_candidates_for_rule,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "host-category-change",
+            builder: build_category_change_lead_candidates_for_rule,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "high-degree-target",
+            builder: build_high_degree_target_lead_candidates,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "shared-email",
+            builder: build_shared_email_lead_candidates,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "shared-crypto",
+            builder: build_shared_crypto_lead_candidates,
+        },
+    ]
+}
+
+fn normalize_requested_lead_rules(raw_rule_ids: &[String]) -> Result<HashSet<String>> {
+    let known_rules = intel_lead_rule_specs()
+        .into_iter()
+        .map(|rule| rule.rule_id)
+        .collect::<HashSet<_>>();
+    let mut requested = HashSet::new();
+    for raw_rule_id in raw_rule_ids {
+        let rule_id = raw_rule_id.trim();
+        if rule_id.is_empty() {
+            continue;
+        }
+        anyhow::ensure!(
+            known_rules.contains(rule_id),
+            "unknown lead rule {rule_id}; known rules: {}",
+            known_rules.iter().copied().collect::<Vec<_>>().join(", ")
+        );
+        requested.insert(rule_id.to_string());
+    }
+    Ok(requested)
+}
+
+fn build_shared_ssh_lead_candidates_for_rule(
+    conn: &mut PgConnection,
+    _since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    build_shared_ssh_lead_candidates(conn, rule_limit)
+}
+
+fn build_shared_service_fingerprint_lead_candidates_for_rule(
+    conn: &mut PgConnection,
+    _since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    build_shared_service_fingerprint_lead_candidates(conn, rule_limit)
+}
+
+fn build_shared_http_header_fingerprint_lead_candidates_for_rule(
+    conn: &mut PgConnection,
+    _since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    build_shared_http_fingerprint_lead_candidates(
+        conn,
+        "header_fingerprint",
+        "shared-http-header-fingerprint",
+        "http_fingerprint",
+        "HTTP header fingerprint",
+        rule_limit,
+    )
+}
+
+fn build_shared_favicon_hash_lead_candidates_for_rule(
+    conn: &mut PgConnection,
+    _since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    build_shared_http_fingerprint_lead_candidates(
+        conn,
+        "favicon_hash",
+        "shared-favicon-hash",
+        "favicon_hash",
+        "favicon hash",
+        rule_limit,
+    )
+}
+
+fn build_blacklisted_site_link_lead_candidates_for_rule(
+    conn: &mut PgConnection,
+    _since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    build_blacklisted_site_link_lead_candidates(conn, rule_limit)
+}
+
+fn build_category_change_lead_candidates_for_rule(
+    conn: &mut PgConnection,
+    _since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    build_category_change_lead_candidates(conn, rule_limit)
 }
 
 fn apply_lead_filters<'a>(
@@ -2741,9 +2897,14 @@ fn build_shared_email_lead_candidates(
         "
         WITH candidate_emails AS (
             SELECT DISTINCT email
-            FROM page_scan_email
-            WHERE $1 <= 0 OR scan_id > $1
-            LIMIT $2
+            FROM (
+                SELECT scan_id, email
+                FROM page_scan_email
+                WHERE $1 <= 0 OR scan_id > $1
+                ORDER BY scan_id DESC
+                LIMIT $3
+            ) recent_scan_email
+            WHERE email != ''
         )
         SELECT
             pe.email,
@@ -2754,7 +2915,7 @@ fn build_shared_email_lead_candidates(
         FROM page_email pe
         JOIN page p ON p.id = pe.page_id
         WHERE pe.email != ''
-            AND ($1 <= 0 OR pe.email IN (SELECT email FROM candidate_emails))
+            AND pe.email IN (SELECT email FROM candidate_emails)
             AND {host_expr} != ''
         GROUP BY pe.email
         HAVING COUNT(DISTINCT {host_expr}) > 1
@@ -2765,6 +2926,7 @@ fn build_shared_email_lead_candidates(
     let rows = sql_query(sql)
         .bind::<diesel::sql_types::Integer, _>(since_scan_id.unwrap_or(0))
         .bind::<BigInt, _>(rule_limit)
+        .bind::<BigInt, _>(candidate_scan_sample_limit(rule_limit))
         .load::<SharedEmailLeadRow>(conn)
         .context("error building shared email lead candidates")?;
 
@@ -2821,9 +2983,14 @@ fn build_shared_crypto_lead_candidates(
         "
         WITH candidate_crypto AS (
             SELECT DISTINCT asset_type, reference
-            FROM page_scan_crypto
-            WHERE $1 <= 0 OR scan_id > $1
-            LIMIT $2
+            FROM (
+                SELECT scan_id, asset_type, reference
+                FROM page_scan_crypto
+                WHERE $1 <= 0 OR scan_id > $1
+                ORDER BY scan_id DESC
+                LIMIT $3
+            ) recent_scan_crypto
+            WHERE reference != ''
         )
         SELECT
             pc.asset_type,
@@ -2836,14 +3003,11 @@ fn build_shared_crypto_lead_candidates(
         JOIN page p ON p.id = pc.page_id
         WHERE pc.reference != ''
             AND {host_expr} != ''
-            AND (
-                $1 <= 0
-                OR EXISTS (
-                    SELECT 1
-                    FROM candidate_crypto cc
-                    WHERE cc.asset_type = pc.asset_type
-                      AND cc.reference = pc.reference
-                )
+            AND EXISTS (
+                SELECT 1
+                FROM candidate_crypto cc
+                WHERE cc.asset_type = pc.asset_type
+                  AND cc.reference = pc.reference
             )
         GROUP BY pc.asset_type, pc.reference
         HAVING COUNT(DISTINCT {host_expr}) > 1
@@ -2854,6 +3018,7 @@ fn build_shared_crypto_lead_candidates(
     let rows = sql_query(sql)
         .bind::<diesel::sql_types::Integer, _>(since_scan_id.unwrap_or(0))
         .bind::<BigInt, _>(rule_limit)
+        .bind::<BigInt, _>(candidate_scan_sample_limit(rule_limit))
         .load::<SharedCryptoLeadRow>(conn)
         .context("error building shared crypto lead candidates")?;
 
@@ -2999,6 +3164,10 @@ fn page_evidence_candidates(
 
 fn crypto_entity_key(asset_type: &str, reference: &str) -> String {
     format!("{asset_type}:{reference}")
+}
+
+fn candidate_scan_sample_limit(rule_limit: i64) -> i64 {
+    (rule_limit * 50).clamp(1_000, 250_000)
 }
 
 fn build_scan_update_lead_candidates(
@@ -3693,6 +3862,97 @@ fn endpoint_host_from_source_key(source_key: &str) -> Option<String> {
     None
 }
 
+fn build_duplicate_site_title_lead_candidates(
+    conn: &mut PgConnection,
+    _since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    let rows = sql_query(
+        "
+        SELECT
+            p.title,
+            COUNT(DISTINCT sp.host) AS host_count,
+            COUNT(DISTINCT p.id) AS page_count,
+            MIN(sp.first_found_at) AS first_seen_at,
+            MAX(sp.last_scanned_at) AS last_seen_at
+        FROM site_profile sp
+        JOIN page p ON p.id = sp.source_page_id
+        WHERE p.title != ''
+          AND length(trim(p.title)) >= 8
+        GROUP BY lower(trim(p.title)), p.title
+        HAVING COUNT(DISTINCT sp.host) > 1
+        ORDER BY host_count DESC, page_count DESC, last_seen_at DESC, p.title ASC
+        LIMIT $1
+        ",
+    )
+    .bind::<BigInt, _>(rule_limit)
+    .load::<DuplicateSiteTitleLeadRow>(conn)
+    .context("error building duplicate site title lead candidates")?;
+
+    rows.into_iter()
+        .map(|row| {
+            let mut evidence = vec![evidence_candidate(
+                "site_title",
+                0,
+                row.title.clone(),
+                format!(
+                    "Title appears on {} hosts and {} pages",
+                    row.host_count, row.page_count
+                ),
+                row.last_seen_at.clone(),
+            )];
+            evidence.extend(load_duplicate_title_evidence(conn, &row.title, 20)?);
+            let score = (42 + (row.host_count as i32 * 7)).clamp(1, 86);
+            Ok(IntelLeadCandidate {
+                rule_id: "duplicate-site-title".to_string(),
+                lead_key: format!("duplicate-site-title:{}", row.title.to_ascii_lowercase()),
+                title: format!("Duplicate site title across {} hosts", row.host_count),
+                summary: format!(
+                    "The title {:?} appears on {} hosts and {} pages.",
+                    row.title, row.host_count, row.page_count
+                ),
+                score,
+                confidence: 65,
+                primary_entity_type: "site_title".to_string(),
+                primary_entity_value: row.title,
+                related_entity_type: None,
+                related_entity_value: None,
+                first_seen_at: row.first_seen_at,
+                last_seen_at: row.last_seen_at,
+                evidence,
+            })
+        })
+        .collect()
+}
+
+fn load_duplicate_title_evidence(
+    conn: &mut PgConnection,
+    title: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let host_expr = sql_host_expr("p.url", conn);
+    let rows = sql_query(format!(
+        "
+        SELECT
+            p.id AS page_id,
+            p.title AS page_title,
+            p.url AS page_url,
+            {host_expr} AS host,
+            p.last_scanned_at AS observed_at
+        FROM page p
+        WHERE lower(trim(p.title)) = lower(trim($1))
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        LIMIT $2
+        "
+    ))
+    .bind::<Text, _>(title)
+    .bind::<BigInt, _>(limit)
+    .load::<LeadPageEvidenceRow>(conn)
+    .context("error loading duplicate title evidence")?;
+
+    Ok(page_evidence_candidates(rows, title))
+}
+
 fn build_category_change_lead_candidates(
     conn: &mut PgConnection,
     rule_limit: i64,
@@ -3781,10 +4041,14 @@ fn build_high_degree_target_lead_candidates(
         "
         WITH candidate_targets AS (
             SELECT DISTINCT target_host
-            FROM page_scan_link
-            WHERE target_host != ''
-              AND ($1 <= 0 OR scan_id > $1)
-            LIMIT $2
+            FROM (
+                SELECT scan_id, target_host
+                FROM page_scan_link
+                WHERE target_host != ''
+                  AND ($1 <= 0 OR scan_id > $1)
+                ORDER BY scan_id DESC
+                LIMIT $4
+            ) recent_scan_link
         )
         SELECT
             pl.target_host,
@@ -3808,6 +4072,7 @@ fn build_high_degree_target_lead_candidates(
         .bind::<diesel::sql_types::Integer, _>(since_scan_id.unwrap_or(0))
         .bind::<BigInt, _>(rule_limit)
         .bind::<BigInt, _>(HIGH_DEGREE_SOURCE_HOST_THRESHOLD)
+        .bind::<BigInt, _>(candidate_scan_sample_limit(rule_limit))
         .load::<HighDegreeTargetLeadRow>(conn)
         .context("error building high-degree target lead candidates")?;
 

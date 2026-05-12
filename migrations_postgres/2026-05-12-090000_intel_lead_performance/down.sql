@@ -1,0 +1,7 @@
+DROP INDEX IF EXISTS idx_site_profile_source_page_id;
+DROP INDEX IF EXISTS idx_page_scan_crypto_scan_id_desc;
+DROP INDEX IF EXISTS idx_page_scan_email_scan_id_desc;
+DROP INDEX IF EXISTS idx_page_scan_link_scan_id_desc;
+DROP INDEX IF EXISTS idx_host_http_observation_favicon_hash_success;
+DROP INDEX IF EXISTS idx_host_http_observation_header_fingerprint_success;
+DROP INDEX IF EXISTS idx_host_service_observation_fingerprint_success;

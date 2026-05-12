@@ -21,7 +21,7 @@ use spyder::{
     find_matching_blacklist_domain, get_host_http_observation, get_host_service_observation,
     get_host_ssh_observation, get_pending_work_units, list_domain_blacklist_rules,
     list_forum_keyword_rules, list_recent_responding_hosts, mark_work_unit_as_done,
-    normalize_crawl_url, queue_known_pages_for_rescan, recompute_intel_leads,
+    normalize_crawl_url, queue_known_pages_for_rescan, recompute_intel_leads_with_reporter,
     record_work_unit_failure, remove_domain_blacklist_entry, remove_forum_keyword_rule,
     save_host_http_observation, save_host_service_observation, save_host_ssh_observation,
     save_host_tls_observation, save_page_info, suppress_intel_lead, AppConnection,
@@ -67,10 +67,11 @@ struct SshScanOptions {
     concurrency: usize,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct LeadsRecomputeCliOptions {
     limit: Option<i64>,
     since_scan_id: Option<i32>,
+    rule_ids: Vec<String>,
 }
 
 struct CrawlFailure {
@@ -2722,13 +2723,26 @@ where
 
 fn recompute_leads(options: LeadsRecomputeCliOptions) -> Result<()> {
     let mut connection = establish_connection()?;
-    let summary = recompute_intel_leads(
+    print_status("Starting intel lead recompute");
+    let summary = recompute_intel_leads_with_reporter(
         &mut connection,
         IntelLeadRecomputeOptions {
             limit: options.limit,
             since_scan_id: options.since_scan_id,
+            rule_ids: options.rule_ids.clone(),
         },
+        |message| print_status(message),
     )?;
+    for rule in &summary.rule_summaries {
+        println!(
+            "Lead rule {}: {} candidates, {} created, {} updated, {} evidence rows touched",
+            rule.rule_id,
+            rule.candidate_count,
+            rule.created_count,
+            rule.updated_count,
+            rule.evidence_count
+        );
+    }
     println!(
         "Recomputed intel leads: {} candidates, {} created, {} updated, {} evidence rows touched",
         summary.candidate_count,
@@ -2775,7 +2789,7 @@ fn usage(program: &str) {
     eprintln!(
         "    rescan-known [--onion-only] [--limit N] [--concurrency N] [--queue-only] queue known pages and scan them for updates."
     );
-    eprintln!("    leads recompute [--limit N] [--since-scan-id ID]");
+    eprintln!("    leads recompute [--limit N] [--since-scan-id ID] [--rule RULE]");
     eprintln!("    leads suppress <lead_id>");
 }
 
@@ -2920,6 +2934,12 @@ fn parse_leads_recompute_options(
                     0,
                     i32::MAX,
                 )?);
+            }
+            "--rule" => {
+                let rule_id = args
+                    .next()
+                    .with_context(|| "missing value for --rule".to_string())?;
+                options.rule_ids.push(rule_id);
             }
             _ => anyhow::bail!("invalid leads recompute option: {arg}"),
         }

@@ -1018,6 +1018,17 @@ pub struct IntelLeadRecomputeSummary {
     pub created_count: usize,
     pub updated_count: usize,
     pub evidence_count: usize,
+    pub rule_summaries: Vec<IntelLeadRuleRecomputeSummary>,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct IntelLeadRuleRecomputeSummary {
+    pub rule_id: String,
+    pub candidate_count: usize,
+    pub created_count: usize,
+    pub updated_count: usize,
+    pub evidence_count: usize,
 }
 
 #[derive(Serialize, Clone)]
