@@ -258,12 +258,12 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(intel_lead_evidence -> intel_lead (lead_id));
 diesel::joinable!(page_classification -> page (page_id));
 diesel::joinable!(page_crypto -> page (page_id));
 diesel::joinable!(page_email -> page (page_id));
 diesel::joinable!(page_keyword_tag -> page (page_id));
 diesel::joinable!(page_link -> page (source_page_id));
-diesel::joinable!(intel_lead_evidence -> intel_lead (lead_id));
 diesel::joinable!(page_scan -> page (page_id));
 diesel::joinable!(page_scan_crypto -> page_scan (scan_id));
 diesel::joinable!(page_scan_email -> page_scan (scan_id));
