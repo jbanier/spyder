@@ -15,13 +15,14 @@ use spyder::{
     collect_stats, establish_connection, find_matching_blacklist_domain, get_crypto_entity_detail,
     get_email_entity_detail, get_host_http_observation_detail, get_host_service_observation_detail,
     get_intel_lead_detail, get_page_detail, get_page_scan_detail, get_ssh_host_key_detail,
-    list_crypto_entities, list_domain_blacklist_rules, list_domain_blacklist_summaries,
-    list_email_entities, list_host_http_observations, list_host_service_observations,
-    list_intel_leads, list_page_scan_summaries, list_page_summaries,
-    list_site_category_distribution, list_site_category_timeline, list_site_keyword_distribution,
-    list_site_keyword_timeline, list_site_profiles, list_site_relationships, list_ssh_host_keys,
-    list_top_referenced_sites, list_top_sites_by_crypto_refs, list_top_sites_by_email_refs,
-    list_top_sites_by_outgoing_links, list_work_units, search_pages, update_intel_lead_status,
+    intel_lead_rule_ids, list_crypto_entities, list_domain_blacklist_rules,
+    list_domain_blacklist_summaries, list_email_entities, list_host_http_observations,
+    list_host_service_observations, list_intel_leads, list_page_scan_summaries,
+    list_page_summaries, list_page_summaries_with_blacklist, list_site_category_distribution,
+    list_site_category_timeline, list_site_keyword_distribution, list_site_keyword_timeline,
+    list_site_profiles, list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
+    list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
+    list_work_units, search_pages_with_blacklist, update_intel_lead_status,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -136,6 +137,7 @@ struct CategoryLegendView {
 struct ListQuery {
     limit: Option<i64>,
     offset: Option<i64>,
+    include_blacklisted: Option<bool>,
 }
 
 #[derive(FromForm, Clone)]
@@ -143,6 +145,7 @@ struct SearchQuery {
     query: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
+    include_blacklisted: Option<bool>,
 }
 
 #[derive(FromForm, Clone)]
@@ -199,6 +202,13 @@ struct LeadQuery {
     offset: Option<i64>,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+struct RuleFilterOption {
+    value: String,
+    selected: bool,
+}
+
 #[derive(FromForm)]
 struct LeadStatusForm {
     status: String,
@@ -214,12 +224,22 @@ fn render_pages(title: &str, description: &str, list_query: Option<ListQuery>) -
     let list_query = list_query.unwrap_or(ListQuery {
         limit: None,
         offset: None,
+        include_blacklisted: None,
     });
+    let include_blacklisted = list_query.include_blacklisted.unwrap_or(false);
     let mut connection = open_connection()?;
-    let pages = list_page_summaries(&mut connection, list_query.limit, list_query.offset)
-        .frontend_context("loading page summaries")?;
+    let pages = list_page_summaries_with_blacklist(
+        &mut connection,
+        list_query.limit,
+        list_query.offset,
+        include_blacklisted,
+    )
+    .frontend_context("loading page summaries")?;
     let has_pages = !pages.items.is_empty();
-    let pagination = pagination_context("/pages", &pages, &[]);
+    let extra_params = include_blacklisted
+        .then_some(vec![("include_blacklisted", "true")])
+        .unwrap_or_default();
+    let pagination = pagination_context("/pages", &pages, &extra_params);
     let has_pagination = pagination.has_previous_page || pagination.has_next_page;
 
     Ok(Template::render(
@@ -230,6 +250,7 @@ fn render_pages(title: &str, description: &str, list_query: Option<ListQuery>) -
             pages: pages.items,
             has_pages: has_pages,
             page_count: pages.total_count,
+            include_blacklisted: include_blacklisted,
             pagination: pagination,
             has_pagination: has_pagination,
         },
@@ -485,6 +506,7 @@ fn list_work(list_query: Option<ListQuery>) -> HtmlResult {
     let list_query = list_query.unwrap_or(ListQuery {
         limit: None,
         offset: None,
+        include_blacklisted: None,
     });
     let mut connection = open_connection()?;
     let workunits = list_work_units(&mut connection, list_query.limit, list_query.offset)
@@ -707,6 +729,7 @@ fn sites(list_query: Option<ListQuery>) -> HtmlResult {
     let list_query = list_query.unwrap_or(ListQuery {
         limit: None,
         offset: None,
+        include_blacklisted: None,
     });
     let mut connection = open_connection()?;
     let sites = list_site_profiles(&mut connection, list_query.limit, list_query.offset)
@@ -768,6 +791,7 @@ fn leads(query: Option<LeadQuery>) -> HtmlResult {
     let sort_status_url = lead_sort_url(&query, "status");
     let sort_rule_url = lead_sort_url(&query, "rule");
     let sort_entity_url = lead_sort_url(&query, "entity");
+    let rule_filter_options = lead_rule_filter_options(query.rule_id.as_deref());
 
     Ok(Template::render(
         "leads",
@@ -786,6 +810,7 @@ fn leads(query: Option<LeadQuery>) -> HtmlResult {
             sort_status_url: sort_status_url,
             sort_rule_url: sort_rule_url,
             sort_entity_url: sort_entity_url,
+            rule_filter_options: rule_filter_options,
         },
     ))
 }
@@ -841,6 +866,7 @@ fn relationships(list_query: Option<ListQuery>) -> HtmlResult {
     let list_query = list_query.unwrap_or(ListQuery {
         limit: None,
         offset: None,
+        include_blacklisted: None,
     });
     let mut connection = open_connection()?;
     let relationships =
@@ -1116,7 +1142,9 @@ fn search_page(search: Option<SearchQuery>) -> HtmlResult {
         query: None,
         limit: None,
         offset: None,
+        include_blacklisted: None,
     });
+    let include_blacklisted = search.include_blacklisted.unwrap_or(false);
     let query = search.query.unwrap_or_default();
     let limit = search.limit.unwrap_or(20).clamp(1, 50);
     let offset = search.offset.unwrap_or(0).max(0);
@@ -1130,13 +1158,23 @@ fn search_page(search: Option<SearchQuery>) -> HtmlResult {
             offset,
         }
     } else {
-        search_pages(&mut connection, &query, Some(limit), Some(offset))
-            .frontend_context("searching pages")?
+        search_pages_with_blacklist(
+            &mut connection,
+            &query,
+            Some(limit),
+            Some(offset),
+            include_blacklisted,
+        )
+        .frontend_context("searching pages")?
     };
     let has_query = !query.trim().is_empty();
     let has_results = !results.items.is_empty();
     let result_count = results.total_count;
-    let pagination = pagination_context("/search", &results, &[("query", query.trim())]);
+    let mut extra_params = vec![("query", query.trim())];
+    if include_blacklisted {
+        extra_params.push(("include_blacklisted", "true"));
+    }
+    let pagination = pagination_context("/search", &results, &extra_params);
     let has_pagination = pagination.has_previous_page || pagination.has_next_page;
 
     Ok(Template::render(
@@ -1152,6 +1190,7 @@ fn search_page(search: Option<SearchQuery>) -> HtmlResult {
             result_count: result_count,
             pagination: pagination,
             has_pagination: has_pagination,
+            include_blacklisted: include_blacklisted,
         },
     ))
 }
@@ -1175,11 +1214,19 @@ fn api_search(
         query: None,
         limit: None,
         offset: None,
+        include_blacklisted: None,
     });
+    let include_blacklisted = search.include_blacklisted.unwrap_or(false);
     let query = search.query.unwrap_or_default();
     let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
-    let results = search_pages(&mut connection, &query, search.limit, search.offset)
-        .map_err(|_| Status::InternalServerError)?;
+    let results = search_pages_with_blacklist(
+        &mut connection,
+        &query,
+        search.limit,
+        search.offset,
+        include_blacklisted,
+    )
+    .map_err(|_| Status::InternalServerError)?;
 
     Ok(Json(ApiResponse {
         success: true,
@@ -1207,6 +1254,7 @@ fn api_sites(
     let list_query = list_query.unwrap_or(ListQuery {
         limit: None,
         offset: None,
+        include_blacklisted: None,
     });
     let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
     let sites = list_site_profiles(&mut connection, list_query.limit, list_query.offset)
@@ -1333,6 +1381,17 @@ fn lead_query_extra_params(query: &LeadQuery) -> Vec<(String, String)> {
     push_optional_param(&mut params, "sort", query.sort.as_deref());
     push_optional_param(&mut params, "direction", query.direction.as_deref());
     params
+}
+
+fn lead_rule_filter_options(selected: Option<&str>) -> Vec<RuleFilterOption> {
+    let selected = selected.map(str::trim).unwrap_or_default();
+    intel_lead_rule_ids()
+        .into_iter()
+        .map(|rule_id| RuleFilterOption {
+            value: rule_id.to_string(),
+            selected: rule_id == selected,
+        })
+        .collect()
 }
 
 fn push_optional_param(params: &mut Vec<(String, String)>, key: &str, value: Option<&str>) {

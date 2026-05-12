@@ -21,15 +21,18 @@ function renderSiteCategoryBadge(siteCategory) {
     `;
 }
 
-function buildSearchPageUrl(query, limit, offset) {
+function buildSearchPageUrl(query, limit, offset, includeBlacklisted = false) {
     const params = new URLSearchParams();
     params.set("query", query);
     params.set("limit", String(limit));
     params.set("offset", String(offset));
+    if (includeBlacklisted) {
+        params.set("include_blacklisted", "true");
+    }
     return `/search?${params.toString()}`;
 }
 
-function renderSearchPagination(query, page) {
+function renderSearchPagination(query, page, includeBlacklisted) {
     const hasPreviousPage = page.offset > 0;
     const hasNextPage = page.offset + page.limit < page.total_count;
     if (!hasPreviousPage && !hasNextPage) {
@@ -41,13 +44,13 @@ function renderSearchPagination(query, page) {
 
     return `
         <section class="pagination-bar">
-            ${hasPreviousPage ? `<a class="btn btn-secondary" href="${escapeHtml(buildSearchPageUrl(query, page.limit, previousOffset))}">Previous</a>` : ""}
-            ${hasNextPage ? `<a class="btn btn-secondary" href="${escapeHtml(buildSearchPageUrl(query, page.limit, nextOffset))}">Next</a>` : ""}
+            ${hasPreviousPage ? `<a class="btn btn-secondary" href="${escapeHtml(buildSearchPageUrl(query, page.limit, previousOffset, includeBlacklisted))}">Previous</a>` : ""}
+            ${hasNextPage ? `<a class="btn btn-secondary" href="${escapeHtml(buildSearchPageUrl(query, page.limit, nextOffset, includeBlacklisted))}">Next</a>` : ""}
         </section>
     `;
 }
 
-function renderSearchResults(query, page) {
+function renderSearchResults(query, page, includeBlacklisted = false) {
     const results = page.items ?? [];
     if (!results.length) {
         return `
@@ -55,7 +58,7 @@ function renderSearchResults(query, page) {
                 <h2>No results</h2>
                 <p>No indexed page or tagged site matched <strong>${escapeHtml(query)}</strong>.</p>
             </section>
-            ${renderSearchPagination(query, page)}
+            ${renderSearchPagination(query, page, includeBlacklisted)}
         `;
     }
 
@@ -86,7 +89,7 @@ function renderSearchResults(query, page) {
                 ${cards}
             </div>
         </section>
-        ${renderSearchPagination(query, page)}
+        ${renderSearchPagination(query, page, includeBlacklisted)}
     `;
 }
 
@@ -99,6 +102,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const queryInput = form.querySelector("input[name=query]");
             const limitInput = form.querySelector("input[name=limit]");
+            const includeBlacklistedInput = form.querySelector("input[name=include_blacklisted]");
             const resultsContainer = document.querySelector(form.dataset.resultsTarget);
             if (!queryInput || !resultsContainer) {
                 return;
@@ -107,12 +111,13 @@ document.addEventListener("DOMContentLoaded", () => {
             const query = queryInput.value.trim();
             const parsedLimit = Number.parseInt(limitInput?.value ?? "20", 10);
             const limit = Number.isNaN(parsedLimit) ? 20 : Math.min(50, Math.max(1, parsedLimit));
+            const includeBlacklisted = includeBlacklistedInput?.checked ?? false;
             if (!query) {
                 resultsContainer.innerHTML = "<p class=\"empty-copy\">Enter a search term.</p>";
                 return;
             }
 
-            const searchPath = buildSearchPageUrl(query, limit, 0);
+            const searchPath = buildSearchPageUrl(query, limit, 0, includeBlacklisted);
             window.history.replaceState({}, "", searchPath);
             resultsContainer.innerHTML = `
                 <section class="empty-state">
@@ -122,9 +127,14 @@ document.addEventListener("DOMContentLoaded", () => {
             `;
 
             try {
-                const response = await fetch(
-                    `/api/search?query=${encodeURIComponent(query)}&limit=${limit}&offset=0`,
-                );
+                const apiParams = new URLSearchParams();
+                apiParams.set("query", query);
+                apiParams.set("limit", String(limit));
+                apiParams.set("offset", "0");
+                if (includeBlacklisted) {
+                    apiParams.set("include_blacklisted", "true");
+                }
+                const response = await fetch(`/api/search?${apiParams.toString()}`);
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}`);
                 }
@@ -134,7 +144,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     throw new Error("Search response was not successful");
                 }
 
-                resultsContainer.innerHTML = renderSearchResults(query, payload.data);
+                resultsContainer.innerHTML = renderSearchResults(query, payload.data, includeBlacklisted);
             } catch (error) {
                 console.error("Search request failed", error);
                 resultsContainer.innerHTML = `

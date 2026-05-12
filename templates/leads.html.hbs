@@ -13,7 +13,12 @@
     <form class="filter-form" action="/leads" method="get">
         <input type="text" name="status" value="{{filters.status}}" placeholder="status">
         <input type="text" name="severity" value="{{filters.severity}}" placeholder="severity">
-        <input type="text" name="rule_id" value="{{filters.rule_id}}" placeholder="rule">
+        <select name="rule_id">
+            <option value="">All rules</option>
+            {{#each rule_filter_options}}
+            <option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}}</option>
+            {{/each}}
+        </select>
         <input type="text" name="entity" value="{{filters.entity}}" placeholder="entity">
         <input type="hidden" name="sort" value="{{filters.sort}}">
         <input type="hidden" name="direction" value="{{filters.direction}}">

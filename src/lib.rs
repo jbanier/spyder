@@ -1448,15 +1448,33 @@ pub fn list_page_summaries(
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<PageSummary>> {
+    list_page_summaries_with_blacklist(conn, requested_limit, requested_offset, false)
+}
+
+pub fn list_page_summaries_with_blacklist(
+    conn: &mut PgConnection,
+    requested_limit: Option<i64>,
+    requested_offset: Option<i64>,
+    include_blacklisted: bool,
+) -> Result<PaginatedResult<PageSummary>> {
     let pagination = normalize_pagination(
         requested_limit,
         requested_offset,
         DEFAULT_PAGE_LIMIT,
         MAX_PAGE_LIMIT,
     );
+    let page_host_expr = sql_host_without_port_expr("p.url", conn);
+    let blacklist_filter = sql_blacklist_host_filter(&page_host_expr, include_blacklisted);
+    let profile_blacklist_filter = sql_blacklist_host_filter("lower(sp.host)", include_blacklisted);
     let total_count = scalar_count(
         conn,
-        "SELECT COALESCE(SUM(page_count), 0) AS count FROM site_profile",
+        &format!(
+            "
+            SELECT COALESCE(SUM(sp.page_count), 0) AS count
+            FROM site_profile sp
+            WHERE {profile_blacklist_filter}
+            "
+        ),
     )
     .context("error counting pages for summary")?;
     let host_expr = sql_host_expr("selected_pages.url", conn);
@@ -1470,6 +1488,7 @@ pub fn list_page_summaries(
                 p.language,
                 p.last_scanned_at
             FROM page p
+            WHERE {blacklist_filter}
             ORDER BY p.last_scanned_at DESC, p.id DESC
             LIMIT $1 OFFSET $2
         )
@@ -2403,6 +2422,13 @@ fn intel_lead_rule_specs() -> Vec<IntelLeadRuleSpec> {
             builder: build_shared_crypto_lead_candidates,
         },
     ]
+}
+
+pub fn intel_lead_rule_ids() -> Vec<&'static str> {
+    intel_lead_rule_specs()
+        .into_iter()
+        .map(|rule| rule.rule_id)
+        .collect()
 }
 
 fn normalize_requested_lead_rules(raw_rule_ids: &[String]) -> Result<HashSet<String>> {
@@ -4175,6 +4201,16 @@ pub fn search_pages(
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<SearchResult>> {
+    search_pages_with_blacklist(conn, query, requested_limit, requested_offset, false)
+}
+
+pub fn search_pages_with_blacklist(
+    conn: &mut PgConnection,
+    query: &str,
+    requested_limit: Option<i64>,
+    requested_offset: Option<i64>,
+    include_blacklisted: bool,
+) -> Result<PaginatedResult<SearchResult>> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         let pagination = normalize_pagination(requested_limit, requested_offset, 10, 50);
@@ -4188,11 +4224,13 @@ pub fn search_pages(
 
     let pagination = normalize_pagination(requested_limit, requested_offset, 10, 50);
     if let Some(keyword_query) = parse_keyword_search_query(trimmed) {
-        return search_sites_by_keyword_tag(conn, &keyword_query, pagination);
+        return search_sites_by_keyword_tag(conn, &keyword_query, pagination, include_blacklisted);
     }
 
     let pattern = format!("%{}%", escape_like(trimmed));
     let host_expr = sql_host_expr("p.url", conn);
+    let host_without_port_expr = sql_host_without_port_expr("p.url", conn);
+    let blacklist_filter = sql_blacklist_host_filter(&host_without_port_expr, include_blacklisted);
     let title_match = sql_case_insensitive_match_expr("p.title", "$1", conn);
     let url_match = sql_case_insensitive_match_expr("p.url", "$2", conn);
     let language_match = sql_case_insensitive_match_expr("p.language", "$3", conn);
@@ -4203,7 +4241,9 @@ pub fn search_pages(
         "
         SELECT COUNT(*) AS count
         FROM page p
-        WHERE {title_match}
+        WHERE {blacklist_filter}
+          AND (
+            {title_match}
             OR {url_match}
             OR {language_match}
             OR EXISTS (
@@ -4218,6 +4258,7 @@ pub fn search_pages(
                 WHERE pc.page_id = p.id
                     AND {crypto_match}
             )
+          )
         "
     );
     let total_count = sql_query(count_sql)
@@ -4239,7 +4280,9 @@ pub fn search_pages(
             p.language,
             p.last_scanned_at AS scraped_at
         FROM page p
-        WHERE {title_match}
+        WHERE {blacklist_filter}
+          AND (
+            {title_match}
             OR {url_match}
             OR {language_match}
             OR EXISTS (
@@ -4254,6 +4297,7 @@ pub fn search_pages(
                 WHERE pc.page_id = p.id
                     AND {crypto_match}
             )
+          )
         ORDER BY p.last_scanned_at DESC, p.id DESC
         LIMIT $6 OFFSET $7
     "
@@ -4311,9 +4355,12 @@ fn search_sites_by_keyword_tag(
     conn: &mut PgConnection,
     keyword_query: &str,
     pagination: PaginationInput,
+    include_blacklisted: bool,
 ) -> Result<PaginatedResult<SearchResult>> {
     let tag_pattern = format!("%keyword:{}%", escape_like(keyword_query));
     let host_expr = sql_host_expr("p.url", conn);
+    let host_without_port_expr = sql_host_without_port_expr("p.url", conn);
+    let blacklist_filter = sql_blacklist_host_filter(&host_without_port_expr, include_blacklisted);
     let tag_match = sql_case_insensitive_match_expr("pkt.tag", "$1", conn);
     let count_sql = format!(
         "
@@ -4325,6 +4372,7 @@ fn search_sites_by_keyword_tag(
             JOIN site_profile sp ON sp.host = {host_expr}
             WHERE sp.category = 'forum'
                 AND {host_expr} != ''
+                AND {blacklist_filter}
                 AND {tag_match}
         ) AS matching_hosts
         "
@@ -4343,6 +4391,7 @@ fn search_sites_by_keyword_tag(
             JOIN site_profile sp ON sp.host = {host_expr}
             WHERE sp.category = 'forum'
                 AND {host_expr} != ''
+                AND {blacklist_filter}
                 AND {tag_match}
         ),
         ranked_pages AS (
@@ -7006,6 +7055,40 @@ fn sql_host_expr(column: &str, conn: &impl AppConnection) -> String {
             END
             "
         ),
+    }
+}
+
+fn sql_host_without_port_expr(column: &str, conn: &impl AppConnection) -> String {
+    let host_expr = sql_host_expr(column, conn);
+    match conn.dialect() {
+        SqlDialect::Postgres => format!("lower(split_part(({host_expr}), ':', 1))"),
+        SqlDialect::Sqlite => format!(
+            "
+            lower(
+                CASE
+                    WHEN instr(({host_expr}), ':') > 0 THEN substr(({host_expr}), 1, instr(({host_expr}), ':') - 1)
+                    ELSE ({host_expr})
+                END
+            )
+            "
+        ),
+    }
+}
+
+fn sql_blacklist_host_filter(host_expr: &str, include_blacklisted: bool) -> String {
+    if include_blacklisted {
+        "TRUE".to_string()
+    } else {
+        format!(
+            "
+            NOT EXISTS (
+                SELECT 1
+                FROM domain_blacklist db
+                WHERE {host_expr} = lower(db.domain)
+                   OR {host_expr} LIKE ('%.' || lower(db.domain))
+            )
+            "
+        )
     }
 }
 
