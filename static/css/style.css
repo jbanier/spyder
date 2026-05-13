@@ -29,6 +29,7 @@
     --font-heading: "Orbitron", "Share Tech Mono", monospace;
     --font-body: "JetBrains Mono", "Fira Code", Consolas, monospace;
     --font-label: "Share Tech Mono", "JetBrains Mono", monospace;
+    --layout-width: 96vw;
 }
 
 * {
@@ -124,7 +125,7 @@ code {
     gap: 1.4rem;
     justify-content: space-between;
     margin: 0 auto;
-    max-width: 1260px;
+    max-width: var(--layout-width);
     padding: 0.9rem 2rem;
 }
 
@@ -175,9 +176,10 @@ code {
 
 .container {
     margin: 0 auto;
-    max-width: 1260px;
+    max-width: var(--layout-width);
     padding: 2.25rem 2rem 3rem;
     position: relative;
+    width: var(--layout-width);
     z-index: 1;
 }
 
@@ -947,6 +949,7 @@ code {
     border: 1px solid rgba(42, 42, 58, 0.95);
     clip-path: var(--chamfer-sm);
     overflow-x: auto;
+    width: 100%;
 }
 
 .command-list {
@@ -967,7 +970,7 @@ code {
 
 .data-table {
     border-collapse: collapse;
-    min-width: 860px;
+    min-width: 1120px;
     width: 100%;
 }
 
@@ -1206,6 +1209,7 @@ footer {
 
     .container {
         padding: 1.5rem 1rem 2.5rem;
+        width: 100%;
     }
 
     .dashboard-grid-wide {
