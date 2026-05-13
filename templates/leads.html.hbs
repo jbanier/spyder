@@ -11,8 +11,18 @@
         <span class="muted">{{lead_count}} records</span>
     </div>
     <form class="filter-form" action="/leads" method="get">
-        <input type="text" name="status" value="{{filters.status}}" placeholder="status">
-        <input type="text" name="severity" value="{{filters.severity}}" placeholder="severity">
+        <select name="status">
+            <option value="">All statuses</option>
+            {{#each status_filter_options}}
+            <option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}}</option>
+            {{/each}}
+        </select>
+        <select name="severity">
+            <option value="">All severities</option>
+            {{#each severity_filter_options}}
+            <option value="{{value}}" {{#if selected}}selected{{/if}}>{{value}}</option>
+            {{/each}}
+        </select>
         <select name="rule_id">
             <option value="">All rules</option>
             {{#each rule_filter_options}}

@@ -204,7 +204,7 @@ struct LeadQuery {
 
 #[derive(Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
-struct RuleFilterOption {
+struct LeadFilterOption {
     value: String,
     selected: bool,
 }
@@ -792,6 +792,14 @@ fn leads(query: Option<LeadQuery>) -> HtmlResult {
     let sort_rule_url = lead_sort_url(&query, "rule");
     let sort_entity_url = lead_sort_url(&query, "entity");
     let rule_filter_options = lead_rule_filter_options(query.rule_id.as_deref());
+    let status_filter_options = lead_filter_options(
+        &["new", "triaged", "monitoring", "suppressed"],
+        query.status.as_deref(),
+    );
+    let severity_filter_options = lead_filter_options(
+        &["low", "medium", "high", "critical"],
+        query.severity.as_deref(),
+    );
 
     Ok(Template::render(
         "leads",
@@ -811,6 +819,8 @@ fn leads(query: Option<LeadQuery>) -> HtmlResult {
             sort_rule_url: sort_rule_url,
             sort_entity_url: sort_entity_url,
             rule_filter_options: rule_filter_options,
+            status_filter_options: status_filter_options,
+            severity_filter_options: severity_filter_options,
         },
     ))
 }
@@ -1383,11 +1393,22 @@ fn lead_query_extra_params(query: &LeadQuery) -> Vec<(String, String)> {
     params
 }
 
-fn lead_rule_filter_options(selected: Option<&str>) -> Vec<RuleFilterOption> {
+fn lead_filter_options(values: &[&str], selected: Option<&str>) -> Vec<LeadFilterOption> {
+    let selected = selected.map(str::trim).unwrap_or_default();
+    values
+        .iter()
+        .map(|value| LeadFilterOption {
+            value: value.to_string(),
+            selected: *value == selected,
+        })
+        .collect()
+}
+
+fn lead_rule_filter_options(selected: Option<&str>) -> Vec<LeadFilterOption> {
     let selected = selected.map(str::trim).unwrap_or_default();
     intel_lead_rule_ids()
         .into_iter()
-        .map(|rule_id| RuleFilterOption {
+        .map(|rule_id| LeadFilterOption {
             value: rule_id.to_string(),
             selected: rule_id == selected,
         })
