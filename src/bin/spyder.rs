@@ -21,11 +21,12 @@ use spyder::{
     find_matching_blacklist_domain, get_host_http_observation, get_host_service_observation,
     get_host_ssh_observation, get_pending_work_units, list_domain_blacklist_rules,
     list_forum_keyword_rules, list_recent_responding_hosts, mark_work_unit_as_done,
-    normalize_crawl_url, queue_known_pages_for_rescan, recompute_intel_leads_with_reporter,
-    record_work_unit_failure, remove_domain_blacklist_entry, remove_forum_keyword_rule,
-    save_host_http_observation, save_host_service_observation, save_host_ssh_observation,
-    save_host_tls_observation, save_page_info, suppress_intel_lead, AppConnection,
-    IntelLeadRecomputeOptions, SqlDialect, SSH_STATUS_SUCCESS,
+    normalize_crawl_url, page_link_batch_upper_bound, queue_known_pages_for_rescan,
+    recompute_intel_leads_with_reporter, record_work_unit_failure, remove_domain_blacklist_entry,
+    remove_forum_keyword_rule, save_host_http_observation, save_host_service_observation,
+    save_host_ssh_observation, save_host_tls_observation, save_page_info, suppress_intel_lead,
+    AppConnection, IntelLeadRecomputeOptions, SqlDialect, DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE,
+    SSH_STATUS_SUCCESS,
 };
 use ssh2::{HashType, HostKeyType, Session};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -72,6 +73,8 @@ struct LeadsRecomputeCliOptions {
     limit: Option<i64>,
     since_scan_id: Option<i32>,
     rule_ids: Vec<String>,
+    blacklist_after_link_id: Option<i32>,
+    blacklist_link_batch_size: Option<i64>,
 }
 
 struct CrawlFailure {
@@ -2723,6 +2726,24 @@ where
 
 fn recompute_leads(options: LeadsRecomputeCliOptions) -> Result<()> {
     let mut connection = establish_connection()?;
+    let should_page_blacklist = options.rule_ids.is_empty()
+        || options
+            .rule_ids
+            .iter()
+            .any(|rule_id| rule_id == "blacklisted-site-link");
+    let blacklist_after_link_id = options.blacklist_after_link_id.unwrap_or(0);
+    let blacklist_link_batch_size = options
+        .blacklist_link_batch_size
+        .unwrap_or(DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE);
+    let blacklist_batch_upper_bound = if should_page_blacklist {
+        page_link_batch_upper_bound(
+            &mut connection,
+            blacklist_after_link_id,
+            blacklist_link_batch_size,
+        )?
+    } else {
+        None
+    };
     print_status("Starting intel lead recompute");
     let summary = recompute_intel_leads_with_reporter(
         &mut connection,
@@ -2730,6 +2751,8 @@ fn recompute_leads(options: LeadsRecomputeCliOptions) -> Result<()> {
             limit: options.limit,
             since_scan_id: options.since_scan_id,
             rule_ids: options.rule_ids.clone(),
+            blacklist_after_link_id: options.blacklist_after_link_id,
+            blacklist_link_batch_size: options.blacklist_link_batch_size,
         },
         |message| print_status(message),
     )?;
@@ -2750,6 +2773,14 @@ fn recompute_leads(options: LeadsRecomputeCliOptions) -> Result<()> {
         summary.updated_count,
         summary.evidence_count
     );
+    if should_page_blacklist {
+        match blacklist_batch_upper_bound {
+            Some(next_after_link_id) => println!(
+                "Next blacklist batch: cargo run --bin spyder -- leads recompute --rule blacklisted-site-link --blacklist-after-link-id {next_after_link_id} --blacklist-link-batch-size {blacklist_link_batch_size}"
+            ),
+            None => println!("No page_link rows remain after id {blacklist_after_link_id}"),
+        }
+    }
     Ok(())
 }
 
@@ -2789,7 +2820,9 @@ fn usage(program: &str) {
     eprintln!(
         "    rescan-known [--onion-only] [--limit N] [--concurrency N] [--queue-only] queue known pages and scan them for updates."
     );
-    eprintln!("    leads recompute [--limit N] [--since-scan-id ID] [--rule RULE]");
+    eprintln!(
+        "    leads recompute [--limit N] [--since-scan-id ID] [--rule RULE] [--blacklist-after-link-id ID] [--blacklist-link-batch-size N]"
+    );
     eprintln!("    leads suppress <lead_id>");
 }
 
@@ -2940,6 +2973,22 @@ fn parse_leads_recompute_options(
                     .next()
                     .with_context(|| "missing value for --rule".to_string())?;
                 options.rule_ids.push(rule_id);
+            }
+            "--blacklist-after-link-id" => {
+                options.blacklist_after_link_id = Some(parse_i32_option_value(
+                    args.next(),
+                    "--blacklist-after-link-id",
+                    0,
+                    i32::MAX,
+                )?);
+            }
+            "--blacklist-link-batch-size" => {
+                options.blacklist_link_batch_size = Some(parse_i64_option_value(
+                    args.next(),
+                    "--blacklist-link-batch-size",
+                    1,
+                    1_000_000,
+                )?);
             }
             _ => anyhow::bail!("invalid leads recompute option: {arg}"),
         }

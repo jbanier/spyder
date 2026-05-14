@@ -57,6 +57,8 @@ const DEFAULT_LEAD_LIMIT: i64 = 50;
 const MAX_LEAD_LIMIT: i64 = 200;
 const DEFAULT_RECOMPUTE_LIMIT: i64 = 250;
 const MAX_RECOMPUTE_LIMIT: i64 = 5_000;
+pub const DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE: i64 = 50_000;
+const MAX_BLACKLIST_LEAD_LINK_BATCH_SIZE: i64 = 1_000_000;
 const MANY_NEW_OUTBOUND_LINK_THRESHOLD: usize = 25;
 const HIGH_DEGREE_SOURCE_HOST_THRESHOLD: i64 = 5;
 
@@ -347,6 +349,8 @@ struct BlacklistedLinkLeadRow {
     target_host: String,
     #[diesel(sql_type = Text)]
     observed_at: String,
+    #[diesel(sql_type = Text)]
+    blacklist_domain: String,
 }
 
 #[derive(QueryableByName)]
@@ -539,6 +543,8 @@ pub struct IntelLeadRecomputeOptions {
     pub limit: Option<i64>,
     pub since_scan_id: Option<i32>,
     pub rule_ids: Vec<String>,
+    pub blacklist_after_link_id: Option<i32>,
+    pub blacklist_link_batch_size: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -2285,6 +2291,36 @@ pub fn suppress_intel_lead(
     Ok(update_intel_lead_status(conn, lead_id, LEAD_STATUS_SUPPRESSED)?.map(|detail| detail.lead))
 }
 
+pub fn page_link_batch_upper_bound(
+    conn: &mut PgConnection,
+    after_link_id: i32,
+    batch_size: i64,
+) -> Result<Option<i32>> {
+    let after_link_id = after_link_id.max(0);
+    let batch_size = batch_size.clamp(1, MAX_BLACKLIST_LEAD_LINK_BATCH_SIZE);
+    let row = sql_query(
+        "
+        SELECT COALESCE(MAX(id), $1)::bigint AS count
+        FROM (
+            SELECT id
+            FROM page_link
+            WHERE id > $1
+            ORDER BY id ASC
+            LIMIT $2
+        ) AS page_link_batch
+        ",
+    )
+    .bind::<diesel::sql_types::Integer, _>(after_link_id)
+    .bind::<BigInt, _>(batch_size)
+    .get_result::<CountRow>(conn)
+    .context("error loading page_link batch upper bound")?;
+    if row.count <= i64::from(after_link_id) {
+        Ok(None)
+    } else {
+        Ok(Some(row.count.min(i64::from(i32::MAX)) as i32))
+    }
+}
+
 pub fn recompute_intel_leads(
     conn: &mut PgConnection,
     options: IntelLeadRecomputeOptions,
@@ -2316,8 +2352,25 @@ where
             continue;
         }
         reporter(format!("lead rule {}: building candidates", rule.rule_id));
-        let candidates = (rule.builder)(conn, options.since_scan_id, rule_limit)
-            .with_context(|| format!("error recomputing lead rule {}", rule.rule_id))?;
+        let candidates = if rule.rule_id == "blacklisted-site-link" {
+            let after_link_id = options.blacklist_after_link_id.unwrap_or(0).max(0);
+            let link_batch_size = options
+                .blacklist_link_batch_size
+                .unwrap_or(DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE)
+                .clamp(1, MAX_BLACKLIST_LEAD_LINK_BATCH_SIZE);
+            reporter(format!(
+                "lead rule blacklisted-site-link: scanning page_link id > {after_link_id} limit {link_batch_size}"
+            ));
+            build_blacklisted_site_link_lead_candidates(
+                conn,
+                rule_limit,
+                after_link_id,
+                link_batch_size,
+            )
+        } else {
+            (rule.builder)(conn, options.since_scan_id, rule_limit)
+        }
+        .with_context(|| format!("error recomputing lead rule {}", rule.rule_id))?;
         reporter(format!(
             "lead rule {}: {} candidates",
             rule.rule_id,
@@ -2503,7 +2556,12 @@ fn build_blacklisted_site_link_lead_candidates_for_rule(
     _since_scan_id: Option<i32>,
     rule_limit: i64,
 ) -> Result<Vec<IntelLeadCandidate>> {
-    build_blacklisted_site_link_lead_candidates(conn, rule_limit)
+    build_blacklisted_site_link_lead_candidates(
+        conn,
+        rule_limit,
+        0,
+        DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE,
+    )
 }
 
 fn build_category_change_lead_candidates_for_rule(
@@ -3393,6 +3451,8 @@ fn build_scan_update_lead_candidates(
 fn build_blacklisted_site_link_lead_candidates(
     conn: &mut PgConnection,
     rule_limit: i64,
+    after_link_id: i32,
+    link_batch_size: i64,
 ) -> Result<Vec<IntelLeadCandidate>> {
     let blacklist_domains = load_blacklist_domains(conn)?;
     if blacklist_domains.is_empty() {
@@ -3400,39 +3460,49 @@ fn build_blacklisted_site_link_lead_candidates(
     }
     let host_expr = sql_host_expr("p.url", conn);
     let mut grouped = HashMap::<(String, String), Vec<BlacklistedLinkLeadRow>>::new();
-    for domain in blacklist_domains {
-        let pattern = format!("%.{}", domain);
-        let sql = format!(
-            "
+    let sql = format!(
+        "
+        WITH candidate_links AS (
             SELECT
+                pl.id AS link_id,
+                pl.source_page_id,
+                pl.target_url,
+                lower(pl.target_host) AS target_host
+            FROM page_link pl
+            WHERE pl.id > $1
+              AND pl.target_host != ''
+            ORDER BY pl.id ASC
+            LIMIT $2
+        )
+        SELECT
                 p.id AS page_id,
                 p.title AS page_title,
                 p.url AS page_url,
                 {host_expr} AS source_host,
                 pl.target_url,
                 pl.target_host,
-                p.last_scanned_at AS observed_at
-            FROM page_link pl
-            JOIN page p ON p.id = pl.source_page_id
-            WHERE {host_expr} != ''
-              AND (pl.target_host = $1 OR pl.target_host LIKE $2)
+                p.last_scanned_at AS observed_at,
+                lower(db.domain) AS blacklist_domain
+        FROM candidate_links pl
+        JOIN page p ON p.id = pl.source_page_id
+        JOIN domain_blacklist db
+          ON pl.target_host = lower(db.domain)
+          OR pl.target_host LIKE ('%.' || lower(db.domain))
+        WHERE {host_expr} != ''
               AND {host_expr} != pl.target_host
-            ORDER BY p.last_scanned_at DESC, p.id DESC
-            LIMIT $3
-            "
-        );
-        let rows = sql_query(sql)
-            .bind::<Text, _>(&domain)
-            .bind::<Text, _>(&pattern)
-            .bind::<BigInt, _>(rule_limit)
-            .load::<BlacklistedLinkLeadRow>(conn)
-            .with_context(|| format!("error loading links to blacklisted domain {domain}"))?;
-        for row in rows {
-            grouped
-                .entry((row.source_host.clone(), domain.clone()))
-                .or_default()
-                .push(row);
-        }
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        "
+    );
+    let rows = sql_query(sql)
+        .bind::<diesel::sql_types::Integer, _>(after_link_id)
+        .bind::<BigInt, _>(link_batch_size)
+        .load::<BlacklistedLinkLeadRow>(conn)
+        .context("error loading links to blacklisted domains")?;
+    for row in rows {
+        grouped
+            .entry((row.source_host.clone(), row.blacklist_domain.clone()))
+            .or_default()
+            .push(row);
     }
 
     let mut candidates = Vec::new();
@@ -3497,6 +3567,15 @@ fn build_blacklisted_site_link_lead_candidates(
             evidence,
         });
     }
+
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| right.last_seen_at.cmp(&left.last_seen_at))
+            .then_with(|| left.lead_key.cmp(&right.lead_key))
+    });
+    candidates.truncate(rule_limit as usize);
 
     Ok(candidates)
 }
