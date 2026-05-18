@@ -1083,7 +1083,7 @@ fn http_entities(query: Option<HttpQuery>) -> HtmlResult {
         "http",
         context! {
             title: "HTTP Fingerprints",
-            description: "Inspect host-level HTTP headers, favicon hashes, redirect targets, and any captured TLS certificate fingerprints.",
+            description: "Inspect host-level HTTP headers, stack hints, exposed resource probes, redirect targets, and any captured TLS certificate fingerprints.",
             entities: entities.items,
             selected: selected,
             has_entities: has_entities,

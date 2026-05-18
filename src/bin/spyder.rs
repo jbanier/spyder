@@ -6,7 +6,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use native_tls::TlsConnector;
 use reqwest::blocking::Client;
-use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderMap, CONTENT_TYPE, RANGE};
 use reqwest::{Proxy, StatusCode};
 use sha2::{Digest, Sha256};
 use spyder::extraction::{extract_favicon_url, extract_page_snapshot};
@@ -162,6 +162,25 @@ struct UrlEndpoint {
     port: i32,
 }
 
+struct WebResourceProbe {
+    path: &'static str,
+    markers: &'static [&'static str],
+    allow_html: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExposedWebResourceFinding {
+    path: String,
+    status_code: u16,
+    content_type: Option<String>,
+    content_length: Option<u64>,
+    bytes_read: usize,
+    truncated: bool,
+    sample_sha256: String,
+    preview: Option<String>,
+    body_sample: String,
+}
+
 #[derive(QueryableByName)]
 struct NullableTextValueRow {
     #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
@@ -198,6 +217,81 @@ const DEFAULT_WORK_CONCURRENCY: usize = 4;
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_IO_TIMEOUT: Duration = Duration::from_secs(15);
 const IMPORT_BATCH_SIZE: i64 = 5_000;
+const WEB_RESOURCE_PROBE_MAX_BYTES: usize = 8 * 1024;
+const WEB_RESOURCE_PREVIEW_CHARS: usize = 600;
+const WEB_RESOURCE_PROBES: &[WebResourceProbe] = &[
+    WebResourceProbe {
+        path: "/robots.txt",
+        markers: &["user-agent", "disallow", "allow:", "sitemap:"],
+        allow_html: false,
+    },
+    WebResourceProbe {
+        path: "/sitemap.xml",
+        markers: &["<urlset", "<sitemapindex"],
+        allow_html: false,
+    },
+    WebResourceProbe {
+        path: "/.well-known/security.txt",
+        markers: &["contact:", "expires:", "encryption:", "policy:"],
+        allow_html: false,
+    },
+    WebResourceProbe {
+        path: "/.env",
+        markers: &[
+            "app_key",
+            "database_url",
+            "password",
+            "passwd",
+            "db_password",
+            "db_pass",
+            "db_host",
+            "aws_access_key",
+            "secret",
+            "token",
+        ],
+        allow_html: false,
+    },
+    WebResourceProbe {
+        path: "/.git/config",
+        markers: &["[core]", "repositoryformatversion", "[remote"],
+        allow_html: false,
+    },
+    WebResourceProbe {
+        path: "/composer.json",
+        markers: &["\"require\"", "\"autoload\"", "\"minimum-stability\""],
+        allow_html: false,
+    },
+    WebResourceProbe {
+        path: "/package.json",
+        markers: &["\"dependencies\"", "\"devdependencies\"", "\"scripts\""],
+        allow_html: false,
+    },
+    WebResourceProbe {
+        path: "/phpinfo.php",
+        markers: &["php version", "phpinfo()"],
+        allow_html: true,
+    },
+    WebResourceProbe {
+        path: "/info.php",
+        markers: &["php version", "phpinfo()"],
+        allow_html: true,
+    },
+    WebResourceProbe {
+        path: "/.profile",
+        markers: &["export ", "alias ", "path=", "umask"],
+        allow_html: false,
+    },
+    WebResourceProbe {
+        path: "/.bash_history",
+        markers: &["sudo ", "ssh ", "mysql ", "psql ", "curl ", "wget ", "git "],
+        allow_html: false,
+    },
+    WebResourceProbe {
+        path: "/.zsh_history",
+        markers: &["sudo ", "ssh ", "mysql ", "psql ", "curl ", "wget ", "git "],
+        allow_html: false,
+    },
+];
 
 trait HasId {
     fn id(&self) -> i32;
@@ -1431,6 +1525,262 @@ fn favicon_hash_for_page(
     )
 }
 
+fn probe_exposed_web_resources(client: &Client, final_url: &str) -> Vec<ExposedWebResourceFinding> {
+    let Ok(base_url) = Url::parse(final_url) else {
+        return Vec::new();
+    };
+
+    WEB_RESOURCE_PROBES
+        .iter()
+        .filter_map(|probe| {
+            let url = base_url.join(probe.path).ok()?;
+            probe_exposed_web_resource(client, probe, url)
+        })
+        .collect()
+}
+
+fn probe_exposed_web_resource(
+    client: &Client,
+    probe: &WebResourceProbe,
+    url: Url,
+) -> Option<ExposedWebResourceFinding> {
+    let mut response = client
+        .get(url)
+        .header(
+            RANGE,
+            format!("bytes=0-{}", WEB_RESOURCE_PROBE_MAX_BYTES.saturating_sub(1)),
+        )
+        .send()
+        .ok()?;
+    let status = response.status();
+    if !status.is_success() {
+        return None;
+    }
+
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .map(normalize_header_value);
+    if !probe.allow_html
+        && content_type
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase().contains("text/html"))
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    let content_length = response.content_length();
+    let mut bytes = Vec::new();
+    if (&mut response)
+        .take((WEB_RESOURCE_PROBE_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return None;
+    }
+    if bytes.is_empty() {
+        return None;
+    }
+
+    let truncated = bytes.len() > WEB_RESOURCE_PROBE_MAX_BYTES;
+    if truncated {
+        bytes.truncate(WEB_RESOURCE_PROBE_MAX_BYTES);
+    }
+    let body_sample = String::from_utf8_lossy(&bytes).into_owned();
+    if !web_resource_sample_matches(probe, &body_sample) {
+        return None;
+    }
+
+    let digest = Sha256::digest(&bytes);
+    Some(ExposedWebResourceFinding {
+        path: probe.path.to_string(),
+        status_code: status.as_u16(),
+        content_type,
+        content_length,
+        bytes_read: bytes.len(),
+        truncated,
+        sample_sha256: format!("sha256:{}", hex_encode(digest.as_slice())),
+        preview: exposed_resource_preview(&body_sample),
+        body_sample,
+    })
+}
+
+fn web_resource_sample_matches(probe: &WebResourceProbe, body_sample: &str) -> bool {
+    let normalized = body_sample.to_ascii_lowercase();
+    probe
+        .markers
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+fn exposed_resource_preview(body_sample: &str) -> Option<String> {
+    let redacted = redact_sensitive_preview(body_sample);
+    let preview = redacted
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let preview = if preview.is_empty() {
+        redacted.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        preview
+    };
+    let preview = truncate_for_storage(&preview, WEB_RESOURCE_PREVIEW_CHARS);
+    if preview.is_empty() {
+        None
+    } else {
+        Some(preview)
+    }
+}
+
+fn redact_sensitive_preview(value: &str) -> String {
+    let patterns = [
+        r#"(?i)\b([a-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|authorization|bearer|aws_secret_access_key)[a-z0-9_.-]*)\b\s*[:=]\s*([^\s'"&;]+)"#,
+        r#"(?i)(postgres|mysql|mongodb|redis)://([^:@/\s]+):([^@/\s]+)@"#,
+    ];
+    let mut redacted = value.to_string();
+    for pattern in patterns {
+        if let Ok(regex) = regex::Regex::new(pattern) {
+            redacted = regex
+                .replace_all(&redacted, |captures: &regex::Captures<'_>| {
+                    if captures.len() >= 4 {
+                        format!("{}://{}:<redacted>@", &captures[1], &captures[2])
+                    } else {
+                        format!("{}=<redacted>", &captures[1])
+                    }
+                })
+                .into_owned();
+        }
+    }
+    redacted
+}
+
+fn render_exposed_resources(findings: &[ExposedWebResourceFinding]) -> Option<String> {
+    if findings.is_empty() {
+        return None;
+    }
+
+    let rendered = findings
+        .iter()
+        .map(|finding| {
+            let mut fields = vec![
+                format!("{} [{}]", finding.path, finding.status_code),
+                format!("read_bytes={}", finding.bytes_read),
+                format!("sample_sha256={}", finding.sample_sha256),
+            ];
+            if let Some(content_type) = finding.content_type.as_ref() {
+                fields.push(format!("type={content_type}"));
+            }
+            if let Some(content_length) = finding.content_length {
+                fields.push(format!("declared_bytes={content_length}"));
+            }
+            if finding.truncated {
+                fields.push("truncated=true".to_string());
+            }
+            if let Some(preview) = finding.preview.as_ref() {
+                fields.push(format!("preview=\"{}\"", preview.replace('"', "'")));
+            }
+            fields.join("; ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Some(truncate_for_storage(&rendered, 12_000))
+}
+
+fn build_stack_version_summary(
+    headers: &BTreeMap<String, Vec<String>>,
+    body: &str,
+    resource_findings: &[ExposedWebResourceFinding],
+) -> Option<String> {
+    let mut lines = Vec::new();
+    for header_name in [
+        "server",
+        "x-powered-by",
+        "x-generator",
+        "x-aspnet-version",
+        "x-aspnetmvc-version",
+        "x-drupal-cache",
+        "via",
+    ] {
+        if let Some(values) = headers.get(header_name) {
+            for value in values {
+                push_unique(&mut lines, format!("{header_name}: {value}"));
+            }
+        }
+    }
+
+    if let Some(generator) = extract_meta_generator(body) {
+        push_unique(&mut lines, format!("html-generator: {generator}"));
+    }
+
+    for finding in resource_findings {
+        if matches!(finding.path.as_str(), "/phpinfo.php" | "/info.php") {
+            if let Some(version) = extract_php_version(&finding.body_sample) {
+                push_unique(&mut lines, format!("{}: PHP/{version}", finding.path));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(truncate_for_storage(&lines.join("\n"), 4_000))
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.trim().is_empty() && !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn extract_meta_generator(body: &str) -> Option<String> {
+    for pattern in [
+        r#"(?is)<meta\s+[^>]*name=["']generator["'][^>]*content=["']([^"']+)["']"#,
+        r#"(?is)<meta\s+[^>]*content=["']([^"']+)["'][^>]*name=["']generator["']"#,
+    ] {
+        let Ok(regex) = regex::Regex::new(pattern) else {
+            continue;
+        };
+        let Some(captures) = regex.captures(body) else {
+            continue;
+        };
+        let Some(value) = captures.get(1) else {
+            continue;
+        };
+        let normalized = value
+            .as_str()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !normalized.is_empty() {
+            return Some(truncate_for_storage(&normalized, 300));
+        }
+    }
+    None
+}
+
+fn extract_php_version(body: &str) -> Option<String> {
+    for pattern in [
+        r#"(?i)PHP Version\s+([0-9][0-9A-Za-z._-]*)"#,
+        r#"(?i)\bPHP/([0-9][0-9A-Za-z._-]*)"#,
+    ] {
+        let Ok(regex) = regex::Regex::new(pattern) else {
+            continue;
+        };
+        if let Some(captures) = regex.captures(body) {
+            let version = captures.get(1)?.as_str().trim();
+            if !version.is_empty() {
+                return Some(version.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn build_http_observation(
     client: &Client,
     requested_endpoint: &UrlEndpoint,
@@ -1441,6 +1791,9 @@ fn build_http_observation(
 ) -> NewHostHttpObservation {
     let normalized_headers = headers_by_name(headers);
     let (favicon_url, favicon_hash) = favicon_hash_for_page(client, final_url, body);
+    let exposed_resource_findings = probe_exposed_web_resources(client, final_url);
+    let stack_versions =
+        build_stack_version_summary(&normalized_headers, body, &exposed_resource_findings);
 
     NewHostHttpObservation {
         host: requested_endpoint.host.clone(),
@@ -1461,6 +1814,8 @@ fn build_http_observation(
         header_fingerprint: build_header_fingerprint(&normalized_headers),
         favicon_url,
         favicon_hash,
+        stack_versions,
+        exposed_resources: render_exposed_resources(&exposed_resource_findings),
         last_error: None,
         last_attempt_at: String::new(),
         last_success_at: None,
@@ -3276,6 +3631,54 @@ mod tests {
             summarize_page_snapshot(&snapshot),
             "title \"Alpha Market\", 1 link, 1 email, 1 crypto ref, language English"
         );
+    }
+
+    #[test]
+    fn stack_summary_captures_headers_generator_and_phpinfo() {
+        let mut headers = HeaderMap::new();
+        headers.insert("server", "nginx/1.24.0".parse().expect("server header"));
+        headers.insert(
+            "x-powered-by",
+            "PHP/8.2.12".parse().expect("powered-by header"),
+        );
+        let normalized_headers = headers_by_name(&headers);
+        let resource_findings = vec![ExposedWebResourceFinding {
+            path: "/phpinfo.php".to_string(),
+            status_code: 200,
+            content_type: Some("text/html".to_string()),
+            content_length: None,
+            bytes_read: 64,
+            truncated: false,
+            sample_sha256: "sha256:test".to_string(),
+            preview: None,
+            body_sample: "<h1>PHP Version 8.3.2</h1>".to_string(),
+        }];
+
+        let summary = build_stack_version_summary(
+            &normalized_headers,
+            r#"<meta name="generator" content="WordPress 6.5.4">"#,
+            &resource_findings,
+        )
+        .expect("stack summary");
+
+        assert!(summary.contains("server: nginx/1.24.0"));
+        assert!(summary.contains("x-powered-by: PHP/8.2.12"));
+        assert!(summary.contains("html-generator: WordPress 6.5.4"));
+        assert!(summary.contains("/phpinfo.php: PHP/8.3.2"));
+    }
+
+    #[test]
+    fn exposed_resource_preview_redacts_sensitive_values() {
+        let preview = exposed_resource_preview(
+            "DB_PASSWORD=swordfish\nAWS_SECRET_ACCESS_KEY=abc123\nDATABASE_URL=postgres://spyder:secret@example.test/db",
+        )
+        .expect("preview");
+
+        assert!(preview.contains("DB_PASSWORD=<redacted>"));
+        assert!(preview.contains("AWS_SECRET_ACCESS_KEY=<redacted>"));
+        assert!(preview.contains("postgres://spyder:<redacted>@example.test/db"));
+        assert!(!preview.contains("swordfish"));
+        assert!(!preview.contains("abc123"));
     }
 
     #[test]

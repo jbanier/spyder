@@ -30,6 +30,9 @@
                     {{#if server_header}}
                     <span class="compact-meta">Server: {{server_header}}</span>
                     {{/if}}
+                    {{#if stack_versions}}
+                    <span class="compact-meta">Stack hints captured</span>
+                    {{/if}}
                 </div>
                 <div class="table-cell-stack">
                     {{#if favicon_hash}}
@@ -241,6 +244,24 @@
                 </div>
                 {{/if}}
             </div>
+        </section>
+        {{/if}}
+
+        {{#if selected.stack_versions}}
+        <section class="card card-nested">
+            <div class="section-heading">
+                <h2>Stack Versions</h2>
+            </div>
+            <pre class="detail-code-block">{{selected.stack_versions}}</pre>
+        </section>
+        {{/if}}
+
+        {{#if selected.exposed_resources}}
+        <section class="card card-nested">
+            <div class="section-heading">
+                <h2>Exposed Resources</h2>
+            </div>
+            <pre class="detail-code-block">{{selected.exposed_resources}}</pre>
         </section>
         {{/if}}
 

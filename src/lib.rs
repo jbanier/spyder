@@ -4922,6 +4922,23 @@ pub fn save_host_http_observation(
                 .clone()
                 .or_else(|| existing.as_ref().and_then(|row| row.favicon_hash.clone()))
         },
+        stack_versions: if next_is_success {
+            observation.stack_versions.clone()
+        } else {
+            observation
+                .stack_versions
+                .clone()
+                .or_else(|| existing.as_ref().and_then(|row| row.stack_versions.clone()))
+        },
+        exposed_resources: if next_is_success {
+            observation.exposed_resources.clone()
+        } else {
+            observation.exposed_resources.clone().or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.exposed_resources.clone())
+            })
+        },
         last_error: observation.last_error.clone(),
         last_attempt_at: current_timestamp.clone(),
         last_success_at: if next_is_success {
@@ -4955,6 +4972,8 @@ pub fn save_host_http_observation(
             host_http_dsl::header_fingerprint.eq(persisted.header_fingerprint.clone()),
             host_http_dsl::favicon_url.eq(persisted.favicon_url.clone()),
             host_http_dsl::favicon_hash.eq(persisted.favicon_hash.clone()),
+            host_http_dsl::stack_versions.eq(persisted.stack_versions.clone()),
+            host_http_dsl::exposed_resources.eq(persisted.exposed_resources.clone()),
             host_http_dsl::last_error.eq(persisted.last_error.clone()),
             host_http_dsl::last_attempt_at.eq(persisted.last_attempt_at.clone()),
             host_http_dsl::last_success_at.eq(persisted.last_success_at.clone()),
@@ -5098,6 +5117,7 @@ pub fn list_host_http_observations(
                 server_header: row.server_header,
                 header_fingerprint: row.header_fingerprint,
                 favicon_hash: row.favicon_hash,
+                stack_versions: row.stack_versions,
                 last_success_at: row.last_success_at,
                 detail_url,
                 site_category: site_categories.get(&row.host).cloned(),
@@ -5202,6 +5222,8 @@ fn build_host_http_observation_detail(
         header_fingerprint: record.header_fingerprint.clone(),
         favicon_url: record.favicon_url.clone(),
         favicon_hash: record.favicon_hash.clone(),
+        stack_versions: record.stack_versions.clone(),
+        exposed_resources: record.exposed_resources.clone(),
         last_error: record.last_error.clone(),
         last_attempt_at: record.last_attempt_at.clone(),
         last_success_at: record.last_success_at.clone(),
