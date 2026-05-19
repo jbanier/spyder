@@ -38,12 +38,12 @@ diesel::table! {
         header_fingerprint -> Nullable<Text>,
         favicon_url -> Nullable<Text>,
         favicon_hash -> Nullable<Text>,
-        stack_versions -> Nullable<Text>,
-        exposed_resources -> Nullable<Text>,
         last_error -> Nullable<Text>,
         last_attempt_at -> Text,
         last_success_at -> Nullable<Text>,
         created_at -> Text,
+        stack_versions -> Nullable<Text>,
+        exposed_resources -> Nullable<Text>,
     }
 }
 
