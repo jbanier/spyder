@@ -1,0 +1,78 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Customer Monitoring</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+    <div class="actions">
+        <a href="/leads?rule_id=watchlist-match" class="btn btn-secondary">Watchlist Leads</a>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Add Indicator</h2>
+    </div>
+    <form class="filter-form" action="/watchlists" method="post">
+        <select name="item_type" required>
+            {{#each type_options}}
+            <option value="{{value}}">{{label}}</option>
+            {{/each}}
+        </select>
+        <input type="text" name="value" placeholder="indicator value" required>
+        <input type="text" name="label" placeholder="label">
+        <button class="btn" type="submit">Add</button>
+    </form>
+</section>
+
+{{#if has_items}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Watched Indicators</h2>
+        <span class="muted">{{item_count}} items</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Value</th>
+                    <th>Label</th>
+                    <th>Added</th>
+                    <th>State</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each items}}
+                <tr>
+                    <td><span class="tag">{{item_type}}</span></td>
+                    <td><span class="row-link">{{value}}</span></td>
+                    <td>{{label}}</td>
+                    <td>{{created_at}}</td>
+                    <td>
+                        {{#if enabled}}
+                        <span class="status-pill status-success">enabled</span>
+                        {{else}}
+                        <span class="status-pill status-suppressed">disabled</span>
+                        {{/if}}
+                    </td>
+                    <td>
+                        <form class="inline-form" action="/watchlists/{{id}}/delete" method="post">
+                            <button class="btn btn-secondary btn-compact" type="submit">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+</section>
+{{else}}
+<section class="empty-state">
+    <h2>No watchlist items</h2>
+    <p>Add a customer indicator to create watchlist-match leads during lead recompute.</p>
+</section>
+{{/if}}
+{{/inline}}
+
+{{> base}}

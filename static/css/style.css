@@ -328,6 +328,17 @@ code {
     color: var(--background);
 }
 
+.btn-compact {
+    font-size: 0.78rem;
+    min-height: 36px;
+    padding: 0.55rem 0.8rem;
+}
+
+.inline-form {
+    display: inline-flex;
+    margin: 0;
+}
+
 .card {
     background:
         linear-gradient(180deg, rgba(28, 28, 46, 0.72), rgba(18, 18, 26, 0.94)),

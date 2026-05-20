@@ -17,15 +17,16 @@ use spyder::models::{
     PageScanCrypto, PageScanEmail, PageScanLink, PageSnapshot, SiteProfileRecord, WorkUnit,
 };
 use spyder::{
-    add_domain_blacklist_entry, add_forum_keyword_rule, create_work_unit, establish_connection,
-    find_matching_blacklist_domain, get_host_http_observation, get_host_service_observation,
-    get_host_ssh_observation, get_pending_work_units, list_domain_blacklist_rules,
-    list_forum_keyword_rules, list_recent_responding_hosts, mark_work_unit_as_done,
-    normalize_crawl_url, page_link_batch_upper_bound, queue_known_pages_for_rescan,
-    recompute_intel_leads_with_reporter, record_work_unit_failure, remove_domain_blacklist_entry,
-    remove_forum_keyword_rule, save_host_http_observation, save_host_service_observation,
-    save_host_ssh_observation, save_host_tls_observation, save_page_info, suppress_intel_lead,
-    AppConnection, IntelLeadRecomputeOptions, SqlDialect, DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE,
+    add_domain_blacklist_entry, add_forum_keyword_rule, add_watchlist_item, create_work_unit,
+    establish_connection, find_matching_blacklist_domain, get_host_http_observation,
+    get_host_service_observation, get_host_ssh_observation, get_pending_work_units,
+    list_domain_blacklist_rules, list_forum_keyword_rules, list_recent_responding_hosts,
+    list_watchlist_items, mark_work_unit_as_done, normalize_crawl_url, page_link_batch_upper_bound,
+    queue_known_pages_for_rescan, recompute_intel_leads_with_reporter, record_work_unit_failure,
+    remove_domain_blacklist_entry, remove_forum_keyword_rule, remove_watchlist_item,
+    save_host_http_observation, save_host_service_observation, save_host_ssh_observation,
+    save_host_tls_observation, save_page_info, suppress_intel_lead, AppConnection,
+    IntelLeadRecomputeOptions, SqlDialect, DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE,
     SSH_STATUS_SUCCESS,
 };
 use ssh2::{HashType, HostKeyType, Session};
@@ -2434,6 +2435,43 @@ fn remove_forum_keyword(label: &str, pattern: &str) -> Result<()> {
     Ok(())
 }
 
+fn list_watchlist() -> Result<()> {
+    let mut connection = establish_connection()?;
+    let items = list_watchlist_items(&mut connection)?;
+    if items.is_empty() {
+        println!("No watchlist items configured");
+        return Ok(());
+    }
+    for item in items {
+        let label = if item.label.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", item.label)
+        };
+        println!("#{} [{}] {}{}", item.id, item.item_type, item.value, label);
+    }
+    Ok(())
+}
+
+fn add_watchlist(item_type: &str, value: &str, label: Option<&str>) -> Result<()> {
+    let mut connection = establish_connection()?;
+    let item = add_watchlist_item(&mut connection, item_type, value, label)?;
+    println!("Watching #{} [{}] {}", item.id, item.item_type, item.value);
+    Ok(())
+}
+
+fn remove_watchlist(item_id: i32) -> Result<()> {
+    let mut connection = establish_connection()?;
+    match remove_watchlist_item(&mut connection, item_id)? {
+        Some(item) => println!(
+            "Removed watchlist item #{} [{}] {}",
+            item.id, item.item_type, item.value
+        ),
+        None => println!("No matching watchlist item found"),
+    }
+    Ok(())
+}
+
 fn import_sqlite(sqlite_path: &str) -> Result<()> {
     anyhow::ensure!(
         !sqlite_path.trim().is_empty(),
@@ -3163,6 +3201,9 @@ fn usage(program: &str) {
     eprintln!("    forum-keywords list");
     eprintln!("    forum-keywords add <label> <pattern>");
     eprintln!("    forum-keywords remove <label> <pattern>");
+    eprintln!("    watchlist list");
+    eprintln!("    watchlist add <type> <value> [label]");
+    eprintln!("    watchlist remove <id>");
     eprintln!(
         "    import-sqlite <sqlite_path> import an existing SQLite database into PostgreSQL."
     );
@@ -3472,6 +3513,39 @@ fn main() {
                 ))
             }
         },
+        Some("watchlist") => match args.next().as_deref() {
+            Some("list") => list_watchlist(),
+            Some("add") => match (args.next(), args.next()) {
+                (Some(item_type), Some(value)) => {
+                    let label = args.collect::<Vec<_>>().join(" ");
+                    let label = (!label.trim().is_empty()).then_some(label);
+                    add_watchlist(&item_type, &value, label.as_deref())
+                }
+                _ => {
+                    usage(&program);
+                    Err(anyhow::anyhow!(
+                        "watchlist add requires <type> <value> [label]"
+                    ))
+                }
+            },
+            Some("remove") => match args.next() {
+                Some(item_id) => match item_id.parse::<i32>() {
+                    Ok(item_id) => remove_watchlist(item_id),
+                    Err(_) => {
+                        usage(&program);
+                        Err(anyhow::anyhow!("invalid watchlist id: {item_id}"))
+                    }
+                },
+                None => {
+                    usage(&program);
+                    Err(anyhow::anyhow!("watchlist remove requires <id>"))
+                }
+            },
+            Some(_) | None => {
+                usage(&program);
+                Err(anyhow::anyhow!("invalid or missing watchlist subcommand"))
+            }
+        },
         Some("import-sqlite") => match args.next() {
             Some(sqlite_path) => import_sqlite(&sqlite_path),
             None => {
@@ -3614,6 +3688,7 @@ mod tests {
             title: "Alpha Market".to_string(),
             url: "http://alpha.onion".to_string(),
             language: "English".to_string(),
+            language_detection: spyder::models::LanguageDetection::unknown(),
             keyword_corpus: "http://alpha.onion\nAlpha Market".to_string(),
             links: vec![spyder::models::LinkObservation {
                 target_url: "http://beta.onion".to_string(),
@@ -3625,6 +3700,7 @@ mod tests {
                 reference: "bc1test".to_string(),
             }],
             classification_signals: spyder::models::ClassificationSignals::default(),
+            topic_observations: Vec::new(),
         };
 
         assert_eq!(
@@ -3779,6 +3855,7 @@ mod tests {
             title: "Seed".to_string(),
             url: "http://seed.onion".to_string(),
             language: "English".to_string(),
+            language_detection: spyder::models::LanguageDetection::unknown(),
             keyword_corpus: "http://seed.onion\nSeed".to_string(),
             links: vec![
                 spyder::models::LinkObservation {
@@ -3793,6 +3870,7 @@ mod tests {
             emails: Vec::new(),
             crypto_refs: Vec::new(),
             classification_signals: spyder::models::ClassificationSignals::default(),
+            topic_observations: Vec::new(),
         };
 
         let outcome = enqueue_discovered_links(&mut conn, &snapshot).expect("enqueue links");
@@ -3812,6 +3890,7 @@ mod tests {
             title: "Seed".to_string(),
             url: "http://seed.onion".to_string(),
             language: "English".to_string(),
+            language_detection: spyder::models::LanguageDetection::unknown(),
             keyword_corpus: "http://seed.onion\nSeed".to_string(),
             links: vec![
                 spyder::models::LinkObservation {
@@ -3826,6 +3905,7 @@ mod tests {
             emails: Vec::new(),
             crypto_refs: Vec::new(),
             classification_signals: spyder::models::ClassificationSignals::default(),
+            topic_observations: Vec::new(),
         };
 
         enqueue_discovered_links(&mut conn, &snapshot).expect("enqueue links");

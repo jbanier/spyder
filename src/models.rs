@@ -59,6 +59,26 @@ pub struct NewForumKeywordRule<'a> {
     pub pattern: &'a str,
 }
 
+#[derive(Selectable, Queryable, Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::watchlist_item)]
+pub struct WatchlistItem {
+    pub id: i32,
+    pub item_type: String,
+    pub value: String,
+    pub label: String,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = crate::schema::watchlist_item)]
+pub struct NewWatchlistItem<'a> {
+    pub item_type: &'a str,
+    pub value: &'a str,
+    pub label: &'a str,
+}
+
 #[derive(Selectable, Queryable, Serialize, Clone, Debug)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::intel_lead)]
@@ -420,6 +440,52 @@ pub struct NewPageKeywordTag {
 }
 
 #[derive(Selectable, Queryable, Clone)]
+#[diesel(table_name = crate::schema::page_language_detection)]
+pub struct PageLanguageDetectionRecord {
+    pub id: i32,
+    pub page_id: i32,
+    pub language_code: String,
+    pub language_name: String,
+    pub confidence: i32,
+    pub source: String,
+    pub evidence: String,
+    pub updated_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = crate::schema::page_language_detection)]
+pub struct NewPageLanguageDetection {
+    pub page_id: i32,
+    pub language_code: String,
+    pub language_name: String,
+    pub confidence: i32,
+    pub source: String,
+    pub evidence: String,
+}
+
+#[derive(Selectable, Queryable, Clone)]
+#[diesel(table_name = crate::schema::page_topic_tag)]
+pub struct PageTopicTagRecord {
+    pub id: i32,
+    pub page_id: i32,
+    pub topic: String,
+    pub score: i32,
+    pub confidence: String,
+    pub evidence: String,
+    pub created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = crate::schema::page_topic_tag)]
+pub struct NewPageTopicTag {
+    pub page_id: i32,
+    pub topic: String,
+    pub score: i32,
+    pub confidence: String,
+    pub evidence: String,
+}
+
+#[derive(Selectable, Queryable, Clone)]
 #[diesel(table_name = crate::schema::page_scan_email)]
 pub struct PageScanEmail {
     pub id: i32,
@@ -519,16 +585,47 @@ pub struct ClassificationSignals {
     pub hints: Vec<CategoryHint>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LanguageDetection {
+    pub code: String,
+    pub name: String,
+    pub confidence: i32,
+    pub source: String,
+    pub evidence: String,
+}
+
+impl LanguageDetection {
+    pub fn unknown() -> Self {
+        Self {
+            code: String::new(),
+            name: "Unknown".to_string(),
+            confidence: 0,
+            source: "none".to_string(),
+            evidence: "signals:insufficient".to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct TopicObservation {
+    pub topic: String,
+    pub score: i32,
+    pub confidence: String,
+    pub evidence: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct PageSnapshot {
     pub title: String,
     pub url: String,
     pub language: String,
+    pub language_detection: LanguageDetection,
     pub keyword_corpus: String,
     pub links: Vec<LinkObservation>,
     pub emails: Vec<String>,
     pub crypto_refs: Vec<CryptoReference>,
     pub classification_signals: ClassificationSignals,
+    pub topic_observations: Vec<TopicObservation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -621,6 +718,27 @@ pub struct IncomingReference {
 
 #[derive(Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
+pub struct LanguageDetectionSummary {
+    pub language_code: String,
+    pub language_name: String,
+    pub confidence: i32,
+    pub source: String,
+    pub evidence: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct PageTopicSummary {
+    pub topic: String,
+    pub label: String,
+    pub score: i32,
+    pub confidence: String,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
 pub struct PageDetail {
     pub id: i32,
     pub title: String,
@@ -633,6 +751,8 @@ pub struct PageDetail {
     pub incoming_links: Vec<IncomingReference>,
     pub emails: Vec<EmailObservation>,
     pub crypto_refs: Vec<CryptoObservation>,
+    pub language_detection: Option<LanguageDetectionSummary>,
+    pub topic_tags: Vec<PageTopicSummary>,
     pub site_profile: Option<SiteProfileSummary>,
     pub host_http_observation: Option<HostHttpObservationDetail>,
     pub intel_leads: Vec<IntelLeadBadge>,

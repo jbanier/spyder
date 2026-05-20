@@ -49,6 +49,14 @@ pub const LEAD_STATUS_NEW: &str = "new";
 pub const LEAD_STATUS_TRIAGED: &str = "triaged";
 pub const LEAD_STATUS_MONITORING: &str = "monitoring";
 pub const LEAD_STATUS_SUPPRESSED: &str = "suppressed";
+pub const WATCHLIST_TYPE_DOMAIN: &str = "domain";
+pub const WATCHLIST_TYPE_URL: &str = "url";
+pub const WATCHLIST_TYPE_EMAIL: &str = "email";
+pub const WATCHLIST_TYPE_CRYPTO: &str = "crypto";
+pub const WATCHLIST_TYPE_KEYWORD: &str = "keyword";
+pub const WATCHLIST_TYPE_SSH_FINGERPRINT: &str = "ssh_fingerprint";
+pub const WATCHLIST_TYPE_HTTP_FINGERPRINT: &str = "http_fingerprint";
+pub const WATCHLIST_TYPE_FAVICON_HASH: &str = "favicon_hash";
 const LEAD_SEVERITY_LOW: &str = "low";
 const LEAD_SEVERITY_MEDIUM: &str = "medium";
 const LEAD_SEVERITY_HIGH: &str = "high";
@@ -454,6 +462,22 @@ struct DuplicateSiteTitleLeadRow {
 }
 
 #[derive(QueryableByName)]
+struct WatchlistLeadEvidenceRow {
+    #[diesel(sql_type = Text)]
+    source_type: String,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    source_id: i32,
+    #[diesel(sql_type = Text)]
+    source_key: String,
+    #[diesel(sql_type = Text)]
+    evidence_text: String,
+    #[diesel(sql_type = Text)]
+    observed_at: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    site_host: Option<String>,
+}
+
+#[derive(QueryableByName)]
 struct RelationshipEvidenceRow {
     #[diesel(sql_type = Text)]
     source_host: String,
@@ -702,6 +726,82 @@ pub fn normalize_blacklist_domain(raw_domain: &str) -> Result<String> {
     Ok(host)
 }
 
+pub fn valid_watchlist_item_types() -> [&'static str; 8] {
+    [
+        WATCHLIST_TYPE_DOMAIN,
+        WATCHLIST_TYPE_URL,
+        WATCHLIST_TYPE_EMAIL,
+        WATCHLIST_TYPE_CRYPTO,
+        WATCHLIST_TYPE_KEYWORD,
+        WATCHLIST_TYPE_SSH_FINGERPRINT,
+        WATCHLIST_TYPE_HTTP_FINGERPRINT,
+        WATCHLIST_TYPE_FAVICON_HASH,
+    ]
+}
+
+pub fn normalize_watchlist_item_type(raw_item_type: &str) -> Result<String> {
+    let item_type = raw_item_type.trim().to_ascii_lowercase();
+    anyhow::ensure!(
+        valid_watchlist_item_types().contains(&item_type.as_str()),
+        "invalid watchlist item type: {raw_item_type}"
+    );
+    Ok(item_type)
+}
+
+pub fn normalize_watchlist_value(raw_item_type: &str, raw_value: &str) -> Result<String> {
+    let item_type = normalize_watchlist_item_type(raw_item_type)?;
+    let trimmed = raw_value.trim();
+    anyhow::ensure!(!trimmed.is_empty(), "watchlist value must not be empty");
+
+    match item_type.as_str() {
+        WATCHLIST_TYPE_DOMAIN => normalize_blacklist_domain(trimmed),
+        WATCHLIST_TYPE_URL => {
+            let without_fragment = strip_url_fragment(trimmed);
+            let parsed = Url::parse(&without_fragment)
+                .with_context(|| format!("invalid watchlist URL: {raw_value}"))?;
+            anyhow::ensure!(
+                matches!(parsed.scheme(), "http" | "https"),
+                "watchlist URL must use http or https"
+            );
+            anyhow::ensure!(
+                parsed.host_str().is_some(),
+                "watchlist URL must include a host"
+            );
+            Ok(without_fragment.to_ascii_lowercase())
+        }
+        WATCHLIST_TYPE_EMAIL => {
+            let value = trimmed.to_ascii_lowercase();
+            anyhow::ensure!(
+                value.contains('@') && !value.starts_with('@') && !value.ends_with('@'),
+                "watchlist email must look like an email address"
+            );
+            Ok(value)
+        }
+        WATCHLIST_TYPE_KEYWORD => {
+            let value = trimmed
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase();
+            anyhow::ensure!(!value.is_empty(), "watchlist keyword must not be empty");
+            Ok(value)
+        }
+        WATCHLIST_TYPE_CRYPTO
+        | WATCHLIST_TYPE_SSH_FINGERPRINT
+        | WATCHLIST_TYPE_HTTP_FINGERPRINT
+        | WATCHLIST_TYPE_FAVICON_HASH => Ok(trimmed.to_ascii_lowercase()),
+        _ => unreachable!("watchlist type was already validated"),
+    }
+}
+
+pub fn normalize_watchlist_label(raw_label: Option<&str>) -> String {
+    raw_label
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn normalize_forum_keyword_label(raw_label: &str) -> Result<String> {
     let normalized = raw_label
         .split_whitespace()
@@ -797,6 +897,67 @@ pub fn remove_forum_keyword_rule(
     .context("error removing forum keyword rule")?;
 
     Ok((deleted > 0).then_some((label, pattern)))
+}
+
+pub fn list_watchlist_items(conn: &mut PgConnection) -> Result<Vec<WatchlistItem>> {
+    use crate::schema::watchlist_item::dsl as watchlist_dsl;
+
+    watchlist_dsl::watchlist_item
+        .order(watchlist_dsl::item_type.asc())
+        .then_order_by(watchlist_dsl::value.asc())
+        .then_order_by(watchlist_dsl::id.asc())
+        .select(WatchlistItem::as_select())
+        .load::<WatchlistItem>(conn)
+        .context("error loading watchlist items")
+}
+
+pub fn add_watchlist_item(
+    conn: &mut PgConnection,
+    raw_item_type: &str,
+    raw_value: &str,
+    raw_label: Option<&str>,
+) -> Result<WatchlistItem> {
+    use crate::schema::watchlist_item::dsl as watchlist_dsl;
+
+    let item_type = normalize_watchlist_item_type(raw_item_type)?;
+    let value = normalize_watchlist_value(&item_type, raw_value)?;
+    let label = normalize_watchlist_label(raw_label);
+    diesel::insert_into(watchlist_dsl::watchlist_item)
+        .values(NewWatchlistItem {
+            item_type: &item_type,
+            value: &value,
+            label: &label,
+        })
+        .on_conflict_do_nothing()
+        .execute(conn)
+        .context("error saving watchlist item")?;
+
+    watchlist_dsl::watchlist_item
+        .filter(watchlist_dsl::item_type.eq(&item_type))
+        .filter(watchlist_dsl::value.eq(&value))
+        .select(WatchlistItem::as_select())
+        .first::<WatchlistItem>(conn)
+        .context("error loading saved watchlist item")
+}
+
+pub fn remove_watchlist_item(
+    conn: &mut PgConnection,
+    item_id: i32,
+) -> Result<Option<WatchlistItem>> {
+    use crate::schema::watchlist_item::dsl as watchlist_dsl;
+
+    let existing = watchlist_dsl::watchlist_item
+        .filter(watchlist_dsl::id.eq(item_id))
+        .select(WatchlistItem::as_select())
+        .first::<WatchlistItem>(conn)
+        .optional()
+        .context("error loading watchlist item")?;
+    if existing.is_some() {
+        diesel::delete(watchlist_dsl::watchlist_item.filter(watchlist_dsl::id.eq(item_id)))
+            .execute(conn)
+            .context("error removing watchlist item")?;
+    }
+    Ok(existing)
 }
 
 pub fn list_domain_blacklist_rules(conn: &mut PgConnection) -> Result<Vec<DomainBlacklistRule>> {
@@ -1054,7 +1215,102 @@ fn normalize_page_snapshot(snapshot: &PageSnapshot) -> PageSnapshot {
     let mut normalized = snapshot.clone();
     normalized.url = normalize_crawl_url(&normalized.url);
     normalized.links = normalize_link_observations(&normalized.links);
+    normalized.language_detection = normalize_language_detection(&normalized);
+    if normalized.language.trim().is_empty() {
+        normalized.language = normalized.language_detection.name.clone();
+    }
+    normalized.topic_observations = normalize_topic_observations(&normalized.topic_observations);
     normalized
+}
+
+fn normalize_language_detection(snapshot: &PageSnapshot) -> LanguageDetection {
+    let mut detection = snapshot.language_detection.clone();
+    detection.code = detection.code.trim().to_ascii_lowercase();
+    detection.name = detection.name.trim().to_string();
+    detection.source = detection.source.trim().to_string();
+    detection.evidence = detection.evidence.trim().to_string();
+    detection.confidence = detection.confidence.clamp(0, 100);
+
+    if detection.name.is_empty() || detection.name == "Unknown" {
+        let legacy_language = snapshot.language.trim();
+        if !legacy_language.is_empty() && legacy_language != "Unknown" {
+            detection.name = legacy_language.to_string();
+            detection.confidence = detection.confidence.max(40);
+            detection.source = "legacy-page-language".to_string();
+            detection.evidence = format!("legacy-page-language:{legacy_language}");
+        }
+    }
+    if detection.name.is_empty() {
+        detection.name = "Unknown".to_string();
+    }
+    if detection.source.is_empty() {
+        detection.source = "none".to_string();
+    }
+    if detection.evidence.is_empty() {
+        detection.evidence = "signals:insufficient".to_string();
+    }
+
+    detection
+}
+
+fn normalize_topic_observations(topics: &[TopicObservation]) -> Vec<TopicObservation> {
+    let mut by_topic = HashMap::<String, TopicObservation>::new();
+    for topic in topics {
+        let normalized_topic = topic.topic.trim().to_ascii_lowercase();
+        if normalized_topic.is_empty() {
+            continue;
+        }
+        let score = topic.score.clamp(0, 100);
+        let confidence = match topic.confidence.trim().to_ascii_lowercase().as_str() {
+            CONFIDENCE_HIGH => CONFIDENCE_HIGH.to_string(),
+            CONFIDENCE_MEDIUM => CONFIDENCE_MEDIUM.to_string(),
+            CONFIDENCE_LOW => CONFIDENCE_LOW.to_string(),
+            _ if score >= 18 => CONFIDENCE_HIGH.to_string(),
+            _ if score >= 9 => CONFIDENCE_MEDIUM.to_string(),
+            _ => CONFIDENCE_LOW.to_string(),
+        };
+        let entry = by_topic
+            .entry(normalized_topic.clone())
+            .or_insert_with(|| TopicObservation {
+                topic: normalized_topic.clone(),
+                score: 0,
+                confidence: CONFIDENCE_LOW.to_string(),
+                evidence: Vec::new(),
+            });
+        entry.score = entry.score.max(score);
+        entry.confidence = topic_confidence_for_score(entry.score, &confidence);
+        for evidence in topic.evidence.iter().map(|value| value.trim()) {
+            if !evidence.is_empty() && !entry.evidence.iter().any(|value| value == evidence) {
+                entry.evidence.push(evidence.to_string());
+            }
+        }
+        entry.evidence.truncate(8);
+    }
+
+    let mut normalized = by_topic.into_values().collect::<Vec<_>>();
+    normalized.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.topic.cmp(&right.topic))
+    });
+    normalized.truncate(8);
+    normalized
+}
+
+fn topic_confidence_for_score(score: i32, fallback: &str) -> String {
+    if score >= 18 {
+        CONFIDENCE_HIGH.to_string()
+    } else if score >= 9 {
+        CONFIDENCE_MEDIUM.to_string()
+    } else if matches!(
+        fallback,
+        CONFIDENCE_HIGH | CONFIDENCE_MEDIUM | CONFIDENCE_LOW
+    ) {
+        fallback.to_string()
+    } else {
+        CONFIDENCE_LOW.to_string()
+    }
 }
 
 fn compute_page_keyword_tags(snapshot: &PageSnapshot, rules: &[ForumKeywordRule]) -> Vec<String> {
@@ -1080,8 +1336,9 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
         url as page_url,
     };
     use crate::schema::{
-        page_classification, page_crypto, page_email, page_keyword_tag, page_link, page_scan,
-        page_scan_crypto, page_scan_email, page_scan_link, site_profile,
+        page_classification, page_crypto, page_email, page_keyword_tag, page_language_detection,
+        page_link, page_scan, page_scan_crypto, page_scan_email, page_scan_link, page_topic_tag,
+        site_profile,
     };
     let snapshot = normalize_page_snapshot(snapshot);
 
@@ -1137,6 +1394,32 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
             .map(|row| (row.tag, row.created_at))
             .collect::<HashMap<_, _>>();
         let current_timestamp = current_timestamp_text(conn)?;
+
+        diesel::insert_into(page_language_detection::table)
+            .values(NewPageLanguageDetection {
+                page_id: stored_page_id,
+                language_code: snapshot.language_detection.code.clone(),
+                language_name: snapshot.language_detection.name.clone(),
+                confidence: snapshot.language_detection.confidence,
+                source: snapshot.language_detection.source.clone(),
+                evidence: snapshot.language_detection.evidence.clone(),
+            })
+            .on_conflict(page_language_detection::page_id)
+            .do_update()
+            .set((
+                page_language_detection::language_code
+                    .eq(excluded(page_language_detection::language_code)),
+                page_language_detection::language_name
+                    .eq(excluded(page_language_detection::language_name)),
+                page_language_detection::confidence
+                    .eq(excluded(page_language_detection::confidence)),
+                page_language_detection::source.eq(excluded(page_language_detection::source)),
+                page_language_detection::evidence.eq(excluded(page_language_detection::evidence)),
+                page_language_detection::updated_at
+                    .eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+            ))
+            .execute(conn)
+            .context("error saving page language detection")?;
 
         let stored_scan_id = diesel::insert_into(page_scan::table)
             .values(NewPageScan {
@@ -1209,6 +1492,9 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
         )
         .execute(conn)
         .context("error clearing saved page keyword tags")?;
+        diesel::delete(page_topic_tag::table.filter(page_topic_tag::page_id.eq(stored_page_id)))
+            .execute(conn)
+            .context("error clearing saved page topic tags")?;
 
         let link_rows = snapshot
             .links
@@ -1273,6 +1559,24 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                 .values(&keyword_tag_rows)
                 .execute(conn)
                 .context("error saving page keyword tags")?;
+        }
+
+        let topic_tag_rows = snapshot
+            .topic_observations
+            .iter()
+            .map(|topic| NewPageTopicTag {
+                page_id: stored_page_id,
+                topic: topic.topic.clone(),
+                score: topic.score,
+                confidence: topic.confidence.clone(),
+                evidence: serialize_evidence(&topic.evidence),
+            })
+            .collect::<Vec<_>>();
+        if !topic_tag_rows.is_empty() {
+            diesel::insert_into(page_topic_tag::table)
+                .values(&topic_tag_rows)
+                .execute(conn)
+                .context("error saving page topic tags")?;
         }
 
         let classification = classify_page_snapshot(&snapshot);
@@ -1665,6 +1969,8 @@ pub fn get_page_detail(conn: &mut PgConnection, page_id: i32) -> Result<Option<P
         }
         None => None,
     };
+    let language_detection = load_page_language_detection_summary(conn, page.id)?;
+    let topic_tags = load_page_topic_summaries(conn, page.id)?;
     let intel_leads = load_active_lead_badges_for_sources(
         conn,
         &[
@@ -1685,10 +1991,60 @@ pub fn get_page_detail(conn: &mut PgConnection, page_id: i32) -> Result<Option<P
         incoming_links,
         emails,
         crypto_refs,
+        language_detection,
+        topic_tags,
         site_profile,
         host_http_observation,
         intel_leads,
     }))
+}
+
+fn load_page_language_detection_summary(
+    conn: &mut PgConnection,
+    page_id_value: i32,
+) -> Result<Option<LanguageDetectionSummary>> {
+    use crate::schema::page_language_detection::dsl as language_dsl;
+
+    language_dsl::page_language_detection
+        .filter(language_dsl::page_id.eq(page_id_value))
+        .select(PageLanguageDetectionRecord::as_select())
+        .first::<PageLanguageDetectionRecord>(conn)
+        .optional()
+        .context("error loading page language detection")
+        .map(|record| {
+            record.map(|record| LanguageDetectionSummary {
+                language_code: record.language_code,
+                language_name: record.language_name,
+                confidence: record.confidence,
+                source: record.source,
+                evidence: record.evidence,
+                updated_at: record.updated_at,
+            })
+        })
+}
+
+fn load_page_topic_summaries(
+    conn: &mut PgConnection,
+    page_id_value: i32,
+) -> Result<Vec<PageTopicSummary>> {
+    use crate::schema::page_topic_tag::dsl as topic_dsl;
+
+    Ok(topic_dsl::page_topic_tag
+        .filter(topic_dsl::page_id.eq(page_id_value))
+        .order(topic_dsl::score.desc())
+        .then_order_by(topic_dsl::topic.asc())
+        .select(PageTopicTagRecord::as_select())
+        .load::<PageTopicTagRecord>(conn)
+        .context("error loading page topic tags")?
+        .into_iter()
+        .map(|record| PageTopicSummary {
+            label: page_topic_label(&record.topic),
+            topic: record.topic,
+            score: record.score,
+            confidence: record.confidence,
+            evidence: deserialize_evidence(&record.evidence),
+        })
+        .collect())
 }
 
 pub fn list_page_scan_summaries(
@@ -2465,6 +2821,10 @@ fn intel_lead_rule_specs() -> Vec<IntelLeadRuleSpec> {
         IntelLeadRuleSpec {
             rule_id: "high-degree-target",
             builder: build_high_degree_target_lead_candidates,
+        },
+        IntelLeadRuleSpec {
+            rule_id: "watchlist-match",
+            builder: build_watchlist_lead_candidates,
         },
         IntelLeadRuleSpec {
             rule_id: "shared-email",
@@ -3248,6 +3608,479 @@ fn page_evidence_candidates(
 
 fn crypto_entity_key(asset_type: &str, reference: &str) -> String {
     format!("{asset_type}:{reference}")
+}
+
+fn build_watchlist_lead_candidates(
+    conn: &mut PgConnection,
+    _since_scan_id: Option<i32>,
+    rule_limit: i64,
+) -> Result<Vec<IntelLeadCandidate>> {
+    let items = list_watchlist_items(conn)?
+        .into_iter()
+        .filter(|item| item.enabled)
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+
+    for item in items {
+        let evidence = dedupe_watchlist_evidence(load_watchlist_match_evidence(
+            conn,
+            &item,
+            rule_limit.min(50),
+        )?);
+        if evidence.is_empty() {
+            continue;
+        }
+
+        let first_seen_at = evidence
+            .iter()
+            .map(|row| row.observed_at.as_str())
+            .min()
+            .unwrap_or_default()
+            .to_string();
+        let last_seen_at = evidence
+            .iter()
+            .map(|row| row.observed_at.as_str())
+            .max()
+            .unwrap_or_default()
+            .to_string();
+        let score = watchlist_match_score(&item.item_type, evidence.len());
+        let display_value = watchlist_display_value(&item);
+        let item_type_label = watchlist_item_type_label(&item.item_type);
+
+        candidates.push(IntelLeadCandidate {
+            rule_id: "watchlist-match".to_string(),
+            lead_key: format!("watchlist-match:{}:{}", item.id, item.value),
+            title: format!(
+                "Watchlist {} matched: {}",
+                item_type_label,
+                truncate(&display_value, 80)
+            ),
+            summary: format!(
+                "{} matched {} observation{} for watched {}.",
+                display_value,
+                evidence.len(),
+                if evidence.len() == 1 { "" } else { "s" },
+                item_type_label
+            ),
+            score,
+            confidence: watchlist_match_confidence(&item.item_type),
+            primary_entity_type: item.item_type.clone(),
+            primary_entity_value: item.value.clone(),
+            related_entity_type: (!item.label.is_empty()).then_some("watchlist_label".to_string()),
+            related_entity_value: (!item.label.is_empty()).then_some(item.label.clone()),
+            first_seen_at,
+            last_seen_at,
+            evidence,
+        });
+    }
+
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| right.last_seen_at.cmp(&left.last_seen_at))
+            .then_with(|| left.lead_key.cmp(&right.lead_key))
+    });
+    candidates.truncate(rule_limit.max(0) as usize);
+    Ok(candidates)
+}
+
+fn load_watchlist_match_evidence(
+    conn: &mut PgConnection,
+    item: &WatchlistItem,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    match item.item_type.as_str() {
+        WATCHLIST_TYPE_DOMAIN => load_watchlist_domain_evidence(conn, &item.value, limit),
+        WATCHLIST_TYPE_URL => load_watchlist_url_evidence(conn, &item.value, limit),
+        WATCHLIST_TYPE_EMAIL => load_watchlist_email_evidence(conn, &item.value, limit),
+        WATCHLIST_TYPE_CRYPTO => load_watchlist_crypto_evidence(conn, &item.value, limit),
+        WATCHLIST_TYPE_KEYWORD => load_watchlist_keyword_evidence(conn, &item.value, limit),
+        WATCHLIST_TYPE_SSH_FINGERPRINT => {
+            load_watchlist_ssh_fingerprint_evidence(conn, &item.value, limit)
+        }
+        WATCHLIST_TYPE_HTTP_FINGERPRINT => {
+            load_watchlist_http_fingerprint_evidence(conn, &item.value, limit)
+        }
+        WATCHLIST_TYPE_FAVICON_HASH => {
+            load_watchlist_favicon_hash_evidence(conn, &item.value, limit)
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn load_watchlist_domain_evidence(
+    conn: &mut PgConnection,
+    value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let host_expr = sql_host_without_port_expr("p.url", conn);
+    let source_host_expr = sql_host_without_port_expr("p.url", conn);
+    let page_sql = format!(
+        "
+        SELECT
+            'page' AS source_type,
+            p.id AS source_id,
+            p.url AS source_key,
+            'Watched domain matched page host ' || ({host_expr}) AS evidence_text,
+            p.last_scanned_at AS observed_at,
+            ({host_expr}) AS site_host
+        FROM page p
+        WHERE ({host_expr}) = $1 OR ({host_expr}) LIKE ('%.' || $1)
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        LIMIT $2
+        "
+    );
+    let link_sql = format!(
+        "
+        SELECT
+            'page' AS source_type,
+            p.id AS source_id,
+            p.url AS source_key,
+            'Watched domain appeared in outbound link ' || pl.target_url AS evidence_text,
+            p.last_scanned_at AS observed_at,
+            ({source_host_expr}) AS site_host
+        FROM page_link pl
+        JOIN page p ON p.id = pl.source_page_id
+        WHERE lower(pl.target_host) = $1 OR lower(pl.target_host) LIKE ('%.' || $1)
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        LIMIT $2
+        "
+    );
+
+    let mut evidence =
+        watchlist_rows_to_evidence(load_watchlist_rows(conn, page_sql, value, limit)?);
+    evidence.extend(watchlist_rows_to_evidence(load_watchlist_rows(
+        conn, link_sql, value, limit,
+    )?));
+    Ok(evidence)
+}
+
+fn load_watchlist_url_evidence(
+    conn: &mut PgConnection,
+    value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let source_host_expr = sql_host_without_port_expr("p.url", conn);
+    let page_sql = format!(
+        "
+        SELECT
+            'page' AS source_type,
+            p.id AS source_id,
+            p.url AS source_key,
+            'Watched URL matched scanned page ' || p.url AS evidence_text,
+            p.last_scanned_at AS observed_at,
+            ({source_host_expr}) AS site_host
+        FROM page p
+        WHERE lower(p.url) = $1
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        LIMIT $2
+        "
+    );
+    let link_sql = format!(
+        "
+        SELECT
+            'page' AS source_type,
+            p.id AS source_id,
+            p.url AS source_key,
+            'Watched URL appeared in outbound link ' || pl.target_url AS evidence_text,
+            p.last_scanned_at AS observed_at,
+            ({source_host_expr}) AS site_host
+        FROM page_link pl
+        JOIN page p ON p.id = pl.source_page_id
+        WHERE lower(pl.target_url) = $1
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        LIMIT $2
+        "
+    );
+
+    let mut evidence =
+        watchlist_rows_to_evidence(load_watchlist_rows(conn, page_sql, value, limit)?);
+    evidence.extend(watchlist_rows_to_evidence(load_watchlist_rows(
+        conn, link_sql, value, limit,
+    )?));
+    Ok(evidence)
+}
+
+fn load_watchlist_email_evidence(
+    conn: &mut PgConnection,
+    value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let host_expr = sql_host_without_port_expr("p.url", conn);
+    let sql = format!(
+        "
+        SELECT
+            'page' AS source_type,
+            p.id AS source_id,
+            p.url AS source_key,
+            'Watched email appeared on page ' || p.url AS evidence_text,
+            p.last_scanned_at AS observed_at,
+            ({host_expr}) AS site_host
+        FROM page_email pe
+        JOIN page p ON p.id = pe.page_id
+        WHERE pe.email = $1
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        LIMIT $2
+        "
+    );
+    Ok(watchlist_rows_to_evidence(load_watchlist_rows(
+        conn, sql, value, limit,
+    )?))
+}
+
+fn load_watchlist_crypto_evidence(
+    conn: &mut PgConnection,
+    value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let host_expr = sql_host_without_port_expr("p.url", conn);
+    let sql = format!(
+        "
+        SELECT
+            'page' AS source_type,
+            p.id AS source_id,
+            p.url AS source_key,
+            'Watched crypto reference appeared on page ' || p.url AS evidence_text,
+            p.last_scanned_at AS observed_at,
+            ({host_expr}) AS site_host
+        FROM page_crypto pc
+        JOIN page p ON p.id = pc.page_id
+        WHERE lower(pc.asset_type || ':' || pc.reference) = $1
+           OR lower(pc.reference) = $1
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        LIMIT $2
+        "
+    );
+    Ok(watchlist_rows_to_evidence(load_watchlist_rows(
+        conn, sql, value, limit,
+    )?))
+}
+
+fn load_watchlist_keyword_evidence(
+    conn: &mut PgConnection,
+    value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let host_expr = sql_host_without_port_expr("p.url", conn);
+    let pattern = format!("%{}%", escape_like(value));
+    let sql = format!(
+        "
+        SELECT
+            'page' AS source_type,
+            p.id AS source_id,
+            p.url AS source_key,
+            'Watched keyword matched page title, URL, entities, or tags' AS evidence_text,
+            p.last_scanned_at AS observed_at,
+            ({host_expr}) AS site_host
+        FROM page p
+        WHERE p.title ILIKE $1 ESCAPE '\\'
+           OR p.url ILIKE $1 ESCAPE '\\'
+           OR p.links ILIKE $1 ESCAPE '\\'
+           OR p.emails ILIKE $1 ESCAPE '\\'
+           OR p.coins ILIKE $1 ESCAPE '\\'
+           OR EXISTS (
+                SELECT 1
+                FROM page_keyword_tag pkt
+                WHERE pkt.page_id = p.id
+                  AND pkt.tag ILIKE $1 ESCAPE '\\'
+           )
+        ORDER BY p.last_scanned_at DESC, p.id DESC
+        LIMIT $2
+        "
+    );
+    Ok(watchlist_rows_to_evidence(load_watchlist_rows(
+        conn, sql, &pattern, limit,
+    )?))
+}
+
+fn load_watchlist_http_fingerprint_evidence(
+    conn: &mut PgConnection,
+    value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    load_watchlist_http_observation_evidence(
+        conn,
+        value,
+        "lower(COALESCE(header_fingerprint, '')) = $1",
+        "Watched HTTP header fingerprint matched endpoint ",
+        limit,
+    )
+}
+
+fn load_watchlist_favicon_hash_evidence(
+    conn: &mut PgConnection,
+    value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    load_watchlist_http_observation_evidence(
+        conn,
+        value,
+        "lower(COALESCE(favicon_hash, '')) = $1",
+        "Watched favicon hash matched endpoint ",
+        limit,
+    )
+}
+
+fn load_watchlist_http_observation_evidence(
+    conn: &mut PgConnection,
+    value: &str,
+    predicate: &str,
+    evidence_prefix: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let endpoint_expr = "scheme || '://' || host || ':' || port::text || '/'";
+    let sql = format!(
+        "
+        SELECT
+            'http_endpoint' AS source_type,
+            id AS source_id,
+            {endpoint_expr} AS source_key,
+            {prefix} || {endpoint_expr} AS evidence_text,
+            COALESCE(last_success_at, last_attempt_at) AS observed_at,
+            lower(host) AS site_host
+        FROM host_http_observation
+        WHERE {predicate}
+        ORDER BY COALESCE(last_success_at, last_attempt_at) DESC, id DESC
+        LIMIT $2
+        ",
+        prefix = quote_sql_text_literal(evidence_prefix)
+    );
+    Ok(watchlist_rows_to_evidence(load_watchlist_rows(
+        conn, sql, value, limit,
+    )?))
+}
+
+fn load_watchlist_ssh_fingerprint_evidence(
+    conn: &mut PgConnection,
+    value: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadEvidenceCandidate>> {
+    let endpoint_expr = "'ssh://' || host || ':' || port::text";
+    let sql = format!(
+        "
+        SELECT
+            'ssh_endpoint' AS source_type,
+            id AS source_id,
+            {endpoint_expr} AS source_key,
+            'Watched SSH fingerprint matched endpoint ' || {endpoint_expr} AS evidence_text,
+            COALESCE(last_success_at, last_attempt_at) AS observed_at,
+            lower(host) AS site_host
+        FROM host_ssh_observation
+        WHERE lower(COALESCE(host_key_fingerprint, '')) = $1
+           OR lower(COALESCE(host_key_algorithm, '') || ':' || COALESCE(host_key_fingerprint, '')) = $1
+        ORDER BY COALESCE(last_success_at, last_attempt_at) DESC, id DESC
+        LIMIT $2
+        "
+    );
+    Ok(watchlist_rows_to_evidence(load_watchlist_rows(
+        conn, sql, value, limit,
+    )?))
+}
+
+fn load_watchlist_rows(
+    conn: &mut PgConnection,
+    query: String,
+    value: &str,
+    limit: i64,
+) -> Result<Vec<WatchlistLeadEvidenceRow>> {
+    sql_query(query)
+        .bind::<Text, _>(value)
+        .bind::<BigInt, _>(limit.max(1))
+        .load::<WatchlistLeadEvidenceRow>(conn)
+        .context("error loading watchlist match evidence")
+}
+
+fn watchlist_rows_to_evidence(
+    rows: Vec<WatchlistLeadEvidenceRow>,
+) -> Vec<IntelLeadEvidenceCandidate> {
+    let mut evidence = Vec::new();
+    let mut seen_sites = HashSet::new();
+    for row in rows {
+        evidence.push(evidence_candidate(
+            &row.source_type,
+            row.source_id,
+            row.source_key,
+            row.evidence_text,
+            row.observed_at.clone(),
+        ));
+        if let Some(site_host) = row.site_host {
+            if !site_host.is_empty() && seen_sites.insert(site_host.clone()) {
+                evidence.push(evidence_candidate(
+                    "site",
+                    0,
+                    site_host.clone(),
+                    format!("Watchlist match observed on host {site_host}"),
+                    row.observed_at,
+                ));
+            }
+        }
+    }
+    evidence
+}
+
+fn dedupe_watchlist_evidence(
+    evidence: Vec<IntelLeadEvidenceCandidate>,
+) -> Vec<IntelLeadEvidenceCandidate> {
+    let mut seen = HashSet::new();
+    evidence
+        .into_iter()
+        .filter(|row| {
+            seen.insert((
+                row.source_type.clone(),
+                row.source_id,
+                row.source_key.clone(),
+                row.evidence_text.clone(),
+            ))
+        })
+        .collect()
+}
+
+fn watchlist_match_score(item_type: &str, evidence_count: usize) -> i32 {
+    let base = match item_type {
+        WATCHLIST_TYPE_KEYWORD => 62,
+        WATCHLIST_TYPE_DOMAIN | WATCHLIST_TYPE_URL => 76,
+        WATCHLIST_TYPE_EMAIL | WATCHLIST_TYPE_CRYPTO => 82,
+        WATCHLIST_TYPE_SSH_FINGERPRINT
+        | WATCHLIST_TYPE_HTTP_FINGERPRINT
+        | WATCHLIST_TYPE_FAVICON_HASH => 86,
+        _ => 70,
+    };
+    (base + (evidence_count as i32 * 3)).clamp(1, 98)
+}
+
+fn watchlist_match_confidence(item_type: &str) -> i32 {
+    match item_type {
+        WATCHLIST_TYPE_KEYWORD => 70,
+        WATCHLIST_TYPE_DOMAIN | WATCHLIST_TYPE_URL => 86,
+        WATCHLIST_TYPE_EMAIL | WATCHLIST_TYPE_CRYPTO => 92,
+        WATCHLIST_TYPE_SSH_FINGERPRINT
+        | WATCHLIST_TYPE_HTTP_FINGERPRINT
+        | WATCHLIST_TYPE_FAVICON_HASH => 95,
+        _ => 80,
+    }
+}
+
+fn watchlist_display_value(item: &WatchlistItem) -> String {
+    if item.label.is_empty() {
+        item.value.clone()
+    } else {
+        format!("{} ({})", item.label, item.value)
+    }
+}
+
+fn watchlist_item_type_label(item_type: &str) -> &'static str {
+    match item_type {
+        WATCHLIST_TYPE_DOMAIN => "domain",
+        WATCHLIST_TYPE_URL => "URL",
+        WATCHLIST_TYPE_EMAIL => "email",
+        WATCHLIST_TYPE_CRYPTO => "crypto reference",
+        WATCHLIST_TYPE_KEYWORD => "keyword",
+        WATCHLIST_TYPE_SSH_FINGERPRINT => "SSH fingerprint",
+        WATCHLIST_TYPE_HTTP_FINGERPRINT => "HTTP fingerprint",
+        WATCHLIST_TYPE_FAVICON_HASH => "favicon hash",
+        _ => "item",
+    }
 }
 
 fn candidate_scan_sample_limit(rule_limit: i64) -> i64 {
@@ -4316,6 +5149,11 @@ pub fn search_pages_with_blacklist(
     let email_match = sql_case_insensitive_match_expr("pe.email", "$4", conn);
     let crypto_match =
         sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", "$5", conn);
+    let detected_language_name_match =
+        sql_case_insensitive_match_expr("pld.language_name", "$6", conn);
+    let detected_language_code_match =
+        sql_case_insensitive_match_expr("pld.language_code", "$7", conn);
+    let topic_match = sql_case_insensitive_match_expr("pt.topic", "$8", conn);
     let count_sql = format!(
         "
         SELECT COUNT(*) AS count
@@ -4337,10 +5175,25 @@ pub fn search_pages_with_blacklist(
                 WHERE pc.page_id = p.id
                     AND {crypto_match}
             )
+            OR EXISTS (
+                SELECT 1
+                FROM page_language_detection pld
+                WHERE pld.page_id = p.id
+                    AND ({detected_language_name_match} OR {detected_language_code_match})
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM page_topic_tag pt
+                WHERE pt.page_id = p.id
+                    AND {topic_match}
+            )
           )
         "
     );
     let total_count = sql_query(count_sql)
+        .bind::<Text, _>(&pattern)
+        .bind::<Text, _>(&pattern)
+        .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
@@ -4376,12 +5229,27 @@ pub fn search_pages_with_blacklist(
                 WHERE pc.page_id = p.id
                     AND {crypto_match}
             )
+            OR EXISTS (
+                SELECT 1
+                FROM page_language_detection pld
+                WHERE pld.page_id = p.id
+                    AND ({detected_language_name_match} OR {detected_language_code_match})
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM page_topic_tag pt
+                WHERE pt.page_id = p.id
+                    AND {topic_match}
+            )
           )
         ORDER BY p.last_scanned_at DESC, p.id DESC
-        LIMIT $6 OFFSET $7
+        LIMIT $9 OFFSET $10
     "
     );
     let rows = sql_query(sql)
+        .bind::<Text, _>(&pattern)
+        .bind::<Text, _>(&pattern)
+        .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
@@ -5976,6 +6844,123 @@ pub fn list_site_keyword_timeline(conn: &mut PgConnection) -> Result<Vec<Categor
         .collect())
 }
 
+pub fn count_discovered_service_endpoints(conn: &mut PgConnection) -> Result<i64> {
+    scalar_count(
+        conn,
+        "
+        SELECT
+            (
+                SELECT COUNT(*)
+                FROM host_http_observation
+                WHERE last_success_at IS NOT NULL
+            )
+            + (
+                SELECT COUNT(*)
+                FROM host_service_observation
+                WHERE last_success_at IS NOT NULL
+            )
+            + (
+                SELECT COUNT(*)
+                FROM host_ssh_observation
+                WHERE last_success_at IS NOT NULL
+            ) AS count
+        ",
+    )
+    .context("error counting discovered service endpoints")
+}
+
+pub fn list_page_language_distribution(
+    conn: &mut PgConnection,
+) -> Result<Vec<CategoryDistributionEntry>> {
+    let rows = sql_query(
+        "
+        SELECT
+            language_name AS category,
+            COUNT(*) AS host_count
+        FROM (
+            SELECT
+                COALESCE(
+                    NULLIF(pld.language_name, ''),
+                    NULLIF(p.language, ''),
+                    'Unknown'
+                ) AS language_name
+            FROM page p
+            LEFT JOIN page_language_detection pld ON pld.page_id = p.id
+        ) AS page_languages
+        WHERE language_name != ''
+        GROUP BY language_name
+        ORDER BY host_count DESC, language_name ASC
+        ",
+    )
+    .load::<CategoryDistributionRow>(conn)
+    .context("error loading page language distribution")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CategoryDistributionEntry {
+            label: row.category.clone(),
+            category: row.category,
+            host_count: row.host_count.max(0) as usize,
+        })
+        .collect())
+}
+
+pub fn list_page_topic_distribution(
+    conn: &mut PgConnection,
+) -> Result<Vec<CategoryDistributionEntry>> {
+    let rows = sql_query(
+        "
+        SELECT
+            topic AS category,
+            COUNT(DISTINCT page_id) AS host_count
+        FROM page_topic_tag
+        WHERE topic != ''
+        GROUP BY topic
+        ORDER BY host_count DESC, topic ASC
+        ",
+    )
+    .load::<CategoryDistributionRow>(conn)
+    .context("error loading page topic distribution")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CategoryDistributionEntry {
+            label: page_topic_label(&row.category),
+            category: row.category,
+            host_count: row.host_count.max(0) as usize,
+        })
+        .collect())
+}
+
+pub fn list_page_topic_timeline(conn: &mut PgConnection) -> Result<Vec<CategoryTimelinePoint>> {
+    let day_expr = sql_day_bucket_expr("pt.created_at", conn);
+    let query = format!(
+        "
+        SELECT
+            {day_expr} AS day,
+            pt.topic AS category,
+            COUNT(DISTINCT pt.page_id) AS host_count
+        FROM page_topic_tag pt
+        WHERE pt.topic != ''
+        GROUP BY {day_expr}, pt.topic
+        ORDER BY day ASC, pt.topic ASC
+        "
+    );
+    let rows = sql_query(query)
+        .load::<CategoryTimelineRow>(conn)
+        .context("error loading page topic timeline")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CategoryTimelinePoint {
+            day: row.day,
+            label: page_topic_label(&row.category),
+            category: row.category,
+            host_count: row.host_count.max(0) as usize,
+        })
+        .collect())
+}
+
 pub fn list_site_relationships(
     conn: &mut PgConnection,
     requested_limit: Option<i64>,
@@ -7128,6 +8113,31 @@ fn site_category_label(category: &str) -> &'static str {
     }
 }
 
+fn page_topic_label(topic: &str) -> String {
+    let label = topic
+        .split(|character: char| character == '-' || character == '_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut segment = String::new();
+                    segment.extend(first.to_uppercase());
+                    segment.push_str(chars.as_str());
+                    segment
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if label.is_empty() {
+        "Unknown".to_string()
+    } else {
+        label
+    }
+}
+
 fn sql_host_expr(column: &str, conn: &impl AppConnection) -> String {
     match conn.dialect() {
         SqlDialect::Postgres => format!(
@@ -7357,6 +8367,7 @@ mod tests {
             title: "Alpha Market".to_string(),
             url: "http://alpha.onion".to_string(),
             language: "English".to_string(),
+            language_detection: LanguageDetection::unknown(),
             keyword_corpus: "http://alpha.onion\nAlpha Market\nmarketplace listings".to_string(),
             links: vec![LinkObservation {
                 target_url: "http://beta.onion".to_string(),
@@ -7383,6 +8394,7 @@ mod tests {
                 ],
                 ..ClassificationSignals::default()
             },
+            topic_observations: Vec::new(),
         }
     }
 
@@ -7391,6 +8403,7 @@ mod tests {
             title: "Beta Forum".to_string(),
             url: "http://beta.onion".to_string(),
             language: "French".to_string(),
+            language_detection: LanguageDetection::unknown(),
             keyword_corpus: "http://beta.onion\nBeta Forum\nthread reply topic discussion"
                 .to_string(),
             links: vec![LinkObservation {
@@ -7425,6 +8438,7 @@ mod tests {
                 ],
                 ..ClassificationSignals::default()
             },
+            topic_observations: Vec::new(),
         }
     }
 
@@ -7433,6 +8447,7 @@ mod tests {
             title: "Gamma Directory".to_string(),
             url: "http://gamma.onion".to_string(),
             language: "German".to_string(),
+            language_detection: LanguageDetection::unknown(),
             keyword_corpus: "http://gamma.onion\nGamma Directory\nresource directory".to_string(),
             links: vec![
                 LinkObservation {
@@ -7461,6 +8476,7 @@ mod tests {
                 }],
                 ..ClassificationSignals::default()
             },
+            topic_observations: Vec::new(),
         }
     }
 
@@ -8357,6 +9373,7 @@ mod tests {
             title: "Anchor Heavy Page".to_string(),
             url: "https://example.com/docs/page#overview".to_string(),
             language: "English".to_string(),
+            language_detection: LanguageDetection::unknown(),
             keyword_corpus: "https://example.com/docs/page#overview\nAnchor Heavy Page\nhttps://example.com/docs/faq#shipping".to_string(),
             links: vec![
                 LinkObservation {
@@ -8371,6 +9388,7 @@ mod tests {
             emails: Vec::new(),
             crypto_refs: Vec::new(),
             classification_signals: ClassificationSignals::default(),
+            topic_observations: Vec::new(),
         };
         save_page_info(&mut conn, &snapshot).expect("save fragment page");
 

@@ -6,6 +6,9 @@
     <div class="meta-strip">
         <span><strong>Site:</strong> {{page.host}}</span>
         <span><strong>Language:</strong> {{page.language}}</span>
+        {{#if page.language_detection}}
+        <span><strong>Language Confidence:</strong> {{page.language_detection.confidence}}% · {{page.language_detection.source}}</span>
+        {{/if}}
         <span><strong>Created:</strong> {{page.created_at}}</span>
         <span><strong>Last Scan:</strong> {{page.last_scanned_at}}</span>
     </div>
@@ -52,6 +55,53 @@
     <div class="site-evidence-list">
         {{#each page.site_profile.evidence}}
         <span class="evidence-pill">{{this}}</span>
+        {{/each}}
+    </div>
+</section>
+{{/if}}
+
+{{#if page.language_detection}}
+<section class="card site-profile-card">
+    <div class="section-heading">
+        <h2>Language Detection</h2>
+        <span class="count-pill">{{page.language_detection.confidence}}%</span>
+    </div>
+    <div class="inline-badges">
+        <span class="tag">{{page.language_detection.language_name}}</span>
+        {{#if page.language_detection.language_code}}
+        <span class="tag">{{page.language_detection.language_code}}</span>
+        {{/if}}
+        <span class="muted">Source {{page.language_detection.source}}</span>
+    </div>
+    <div class="site-evidence-list">
+        <span class="evidence-pill">{{page.language_detection.evidence}}</span>
+        <span class="muted">Updated {{page.language_detection.updated_at}}</span>
+    </div>
+</section>
+{{/if}}
+
+{{#if has_topic_tags}}
+<section class="card site-profile-card">
+    <div class="section-heading">
+        <h2>Page Topics</h2>
+        <span class="count-pill">{{topic_tag_count}}</span>
+    </div>
+    <div class="compact-list">
+        {{#each page.topic_tags}}
+        <div class="compact-row compact-row-static">
+            <div>
+                <span class="compact-title">{{label}}</span>
+                <div class="cell-subtitle">score {{score}} · {{confidence}}</div>
+                {{#if evidence}}
+                <div class="site-evidence-list">
+                    {{#each evidence}}
+                    <span class="evidence-pill">{{this}}</span>
+                    {{/each}}
+                </div>
+                {{/if}}
+            </div>
+            <span class="site-category-badge site-confidence-{{confidence}}">{{topic}}</span>
+        </div>
         {{/each}}
     </div>
 </section>

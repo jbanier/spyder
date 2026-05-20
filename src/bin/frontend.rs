@@ -12,17 +12,20 @@ use spyder::models::{
     CategoryDistributionEntry, CategoryTimelinePoint, PaginatedResult, TopSiteSection,
 };
 use spyder::{
-    collect_stats, establish_connection, find_matching_blacklist_domain, get_crypto_entity_detail,
-    get_email_entity_detail, get_host_http_observation_detail, get_host_service_observation_detail,
-    get_intel_lead_detail, get_page_detail, get_page_scan_detail, get_ssh_host_key_detail,
-    intel_lead_rule_ids, list_crypto_entities, list_domain_blacklist_rules,
-    list_domain_blacklist_summaries, list_email_entities, list_host_http_observations,
-    list_host_service_observations, list_intel_leads, list_page_scan_summaries,
-    list_page_summaries, list_page_summaries_with_blacklist, list_site_category_distribution,
-    list_site_category_timeline, list_site_keyword_distribution, list_site_keyword_timeline,
-    list_site_profiles, list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
+    add_watchlist_item, collect_stats, count_discovered_service_endpoints, establish_connection,
+    find_matching_blacklist_domain, get_crypto_entity_detail, get_email_entity_detail,
+    get_host_http_observation_detail, get_host_service_observation_detail, get_intel_lead_detail,
+    get_page_detail, get_page_scan_detail, get_ssh_host_key_detail, intel_lead_rule_ids,
+    list_crypto_entities, list_domain_blacklist_rules, list_domain_blacklist_summaries,
+    list_email_entities, list_host_http_observations, list_host_service_observations,
+    list_intel_leads, list_page_language_distribution, list_page_scan_summaries,
+    list_page_summaries, list_page_summaries_with_blacklist, list_page_topic_distribution,
+    list_page_topic_timeline, list_site_category_distribution, list_site_category_timeline,
+    list_site_keyword_distribution, list_site_keyword_timeline, list_site_profiles,
+    list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
     list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
-    list_work_units, search_pages_with_blacklist, update_intel_lead_status,
+    list_watchlist_items, list_work_units, remove_watchlist_item, search_pages_with_blacklist,
+    update_intel_lead_status, valid_watchlist_item_types,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -130,6 +133,7 @@ struct CategoryLegendView {
     label: String,
     color: String,
     host_count: usize,
+    count_label: String,
     percentage_label: String,
 }
 
@@ -209,9 +213,23 @@ struct LeadFilterOption {
     selected: bool,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+struct WatchlistTypeOption {
+    value: String,
+    label: String,
+}
+
 #[derive(FromForm)]
 struct LeadStatusForm {
     status: String,
+}
+
+#[derive(FromForm)]
+struct WatchlistItemForm {
+    item_type: String,
+    value: String,
+    label: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -381,10 +399,12 @@ fn page_detail(page_id: i32) -> HtmlResult {
     let has_incoming_links = !page.incoming_links.is_empty();
     let has_emails = !page.emails.is_empty();
     let has_crypto_refs = !page.crypto_refs.is_empty();
+    let has_topic_tags = !page.topic_tags.is_empty();
     let outgoing_link_count = page.outgoing_links.len();
     let incoming_link_count = page.incoming_links.len();
     let email_count = page.emails.len();
     let crypto_ref_count = page.crypto_refs.len();
+    let topic_tag_count = page.topic_tags.len();
     let scan_history = list_page_scan_summaries(&mut connection, page_id)
         .frontend_context("loading page scan history")?;
     let recent_scans = scan_history.iter().take(5).cloned().collect::<Vec<_>>();
@@ -414,10 +434,12 @@ fn page_detail(page_id: i32) -> HtmlResult {
             has_incoming_links: has_incoming_links,
             has_emails: has_emails,
             has_crypto_refs: has_crypto_refs,
+            has_topic_tags: has_topic_tags,
             outgoing_link_count: outgoing_link_count,
             incoming_link_count: incoming_link_count,
             email_count: email_count,
             crypto_ref_count: crypto_ref_count,
+            topic_tag_count: topic_tag_count,
         },
     ))
 }
@@ -626,7 +648,23 @@ fn analytics() -> HtmlResult {
         .frontend_context("loading site keyword distribution")?;
     let keyword_timeline = list_site_keyword_timeline(&mut connection)
         .frontend_context("loading site keyword timeline")?;
+    let language_distribution = list_page_language_distribution(&mut connection)
+        .frontend_context("loading page language distribution")?;
+    let topic_distribution = list_page_topic_distribution(&mut connection)
+        .frontend_context("loading page topic distribution")?;
+    let topic_timeline = list_page_topic_timeline(&mut connection)
+        .frontend_context("loading page topic timeline")?;
+    let service_endpoint_count = count_discovered_service_endpoints(&mut connection)
+        .frontend_context("counting discovered service endpoints")?;
     let total_hosts = category_distribution
+        .iter()
+        .map(|entry| entry.host_count)
+        .sum::<usize>();
+    let total_language_pages = language_distribution
+        .iter()
+        .map(|entry| entry.host_count)
+        .sum::<usize>();
+    let total_topic_pages = topic_distribution
         .iter()
         .map(|entry| entry.host_count)
         .sum::<usize>();
@@ -646,6 +684,14 @@ fn analytics() -> HtmlResult {
         .last()
         .map(|item| item.day.clone())
         .unwrap_or_else(|| "Never".to_string());
+    let topic_first_day = topic_timeline
+        .first()
+        .map(|item| item.day.clone())
+        .unwrap_or_else(|| "Never".to_string());
+    let topic_last_day = topic_timeline
+        .last()
+        .map(|item| item.day.clone())
+        .unwrap_or_else(|| "Never".to_string());
     let metrics = vec![
         CategoryMetricView {
             value: total_hosts.to_string(),
@@ -656,6 +702,18 @@ fn analytics() -> HtmlResult {
             label: "Active Categories".to_string(),
         },
         CategoryMetricView {
+            value: service_endpoint_count.max(0).to_string(),
+            label: "Service Endpoints".to_string(),
+        },
+        CategoryMetricView {
+            value: total_language_pages.to_string(),
+            label: "Pages With Language".to_string(),
+        },
+        CategoryMetricView {
+            value: total_topic_pages.to_string(),
+            label: "Topic-Tagged Pages".to_string(),
+        },
+        CategoryMetricView {
             value: first_day.clone(),
             label: "First Classified Day".to_string(),
         },
@@ -664,10 +722,11 @@ fn analytics() -> HtmlResult {
             label: "Latest Classified Day".to_string(),
         },
     ];
-    let category_legend = build_category_legend_items(&category_distribution);
+    let category_legend = build_category_legend_items(&category_distribution, "hosts");
     let category_pie_svg = render_distribution_pie_chart(
         &category_distribution,
         "Classified",
+        "hosts",
         "Current site category distribution",
         "No data",
         "Run more scans to classify hosts",
@@ -675,14 +734,16 @@ fn analytics() -> HtmlResult {
     let category_histogram_svg = render_timeline_histogram(
         &category_distribution,
         &category_timeline,
+        "hosts",
         "Daily histogram of newly classified hosts by category",
         "No timeline yet",
         "Newly classified hosts will appear here over time",
     );
-    let keyword_legend = build_category_legend_items(&keyword_distribution);
+    let keyword_legend = build_category_legend_items(&keyword_distribution, "hosts");
     let keyword_pie_svg = render_distribution_pie_chart(
         &keyword_distribution,
         "Keyword Tags",
+        "hosts",
         "Current site keyword tag distribution",
         "No keyword data",
         "Tagged forum hosts will appear here after keyword matches are found",
@@ -690,20 +751,50 @@ fn analytics() -> HtmlResult {
     let keyword_histogram_svg = render_timeline_histogram(
         &keyword_distribution,
         &keyword_timeline,
+        "hosts",
         "Daily histogram of first observed host keyword tags",
         "No keyword timeline yet",
         "Newly tagged forum hosts will appear here over time",
+    );
+    let language_legend = build_category_legend_items(&language_distribution, "pages");
+    let language_pie_svg = render_distribution_pie_chart(
+        &language_distribution,
+        "Languages",
+        "pages",
+        "Current page language distribution",
+        "No language data",
+        "Language detections will appear here after pages are scanned",
+    );
+    let topic_legend = build_category_legend_items(&topic_distribution, "pages");
+    let topic_pie_svg = render_distribution_pie_chart(
+        &topic_distribution,
+        "Topics",
+        "pages",
+        "Current static page topic distribution",
+        "No topic data",
+        "Static topic matches will appear here after pages are scanned",
+    );
+    let topic_histogram_svg = render_timeline_histogram(
+        &topic_distribution,
+        &topic_timeline,
+        "pages",
+        "Daily histogram of first observed page topics",
+        "No topic timeline yet",
+        "Newly matched page topics will appear here over time",
     );
     let has_distribution = !category_distribution.is_empty();
     let has_timeline = !category_timeline.is_empty();
     let has_keyword_distribution = !keyword_distribution.is_empty();
     let has_keyword_timeline = !keyword_timeline.is_empty();
+    let has_language_distribution = !language_distribution.is_empty();
+    let has_topic_distribution = !topic_distribution.is_empty();
+    let has_topic_timeline = !topic_timeline.is_empty();
 
     Ok(Template::render(
         "analytics",
         context! {
             title: "Site Analytics",
-            description: "See current category and keyword-tag breakdowns, plus when those classifications and tags first appeared in the index.",
+            description: "See site classifications, discovered services, page language detections, and static topic tags across the current index.",
             metrics: metrics,
             category_legend: category_legend,
             category_pie_svg: category_pie_svg,
@@ -711,15 +802,25 @@ fn analytics() -> HtmlResult {
             keyword_legend: keyword_legend,
             keyword_pie_svg: keyword_pie_svg,
             keyword_histogram_svg: keyword_histogram_svg,
+            language_legend: language_legend,
+            language_pie_svg: language_pie_svg,
+            topic_legend: topic_legend,
+            topic_pie_svg: topic_pie_svg,
+            topic_histogram_svg: topic_histogram_svg,
             has_distribution: has_distribution,
             has_timeline: has_timeline,
             has_keyword_distribution: has_keyword_distribution,
             has_keyword_timeline: has_keyword_timeline,
+            has_language_distribution: has_language_distribution,
+            has_topic_distribution: has_topic_distribution,
+            has_topic_timeline: has_topic_timeline,
             total_hosts: total_hosts,
             first_day: first_day,
             last_day: last_day,
             keyword_first_day: keyword_first_day,
             keyword_last_day: keyword_last_day,
+            topic_first_day: topic_first_day,
+            topic_last_day: topic_last_day,
         },
     ))
 }
@@ -750,6 +851,48 @@ fn sites(list_query: Option<ListQuery>) -> HtmlResult {
             has_pagination: has_pagination,
         },
     ))
+}
+
+#[get("/watchlists")]
+fn watchlists() -> HtmlResult {
+    let mut connection = open_connection()?;
+    let items =
+        list_watchlist_items(&mut connection).frontend_context("loading watchlist items")?;
+    let has_items = !items.is_empty();
+    let item_count = items.len();
+    let type_options = watchlist_type_options();
+
+    Ok(Template::render(
+        "watchlists",
+        context! {
+            title: "Customer Watchlists",
+            description: "Customer-specific indicators that generate watchlist-match leads when crawler or service observations match.",
+            items: items,
+            item_count: item_count,
+            has_items: has_items,
+            type_options: type_options,
+        },
+    ))
+}
+
+#[post("/watchlists", data = "<form>")]
+fn add_watchlist(form: Form<WatchlistItemForm>) -> Result<Redirect, FrontendError> {
+    let mut connection = open_connection()?;
+    add_watchlist_item(
+        &mut connection,
+        &form.item_type,
+        &form.value,
+        form.label.as_deref(),
+    )
+    .frontend_context("saving watchlist item")?;
+    Ok(Redirect::to("/watchlists"))
+}
+
+#[post("/watchlists/<item_id>/delete")]
+fn delete_watchlist_item(item_id: i32) -> Result<Redirect, FrontendError> {
+    let mut connection = open_connection()?;
+    remove_watchlist_item(&mut connection, item_id).frontend_context("removing watchlist item")?;
+    Ok(Redirect::to("/watchlists"))
 }
 
 #[get("/leads?<query..>")]
@@ -1415,6 +1558,30 @@ fn lead_rule_filter_options(selected: Option<&str>) -> Vec<LeadFilterOption> {
         .collect()
 }
 
+fn watchlist_type_options() -> Vec<WatchlistTypeOption> {
+    valid_watchlist_item_types()
+        .into_iter()
+        .map(|value| WatchlistTypeOption {
+            value: value.to_string(),
+            label: watchlist_type_label(value).to_string(),
+        })
+        .collect()
+}
+
+fn watchlist_type_label(value: &str) -> &'static str {
+    match value {
+        "domain" => "Domain",
+        "url" => "URL",
+        "email" => "Email",
+        "crypto" => "Crypto",
+        "keyword" => "Keyword",
+        "ssh_fingerprint" => "SSH fingerprint",
+        "http_fingerprint" => "HTTP fingerprint",
+        "favicon_hash" => "Favicon hash",
+        _ => "Item",
+    }
+}
+
 fn push_optional_param(params: &mut Vec<(String, String)>, key: &str, value: Option<&str>) {
     if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
         params.push((key.to_string(), value.to_string()));
@@ -1511,6 +1678,7 @@ fn build_list_url(
 
 fn build_category_legend_items(
     distribution: &[CategoryDistributionEntry],
+    count_label: &str,
 ) -> Vec<CategoryLegendView> {
     let total_hosts = distribution
         .iter()
@@ -1524,6 +1692,7 @@ fn build_category_legend_items(
             label: entry.label.clone(),
             color: analytics_chart_color(&entry.category).to_string(),
             host_count: entry.host_count,
+            count_label: count_label.to_string(),
             percentage_label: format!(
                 "{:.1}%",
                 (entry.host_count as f64 / total_hosts as f64) * 100.0
@@ -1565,6 +1734,7 @@ fn fallback_chart_color(series_key: &str) -> &'static str {
 fn render_distribution_pie_chart(
     distribution: &[CategoryDistributionEntry],
     center_label: &str,
+    count_label: &str,
     aria_label: &str,
     empty_title: &str,
     empty_subtitle: &str,
@@ -1601,7 +1771,7 @@ fn render_distribution_pie_chart(
         let color = analytics_chart_color(&entry.category);
         let percentage = (entry.host_count as f64 / total_hosts as f64) * 100.0;
         slices.push_str(&format!(
-            r##"<circle cx="160" cy="160" r="{radius}" fill="none" stroke="{color}" stroke-width="46" stroke-dasharray="{slice_len:.3} {remaining:.3}" stroke-dashoffset="{dashoffset:.3}" transform="rotate(-90 160 160)"><title>{label}: {count} hosts ({percentage:.1}%)</title></circle>"##,
+            r##"<circle cx="160" cy="160" r="{radius}" fill="none" stroke="{color}" stroke-width="46" stroke-dasharray="{slice_len:.3} {remaining:.3}" stroke-dashoffset="{dashoffset:.3}" transform="rotate(-90 160 160)"><title>{label}: {count} {count_label} ({percentage:.1}%)</title></circle>"##,
             radius = radius,
             color = color,
             slice_len = slice_len,
@@ -1609,6 +1779,7 @@ fn render_distribution_pie_chart(
             dashoffset = -offset,
             label = entry.label,
             count = entry.host_count,
+            count_label = count_label,
             percentage = percentage,
         ));
         offset += slice_len;
@@ -1637,6 +1808,7 @@ fn render_distribution_pie_chart(
 fn render_timeline_histogram(
     distribution: &[CategoryDistributionEntry],
     timeline: &[CategoryTimelinePoint],
+    count_label: &str,
     aria_label: &str,
     empty_title: &str,
     empty_subtitle: &str,
@@ -1732,7 +1904,7 @@ fn render_timeline_histogram(
                 .cloned()
                 .unwrap_or_else(|| category.clone());
             bars.push_str(&format!(
-                r##"<rect x="{x:.1}" y="{y:.1}" width="{width:.1}" height="{height:.1}" rx="3" fill="{color}"><title>{day} · {label}: {count} hosts</title></rect>"##,
+                r##"<rect x="{x:.1}" y="{y:.1}" width="{width:.1}" height="{height:.1}" rx="3" fill="{color}"><title>{day} · {label}: {count} {count_label}</title></rect>"##,
                 x = x,
                 y = y_cursor,
                 width = bar_width,
@@ -1741,6 +1913,7 @@ fn render_timeline_histogram(
                 day = day,
                 label = label,
                 count = count,
+                count_label = count_label,
             ));
         }
 
@@ -1812,6 +1985,9 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 top,
                 analytics,
                 sites,
+                watchlists,
+                add_watchlist,
+                delete_watchlist_item,
                 leads,
                 lead_detail,
                 lead_status_form,
@@ -1844,7 +2020,7 @@ mod tests {
     use rocket::http::Status;
     use rocket::local::blocking::Client;
     use spyder::models::{
-        CategoryHint, ClassificationSignals, CryptoReference, LinkObservation,
+        CategoryHint, ClassificationSignals, CryptoReference, LanguageDetection, LinkObservation,
         NewHostSshObservation, PageSnapshot,
     };
     use spyder::{
@@ -2010,6 +2186,7 @@ mod tests {
             title: "Alpha Market".to_string(),
             url: "http://alpha.onion".to_string(),
             language: "English".to_string(),
+            language_detection: LanguageDetection::unknown(),
             keyword_corpus: "http://alpha.onion\nAlpha Market\nmarketplace listings".to_string(),
             links: vec![LinkObservation {
                 target_url: "http://beta.onion".to_string(),
@@ -2029,11 +2206,13 @@ mod tests {
                 }],
                 ..ClassificationSignals::default()
             },
+            topic_observations: Vec::new(),
         };
         let forum_snapshot = PageSnapshot {
             title: "Beta Forum".to_string(),
             url: "http://beta.onion".to_string(),
             language: "French".to_string(),
+            language_detection: LanguageDetection::unknown(),
             keyword_corpus: "http://beta.onion\nBeta Forum\nthread about acme corp".to_string(),
             links: vec![LinkObservation {
                 target_url: "http://alpha.onion".to_string(),
@@ -2061,11 +2240,13 @@ mod tests {
                 ],
                 ..ClassificationSignals::default()
             },
+            topic_observations: Vec::new(),
         };
         let directory_snapshot = PageSnapshot {
             title: "Gamma Directory".to_string(),
             url: "http://gamma.onion".to_string(),
             language: "German".to_string(),
+            language_detection: LanguageDetection::unknown(),
             keyword_corpus: "http://gamma.onion\nGamma Directory\nresource directory".to_string(),
             links: vec![
                 LinkObservation {
@@ -2094,6 +2275,7 @@ mod tests {
                 }],
                 ..ClassificationSignals::default()
             },
+            topic_observations: Vec::new(),
         };
         save_page_info(&mut conn, &market_snapshot).expect("seed alpha page");
         save_page_info(&mut conn, &forum_snapshot).expect("seed beta page");

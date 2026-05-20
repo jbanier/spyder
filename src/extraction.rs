@@ -1,10 +1,11 @@
 use crate::models::{
-    CategoryHint, ClassificationSignals, CryptoReference, LinkObservation, PageSnapshot,
+    CategoryHint, ClassificationSignals, CryptoReference, LanguageDetection, LinkObservation,
+    PageSnapshot, TopicObservation,
 };
 use anyhow::{Context, Result};
 use regex::Regex;
 use scraper::{Html, Selector};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use url::Url;
 use whatlang::detect;
@@ -19,17 +20,22 @@ pub fn extract_page_snapshot(url: &str, body: &str) -> Result<PageSnapshot> {
     let links = extract_links(&document, &base_url);
     let classification_signals =
         extract_classification_signals(&document, &base_url, &title, &text, &links);
+    let language_detection = detect_page_language(&document, &text);
+    let topic_observations =
+        extract_topic_observations(&document, &base_url, &title, &text, &links);
     let keyword_corpus = build_keyword_corpus(&normalized_url, &title, &text, &links);
 
     Ok(PageSnapshot {
         title,
         url: normalized_url,
-        language: detect_primary_language(&text),
+        language: language_detection.name.clone(),
+        language_detection,
         keyword_corpus,
         links,
         emails: extract_emails(body),
         crypto_refs: extract_crypto_refs(body),
         classification_signals,
+        topic_observations,
     })
 }
 
@@ -441,11 +447,491 @@ fn push_hint(signals: &mut ClassificationSignals, category: &str, evidence: &str
     });
 }
 
-fn detect_primary_language(text: &str) -> String {
-    let sample = text.chars().take(5_000).collect::<String>();
-    detect(&sample)
-        .map(|info| info.lang().eng_name().to_string())
-        .unwrap_or_else(|| "Unknown".to_string())
+fn detect_page_language(document: &Html, text: &str) -> LanguageDetection {
+    let declared = declared_language(document);
+    let detected = detect_language_from_text(text);
+
+    match (declared, detected) {
+        (Some(mut declared), Some(detected)) => {
+            if language_codes_agree(&declared.code, &detected.code) {
+                declared.confidence = declared.confidence.max(detected.confidence).max(90);
+                declared.evidence = format!("{}; {}", declared.evidence, detected.evidence);
+                declared
+            } else if detected.confidence >= 90 {
+                detected
+            } else {
+                declared
+            }
+        }
+        (Some(declared), None) => declared,
+        (None, Some(detected)) => detected,
+        (None, None) => LanguageDetection::unknown(),
+    }
+}
+
+fn declared_language(document: &Html) -> Option<LanguageDetection> {
+    if let Some(value) = select_first_attr(document, "html[lang]", "lang") {
+        return language_detection_from_declared_tag(&value, "html-lang", 88);
+    }
+
+    let selector = Selector::parse("meta").expect("valid selector");
+    for element in document.select(&selector) {
+        let name = element
+            .value()
+            .attr("name")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let property = element
+            .value()
+            .attr("property")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let http_equiv = element
+            .value()
+            .attr("http-equiv")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let content = element.value().attr("content").unwrap_or_default().trim();
+        if content.is_empty() {
+            continue;
+        }
+        let source = if name == "language" {
+            Some("meta-language")
+        } else if property == "og:locale" {
+            Some("meta-og-locale")
+        } else if http_equiv == "content-language" {
+            Some("meta-content-language")
+        } else {
+            None
+        };
+        if let Some(source) = source {
+            if let Some(detection) = language_detection_from_declared_tag(content, source, 82) {
+                return Some(detection);
+            }
+        }
+    }
+
+    None
+}
+
+fn select_first_attr(document: &Html, selector: &str, attr: &str) -> Option<String> {
+    let selector = Selector::parse(selector).ok()?;
+    document
+        .select(&selector)
+        .find_map(|element| element.value().attr(attr))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn language_detection_from_declared_tag(
+    raw_value: &str,
+    source: &str,
+    confidence: i32,
+) -> Option<LanguageDetection> {
+    let raw_language = raw_value
+        .split(',')
+        .next()
+        .unwrap_or(raw_value)
+        .trim()
+        .split(';')
+        .next()
+        .unwrap_or(raw_value)
+        .trim();
+    let primary = raw_language
+        .replace('_', "-")
+        .split('-')
+        .next()
+        .unwrap_or(raw_language)
+        .trim()
+        .to_ascii_lowercase();
+    if primary.is_empty() {
+        return None;
+    }
+    let name = language_name_for_code(&primary)
+        .unwrap_or(raw_language)
+        .to_string();
+    Some(LanguageDetection {
+        code: primary,
+        name,
+        confidence,
+        source: source.to_string(),
+        evidence: format!("{source}:{raw_language}"),
+    })
+}
+
+fn detect_language_from_text(text: &str) -> Option<LanguageDetection> {
+    let sample = text.chars().take(12_000).collect::<String>();
+    detect(&sample).map(|info| LanguageDetection {
+        code: info.lang().code().to_string(),
+        name: info.lang().eng_name().to_string(),
+        confidence: (info.confidence() * 100.0).round().clamp(0.0, 100.0) as i32,
+        source: "whatlang".to_string(),
+        evidence: format!(
+            "whatlang:{}:{:.2}",
+            format!("{:?}", info.script()).to_ascii_lowercase(),
+            info.confidence()
+        ),
+    })
+}
+
+fn language_codes_agree(left: &str, right: &str) -> bool {
+    let left = left.trim().to_ascii_lowercase();
+    let right = right.trim().to_ascii_lowercase();
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    left == right
+        || language_name_for_code(&left) == language_name_for_code(&right)
+        || iso2_to_iso3(&left)
+            .map(|code| code == right)
+            .unwrap_or(false)
+        || iso2_to_iso3(&right)
+            .map(|code| code == left)
+            .unwrap_or(false)
+}
+
+fn language_name_for_code(code: &str) -> Option<&'static str> {
+    match code.to_ascii_lowercase().as_str() {
+        "ar" | "ara" => Some("Arabic"),
+        "de" | "deu" | "ger" => Some("German"),
+        "en" | "eng" => Some("English"),
+        "es" | "spa" => Some("Spanish"),
+        "fr" | "fra" | "fre" => Some("French"),
+        "it" | "ita" => Some("Italian"),
+        "nl" | "nld" | "dut" => Some("Dutch"),
+        "pl" | "pol" => Some("Polish"),
+        "pt" | "por" => Some("Portuguese"),
+        "ru" | "rus" => Some("Russian"),
+        "tr" | "tur" => Some("Turkish"),
+        "uk" | "ukr" => Some("Ukrainian"),
+        "zh" | "cmn" | "zho" | "chi" => Some("Chinese"),
+        _ => None,
+    }
+}
+
+fn iso2_to_iso3(code: &str) -> Option<&'static str> {
+    match code {
+        "ar" => Some("ara"),
+        "de" => Some("deu"),
+        "en" => Some("eng"),
+        "es" => Some("spa"),
+        "fr" => Some("fra"),
+        "it" => Some("ita"),
+        "nl" => Some("nld"),
+        "pl" => Some("pol"),
+        "pt" => Some("por"),
+        "ru" => Some("rus"),
+        "tr" => Some("tur"),
+        "uk" => Some("ukr"),
+        "zh" => Some("cmn"),
+        _ => None,
+    }
+}
+
+fn extract_topic_observations(
+    document: &Html,
+    base_url: &Url,
+    title: &str,
+    text: &str,
+    links: &[LinkObservation],
+) -> Vec<TopicObservation> {
+    let mut scores = HashMap::<String, i32>::new();
+    let mut evidence = HashMap::<String, Vec<(i32, String)>>::new();
+
+    let title_text = title.to_ascii_lowercase();
+    let heading_text = collect_selector_text(document, "h1, h2, h3, h4, h5, h6");
+    let meta_text = collect_meta_topic_text(document);
+    let body_text = text.to_ascii_lowercase();
+    let url_text = base_url.as_str().to_ascii_lowercase();
+    let link_text = links
+        .iter()
+        .map(|link| link.target_url.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    apply_topic_rules(
+        &title_text,
+        "title",
+        3,
+        topic_keyword_rules(),
+        &mut scores,
+        &mut evidence,
+    );
+    apply_topic_rules(
+        &heading_text,
+        "heading",
+        2,
+        topic_keyword_rules(),
+        &mut scores,
+        &mut evidence,
+    );
+    apply_topic_rules(
+        &meta_text,
+        "meta",
+        2,
+        topic_keyword_rules(),
+        &mut scores,
+        &mut evidence,
+    );
+    apply_topic_rules(
+        &body_text,
+        "text",
+        1,
+        topic_keyword_rules(),
+        &mut scores,
+        &mut evidence,
+    );
+    apply_topic_rules(
+        &url_text,
+        "url",
+        2,
+        topic_path_rules(),
+        &mut scores,
+        &mut evidence,
+    );
+    apply_topic_rules(
+        &link_text,
+        "link",
+        1,
+        topic_path_rules(),
+        &mut scores,
+        &mut evidence,
+    );
+
+    let mut topics = scores
+        .into_iter()
+        .filter(|(_, score)| *score >= 4)
+        .map(|(topic, score)| {
+            let mut topic_evidence = evidence.remove(&topic).unwrap_or_default();
+            topic_evidence
+                .sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+            let evidence = topic_evidence
+                .into_iter()
+                .map(|(_, evidence)| evidence)
+                .take(8)
+                .collect::<Vec<_>>();
+            TopicObservation {
+                topic,
+                score: score.clamp(0, 100),
+                confidence: topic_confidence(score).to_string(),
+                evidence,
+            }
+        })
+        .collect::<Vec<_>>();
+    topics.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.topic.cmp(&right.topic))
+    });
+    topics.truncate(8);
+    topics
+}
+
+fn collect_selector_text(document: &Html, selector: &str) -> String {
+    let selector = Selector::parse(selector).expect("valid selector");
+    document
+        .select(&selector)
+        .flat_map(|element| element.text())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn collect_meta_topic_text(document: &Html) -> String {
+    let selector = Selector::parse("meta").expect("valid selector");
+    let mut values = Vec::new();
+    for element in document.select(&selector) {
+        let name = element
+            .value()
+            .attr("name")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let property = element
+            .value()
+            .attr("property")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if matches!(
+            name.as_str(),
+            "description" | "keywords" | "subject" | "topic"
+        ) || matches!(property.as_str(), "og:title" | "og:description")
+        {
+            if let Some(content) = element.value().attr("content") {
+                values.push(content);
+            }
+        }
+    }
+    values.join(" ").to_ascii_lowercase()
+}
+
+fn apply_topic_rules(
+    haystack: &str,
+    source: &str,
+    source_multiplier: i32,
+    rules: &[(&str, &str, i32)],
+    scores: &mut HashMap<String, i32>,
+    evidence: &mut HashMap<String, Vec<(i32, String)>>,
+) {
+    for (topic, needle, weight) in rules {
+        if topic_rule_matches(haystack, needle) {
+            let weighted_score = weight * source_multiplier;
+            *scores.entry((*topic).to_string()).or_default() += weighted_score;
+            evidence
+                .entry((*topic).to_string())
+                .or_default()
+                .push((weighted_score, format!("{source}:{needle}")));
+        }
+    }
+}
+
+fn topic_rule_matches(haystack: &str, needle: &str) -> bool {
+    if needle.starts_with('/') {
+        return haystack.contains(needle);
+    }
+
+    let starts_with_word = needle
+        .chars()
+        .next()
+        .map(|character| character.is_ascii_alphanumeric())
+        .unwrap_or(false);
+    let ends_with_word = needle
+        .chars()
+        .next_back()
+        .map(|character| character.is_ascii_alphanumeric())
+        .unwrap_or(false);
+    let mut offset = 0;
+    while let Some(relative_index) = haystack[offset..].find(needle) {
+        let start = offset + relative_index;
+        let end = start + needle.len();
+        let before_is_boundary = !starts_with_word
+            || start == 0
+            || haystack[..start]
+                .chars()
+                .next_back()
+                .map(|character| !character.is_ascii_alphanumeric())
+                .unwrap_or(true);
+        let after_is_boundary = !ends_with_word
+            || end >= haystack.len()
+            || haystack[end..]
+                .chars()
+                .next()
+                .map(|character| !character.is_ascii_alphanumeric())
+                .unwrap_or(true);
+        if before_is_boundary && after_is_boundary {
+            return true;
+        }
+        offset = end.max(offset + 1);
+    }
+    false
+}
+
+fn topic_confidence(score: i32) -> &'static str {
+    if score >= 18 {
+        "high"
+    } else if score >= 9 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+fn topic_keyword_rules() -> &'static [(&'static str, &'static str, i32)] {
+    &[
+        ("marketplace", "marketplace", 5),
+        ("marketplace", "market", 3),
+        ("marketplace", "vendor", 4),
+        ("marketplace", "seller", 3),
+        ("marketplace", "escrow", 4),
+        ("marketplace", "checkout", 3),
+        ("marketplace", "shopping cart", 3),
+        ("marketplace", "add to cart", 4),
+        ("forum", "forum", 5),
+        ("forum", "thread", 4),
+        ("forum", "topic", 3),
+        ("forum", "reply", 3),
+        ("forum", "posted by", 3),
+        ("directory", "directory", 5),
+        ("directory", "link list", 4),
+        ("directory", "onion list", 4),
+        ("directory", "hidden wiki", 5),
+        ("directory", "mirror", 3),
+        ("search", "search engine", 5),
+        ("search", "advanced search", 4),
+        ("search", "search results", 4),
+        ("documentation", "documentation", 5),
+        ("documentation", "api reference", 4),
+        ("documentation", "manual", 4),
+        ("documentation", "installation", 3),
+        ("crypto", "bitcoin", 4),
+        ("crypto", "monero", 4),
+        ("crypto", "ethereum", 4),
+        ("crypto", "wallet", 3),
+        ("crypto", "btc", 2),
+        ("crypto", "xmr", 2),
+        ("credentials", "credential", 5),
+        ("credentials", "password", 4),
+        ("credentials", "combo list", 5),
+        ("credentials", "account dump", 5),
+        ("credentials", "stealer log", 5),
+        ("data-leak", "data leak", 5),
+        ("data-leak", "database dump", 5),
+        ("data-leak", "breach", 4),
+        ("data-leak", "leaked", 3),
+        ("data-leak", "confidential", 3),
+        ("malware", "malware", 5),
+        ("malware", "ransomware", 5),
+        ("malware", "botnet", 5),
+        ("malware", "stealer", 4),
+        ("malware", "loader", 3),
+        ("malware", "command and control", 5),
+        ("phishing", "phishing", 5),
+        ("phishing", "spoof", 3),
+        ("phishing", "webmail login", 4),
+        ("exploit", "exploit", 5),
+        ("exploit", "vulnerability", 4),
+        ("exploit", "cve-", 5),
+        ("exploit", "rce", 4),
+        ("exploit", "zero day", 5),
+        ("infrastructure", "proxy", 3),
+        ("infrastructure", "socks", 3),
+        ("infrastructure", "vpn", 3),
+        ("infrastructure", "ssh", 3),
+        ("infrastructure", "server", 2),
+        ("infrastructure", "admin panel", 4),
+    ]
+}
+
+fn topic_path_rules() -> &'static [(&'static str, &'static str, i32)] {
+    &[
+        ("marketplace", "/market", 4),
+        ("marketplace", "/vendor", 4),
+        ("marketplace", "/seller", 3),
+        ("marketplace", "/listing", 4),
+        ("marketplace", "/product", 3),
+        ("forum", "/forum", 4),
+        ("forum", "/thread", 4),
+        ("forum", "/topic", 4),
+        ("directory", "/directory", 4),
+        ("directory", "/links", 3),
+        ("directory", "/mirror", 3),
+        ("search", "/search", 4),
+        ("documentation", "/docs", 4),
+        ("documentation", "/api", 3),
+        ("documentation", "/guide", 3),
+        ("credentials", "/logs", 3),
+        ("credentials", "/accounts", 3),
+        ("data-leak", "/leaks", 4),
+        ("data-leak", "/dump", 4),
+        ("malware", "/malware", 4),
+        ("malware", "/botnet", 4),
+        ("phishing", "/phish", 4),
+        ("exploit", "/exploit", 4),
+        ("exploit", "/cve", 4),
+        ("infrastructure", "/proxy", 3),
+        ("infrastructure", "/vpn", 3),
+    ]
 }
 
 fn email_regex() -> &'static Regex {
@@ -516,6 +1002,12 @@ mod tests {
 
         assert_eq!(snapshot.title, "Search Engine Hub");
         assert_eq!(snapshot.language, "English");
+        assert_eq!(snapshot.language_detection.name, "English");
+        assert!(snapshot.language_detection.confidence > 0);
+        assert!(snapshot
+            .topic_observations
+            .iter()
+            .any(|topic| topic.topic == "search" && topic.score >= 9));
         assert_eq!(snapshot.emails, vec!["team@example.com".to_string()]);
         assert_eq!(snapshot.links.len(), 2);
         assert!(snapshot
@@ -574,6 +1066,21 @@ mod tests {
             .hints
             .iter()
             .any(|hint| hint.category == "market"));
+        assert!(snapshot
+            .topic_observations
+            .iter()
+            .any(|topic| topic.topic == "forum"));
+        assert!(snapshot
+            .topic_observations
+            .iter()
+            .any(|topic| topic.topic == "marketplace"));
+    }
+
+    #[test]
+    fn topic_keyword_matching_uses_word_boundaries() {
+        assert!(topic_rule_matches("open market listings", "market"));
+        assert!(!topic_rule_matches("marketing page", "market"));
+        assert!(topic_rule_matches("cve-2026-0001 details", "cve-"));
     }
 
     #[test]

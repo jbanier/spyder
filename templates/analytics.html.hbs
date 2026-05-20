@@ -3,6 +3,11 @@
     <p class="eyebrow">Site Analytics</p>
     <h1>{{title}}</h1>
     <p class="lead">{{description}}</p>
+    <div class="actions">
+        <a href="/top" class="btn btn-secondary">Leaderboards</a>
+        <a href="/relationships" class="btn btn-secondary">Relationships</a>
+        <a href="/entities/services" class="btn btn-secondary">Other Services</a>
+    </div>
 </section>
 
 <section class="card">
@@ -41,7 +46,7 @@
                         <strong>{{label}}</strong>
                         <span class="muted">{{category}}</span>
                     </div>
-                    <span class="count-pill">{{host_count}} hosts</span>
+                    <span class="count-pill">{{host_count}} {{count_label}}</span>
                     <span class="muted">{{percentage_label}}</span>
                 </div>
                 {{/each}}
@@ -89,7 +94,7 @@
                         <strong>{{label}}</strong>
                         <span class="muted">{{category}}</span>
                     </div>
-                    <span class="count-pill">{{host_count}} hosts</span>
+                    <span class="count-pill">{{host_count}} {{count_label}}</span>
                     <span class="muted">{{percentage_label}}</span>
                 </div>
                 {{/each}}
@@ -114,6 +119,85 @@
         <p class="chart-note">Range: {{keyword_first_day}} to {{keyword_last_day}}</p>
         {{else}}
         <p class="empty-copy">No keyword timeline is available yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <div class="table-cell-stack">
+                <h2>Current Language Mix</h2>
+                <span class="muted">Distribution of page-level language detections, including declared metadata and text analysis.</span>
+            </div>
+        </div>
+        {{#if has_language_distribution}}
+        <div class="chart-shell">
+            <div class="chart-visual">
+                {{{language_pie_svg}}}
+            </div>
+            <div class="chart-legend">
+                {{#each language_legend}}
+                <div class="legend-row">
+                    <span class="legend-swatch" style="background: {{color}};"></span>
+                    <div class="legend-copy">
+                        <strong>{{label}}</strong>
+                        <span class="muted">{{category}}</span>
+                    </div>
+                    <span class="count-pill">{{host_count}} {{count_label}}</span>
+                    <span class="muted">{{percentage_label}}</span>
+                </div>
+                {{/each}}
+            </div>
+        </div>
+        {{else}}
+        <p class="empty-copy">No language detections are available yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <div class="table-cell-stack">
+                <h2>Current Topic Mix</h2>
+                <span class="muted">Distribution of static page topic tags from local keyword, path, metadata, and heading rules.</span>
+            </div>
+        </div>
+        {{#if has_topic_distribution}}
+        <div class="chart-shell">
+            <div class="chart-visual">
+                {{{topic_pie_svg}}}
+            </div>
+            <div class="chart-legend">
+                {{#each topic_legend}}
+                <div class="legend-row">
+                    <span class="legend-swatch" style="background: {{color}};"></span>
+                    <div class="legend-copy">
+                        <strong>{{label}}</strong>
+                        <span class="muted">{{category}}</span>
+                    </div>
+                    <span class="count-pill">{{host_count}} {{count_label}}</span>
+                    <span class="muted">{{percentage_label}}</span>
+                </div>
+                {{/each}}
+            </div>
+        </div>
+        {{else}}
+        <p class="empty-copy">No static topic tags are available yet.</p>
+        {{/if}}
+    </section>
+
+    <section class="card">
+        <div class="section-heading">
+            <div class="table-cell-stack">
+                <h2>Topic Timeline</h2>
+                <span class="muted">Daily histogram of when each <code>page + topic</code> pair was first observed.</span>
+            </div>
+        </div>
+        {{#if has_topic_timeline}}
+        <div class="chart-scroll">
+            {{{topic_histogram_svg}}}
+        </div>
+        <p class="chart-note">Range: {{topic_first_day}} to {{topic_last_day}}</p>
+        {{else}}
+        <p class="empty-copy">No topic timeline is available yet.</p>
         {{/if}}
     </section>
 </div>

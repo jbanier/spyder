@@ -185,6 +185,19 @@ diesel::table! {
 }
 
 diesel::table! {
+    page_language_detection (id) {
+        id -> Int4,
+        page_id -> Int4,
+        language_code -> Text,
+        language_name -> Text,
+        confidence -> Int4,
+        source -> Text,
+        evidence -> Text,
+        updated_at -> Text,
+    }
+}
+
+diesel::table! {
     page_link (id) {
         id -> Int4,
         source_page_id -> Int4,
@@ -231,6 +244,18 @@ diesel::table! {
 }
 
 diesel::table! {
+    page_topic_tag (id) {
+        id -> Int4,
+        page_id -> Int4,
+        topic -> Text,
+        score -> Int4,
+        confidence -> Text,
+        evidence -> Text,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
     site_profile (id) {
         id -> Int4,
         host -> Text,
@@ -244,6 +269,17 @@ diesel::table! {
         created_at -> Text,
         first_found_at -> Text,
         last_scanned_at -> Text,
+    }
+}
+
+diesel::table! {
+    watchlist_item (id) {
+        id -> Int4,
+        item_type -> Text,
+        value -> Text,
+        label -> Text,
+        enabled -> Bool,
+        created_at -> Text,
     }
 }
 
@@ -265,11 +301,13 @@ diesel::joinable!(page_classification -> page (page_id));
 diesel::joinable!(page_crypto -> page (page_id));
 diesel::joinable!(page_email -> page (page_id));
 diesel::joinable!(page_keyword_tag -> page (page_id));
+diesel::joinable!(page_language_detection -> page (page_id));
 diesel::joinable!(page_link -> page (source_page_id));
 diesel::joinable!(page_scan -> page (page_id));
 diesel::joinable!(page_scan_crypto -> page_scan (scan_id));
 diesel::joinable!(page_scan_email -> page_scan (scan_id));
 diesel::joinable!(page_scan_link -> page_scan (scan_id));
+diesel::joinable!(page_topic_tag -> page (page_id));
 diesel::joinable!(site_profile -> page (source_page_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
@@ -286,11 +324,14 @@ diesel::allow_tables_to_appear_in_same_query!(
     page_crypto,
     page_email,
     page_keyword_tag,
+    page_language_detection,
     page_link,
     page_scan,
     page_scan_crypto,
     page_scan_email,
     page_scan_link,
+    page_topic_tag,
     site_profile,
+    watchlist_item,
     work_unit,
 );
