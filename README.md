@@ -285,6 +285,8 @@ The list view is paginated.
 
 The list view is paginated.
 
+The relationship graph opens with an overview of the strongest observed host links. Entering a focus host switches to a three-hop inbound path view that shows how scanned sites led to that host, with zoom, pan, fit, and reset controls.
+
 Blacklisted target hosts are clearly marked in both the dashboard and relationship table views.
 
 Source and target hosts also show category badges when the host has been classified.
@@ -402,7 +404,6 @@ diesel print-schema > src/schema.rs
 - Topic detection is static keyword/path matching. It is explainable and safe for sensitive crawls, but it will miss phrasing not covered by the rule set.
 - Crypto extraction is pattern-based. It is useful for discovery and cross-matching, not for full wallet validation.
 - Site categorization is heuristic and deterministic. It is explainable, but it is still an inference layer rather than ground truth.
-- The host relationship view is table-based. There is no visual graph yet.
 - Tor crawling depends on an external SOCKS proxy such as Tor running locally.
 - Completed pages are not automatically recrawled on a schedule yet; rescanning still requires explicit operator action.
 

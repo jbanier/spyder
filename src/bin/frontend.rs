@@ -15,14 +15,14 @@ use spyder::{
     add_watchlist_item, collect_stats, count_discovered_service_endpoints, establish_connection,
     find_matching_blacklist_domain, get_crypto_entity_detail, get_email_entity_detail,
     get_host_http_observation_detail, get_host_service_observation_detail, get_intel_lead_detail,
-    get_page_detail, get_page_scan_detail, get_ssh_host_key_detail, intel_lead_rule_ids,
-    list_crypto_entities, list_domain_blacklist_rules, list_domain_blacklist_summaries,
-    list_email_entities, list_host_http_observations, list_host_service_observations,
-    list_intel_leads, list_page_language_distribution, list_page_scan_summaries,
-    list_page_summaries, list_page_summaries_with_blacklist, list_page_topic_distribution,
-    list_page_topic_timeline, list_site_category_distribution, list_site_category_timeline,
-    list_site_keyword_distribution, list_site_keyword_timeline, list_site_profiles,
-    list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
+    get_page_detail, get_page_scan_detail, get_site_relationship_graph, get_ssh_host_key_detail,
+    intel_lead_rule_ids, list_crypto_entities, list_domain_blacklist_rules,
+    list_domain_blacklist_summaries, list_email_entities, list_host_http_observations,
+    list_host_service_observations, list_intel_leads, list_page_language_distribution,
+    list_page_scan_summaries, list_page_summaries, list_page_summaries_with_blacklist,
+    list_page_topic_distribution, list_page_topic_timeline, list_site_category_distribution,
+    list_site_category_timeline, list_site_keyword_distribution, list_site_keyword_timeline,
+    list_site_profiles, list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
     list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
     list_watchlist_items, list_work_units, remove_watchlist_item, search_pages_with_blacklist,
     update_intel_lead_status, valid_watchlist_item_types,
@@ -142,6 +142,14 @@ struct ListQuery {
     limit: Option<i64>,
     offset: Option<i64>,
     include_blacklisted: Option<bool>,
+}
+
+#[derive(FromForm, Clone)]
+struct RelationshipQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+    focus: Option<String>,
+    depth: Option<i64>,
 }
 
 #[derive(FromForm, Clone)]
@@ -1014,20 +1022,30 @@ fn lead_status_form(lead_id: i32, form: Form<LeadStatusForm>) -> Result<Redirect
     Ok(Redirect::to(format!("/leads/{lead_id}")))
 }
 
-#[get("/relationships?<list_query..>")]
-fn relationships(list_query: Option<ListQuery>) -> HtmlResult {
-    let list_query = list_query.unwrap_or(ListQuery {
+#[get("/relationships?<query..>")]
+fn relationships(query: Option<RelationshipQuery>) -> HtmlResult {
+    let query = query.unwrap_or(RelationshipQuery {
         limit: None,
         offset: None,
-        include_blacklisted: None,
+        focus: None,
+        depth: None,
     });
     let mut connection = open_connection()?;
-    let relationships =
-        list_site_relationships(&mut connection, list_query.limit, list_query.offset)
-            .frontend_context("loading site relationships")?;
+    let relationships = list_site_relationships(&mut connection, query.limit, query.offset)
+        .frontend_context("loading site relationships")?;
     let has_relationships = !relationships.items.is_empty();
-    let pagination = pagination_context("/relationships", &relationships, &[]);
+    let relationship_focus = query.focus.unwrap_or_default();
+    let relationship_focus = relationship_focus.trim().to_string();
+    let relationship_depth = query.depth.unwrap_or(3).clamp(1, 4);
+    let relationship_depth_param = relationship_depth.to_string();
+    let mut extra_params = Vec::new();
+    if !relationship_focus.is_empty() {
+        extra_params.push(("focus", relationship_focus.as_str()));
+    }
+    extra_params.push(("depth", relationship_depth_param.as_str()));
+    let pagination = pagination_context("/relationships", &relationships, &extra_params);
     let has_pagination = pagination.has_previous_page || pagination.has_next_page;
+    let relationship_focus_value = relationship_focus.clone();
 
     Ok(Template::render(
         "relationships",
@@ -1039,6 +1057,8 @@ fn relationships(list_query: Option<ListQuery>) -> HtmlResult {
             has_relationships: has_relationships,
             pagination: pagination,
             has_pagination: has_pagination,
+            relationship_focus: relationship_focus_value,
+            relationship_depth: relationship_depth,
         },
     ))
 }
@@ -1384,6 +1404,31 @@ fn api_search(
     Ok(Json(ApiResponse {
         success: true,
         data: results,
+    }))
+}
+
+#[get("/api/relationships/graph?<query..>")]
+fn api_relationship_graph(
+    query: Option<RelationshipQuery>,
+) -> Result<Json<ApiResponse<spyder::models::SiteRelationshipGraph>>, Status> {
+    let query = query.unwrap_or(RelationshipQuery {
+        limit: None,
+        offset: None,
+        focus: None,
+        depth: None,
+    });
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let graph = get_site_relationship_graph(
+        &mut connection,
+        query.focus.as_deref(),
+        query.depth,
+        query.limit,
+    )
+    .map_err(|_| Status::InternalServerError)?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: graph,
     }))
 }
 
@@ -2000,6 +2045,7 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 search_page,
                 api_stats,
                 api_search,
+                api_relationship_graph,
                 api_blacklist,
                 api_sites,
                 api_page_history,

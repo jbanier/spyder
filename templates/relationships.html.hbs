@@ -5,6 +5,40 @@
     <p class="lead">{{description}}</p>
 </section>
 
+<section class="card relationship-graph-card"
+    data-relationship-graph
+    data-initial-focus="{{relationship_focus}}"
+    data-initial-depth="{{relationship_depth}}">
+    <div class="section-heading">
+        <h2>Reference Graph</h2>
+        <span class="muted" data-relationship-graph-status>Loading graph...</span>
+    </div>
+    <form class="relationship-graph-toolbar" data-relationship-graph-form>
+        <label class="relationship-graph-field">
+            <span>Focus Host</span>
+            <input type="text" name="focus" value="{{relationship_focus}}" placeholder="market.onion" autocomplete="off">
+        </label>
+        <label class="relationship-graph-field relationship-graph-depth">
+            <span>Depth</span>
+            <input type="number" name="depth" min="1" max="4" value="{{relationship_depth}}">
+        </label>
+        <button class="btn btn-compact" type="submit">Focus</button>
+        <button class="btn btn-secondary btn-compact" type="button" data-relationship-graph-action="overview">Overview</button>
+        <div class="relationship-graph-controls" aria-label="Graph controls">
+            <button class="btn btn-secondary btn-compact" type="button" data-relationship-graph-action="zoom-in" aria-label="Zoom in">Zoom +</button>
+            <button class="btn btn-secondary btn-compact" type="button" data-relationship-graph-action="zoom-out" aria-label="Zoom out">Zoom -</button>
+            <button class="btn btn-secondary btn-compact" type="button" data-relationship-graph-action="fit">Fit</button>
+            <button class="btn btn-secondary btn-compact" type="button" data-relationship-graph-action="reset">Reset</button>
+        </div>
+    </form>
+    <div class="relationship-graph-shell">
+        <svg class="relationship-graph-svg" data-relationship-graph-svg role="img" aria-label="Site relationship graph">
+            <g data-relationship-graph-viewport></g>
+        </svg>
+        <div class="relationship-graph-tooltip" data-relationship-graph-tooltip hidden></div>
+    </div>
+</section>
+
 {{#if has_relationships}}
 <section class="card">
     <div class="section-heading">

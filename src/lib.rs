@@ -29,6 +29,10 @@ const SQLITE_BUSY_TIMEOUT_MS: i32 = 5_000;
 const DEFAULT_TOP_SITE_LIMIT: i64 = 25;
 const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 200;
+const DEFAULT_RELATIONSHIP_GRAPH_LIMIT: i64 = 80;
+const MIN_RELATIONSHIP_GRAPH_LIMIT: i64 = 10;
+const MAX_RELATIONSHIP_GRAPH_DEPTH: i64 = 4;
+const DEFAULT_RELATIONSHIP_GRAPH_DEPTH: i64 = 3;
 const CATEGORY_SEARCH_ENGINE: &str = "search-engine";
 const CATEGORY_FORUM: &str = "forum";
 const CATEGORY_MARKET: &str = "market";
@@ -197,6 +201,18 @@ struct SiteRelationshipRow {
     target_host: String,
     #[diesel(sql_type = BigInt)]
     reference_count: i64,
+}
+
+#[derive(QueryableByName)]
+struct SiteRelationshipGraphEdgeRow {
+    #[diesel(sql_type = Text)]
+    source_host: String,
+    #[diesel(sql_type = Text)]
+    target_host: String,
+    #[diesel(sql_type = BigInt)]
+    reference_count: i64,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    depth: i32,
 }
 
 #[derive(QueryableByName)]
@@ -7050,6 +7066,222 @@ pub fn list_site_relationships(
         limit: pagination.limit,
         offset: pagination.offset,
     })
+}
+
+pub fn get_site_relationship_graph(
+    conn: &mut PgConnection,
+    focus_host: Option<&str>,
+    requested_depth: Option<i64>,
+    requested_limit: Option<i64>,
+) -> Result<SiteRelationshipGraph> {
+    let limit = requested_limit
+        .unwrap_or(DEFAULT_RELATIONSHIP_GRAPH_LIMIT)
+        .clamp(MIN_RELATIONSHIP_GRAPH_LIMIT, MAX_PAGE_LIMIT);
+    let depth = requested_depth
+        .unwrap_or(DEFAULT_RELATIONSHIP_GRAPH_DEPTH)
+        .clamp(1, MAX_RELATIONSHIP_GRAPH_DEPTH);
+    let normalized_focus = focus_host
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(|host| host.trim_end_matches('.').to_ascii_lowercase());
+    let rows = match normalized_focus.as_deref() {
+        Some(host) => load_focused_site_relationship_graph_edges(conn, host, depth, limit)?,
+        None => load_overview_site_relationship_graph_edges(conn, limit)?,
+    };
+
+    build_site_relationship_graph(conn, normalized_focus, depth as usize, rows)
+}
+
+fn load_overview_site_relationship_graph_edges(
+    conn: &mut PgConnection,
+    limit: i64,
+) -> Result<Vec<SiteRelationshipGraphEdgeRow>> {
+    let source_host_expr = sql_host_expr("p.url", conn);
+    let source_host = format!("lower(({source_host_expr}))");
+    let query = format!(
+        "
+        SELECT
+            {source_host} AS source_host,
+            lower(pl.target_host) AS target_host,
+            COUNT(*) AS reference_count,
+            0 AS depth
+        FROM page_link pl
+        JOIN page p ON p.id = pl.source_page_id
+        WHERE pl.target_host != ''
+          AND {source_host} != ''
+          AND {source_host} != lower(pl.target_host)
+        GROUP BY {source_host}, lower(pl.target_host)
+        ORDER BY reference_count DESC, source_host ASC, target_host ASC
+        LIMIT $1
+        "
+    );
+
+    sql_query(query)
+        .bind::<BigInt, _>(limit)
+        .load::<SiteRelationshipGraphEdgeRow>(conn)
+        .context("error loading relationship overview graph edges")
+}
+
+fn load_focused_site_relationship_graph_edges(
+    conn: &mut PgConnection,
+    focus_host: &str,
+    depth: i64,
+    limit: i64,
+) -> Result<Vec<SiteRelationshipGraphEdgeRow>> {
+    let source_host_expr = sql_host_expr("p.url", conn);
+    let source_host = format!("lower(({source_host_expr}))");
+    let query = format!(
+        "
+        WITH RECURSIVE relationships AS (
+            SELECT
+                {source_host} AS source_host,
+                lower(pl.target_host) AS target_host,
+                COUNT(*) AS reference_count
+            FROM page_link pl
+            JOIN page p ON p.id = pl.source_page_id
+            WHERE pl.target_host != ''
+              AND {source_host} != ''
+              AND {source_host} != lower(pl.target_host)
+            GROUP BY {source_host}, lower(pl.target_host)
+        ),
+        walk(source_host, target_host, reference_count, depth, path) AS (
+            SELECT
+                r.source_host,
+                r.target_host,
+                r.reference_count,
+                1 AS depth,
+                ARRAY[$1::text, r.source_host]::text[] AS path
+            FROM relationships r
+            WHERE r.target_host = $1
+              AND r.source_host != $1
+            UNION ALL
+            SELECT
+                r.source_host,
+                r.target_host,
+                r.reference_count,
+                walk.depth + 1 AS depth,
+                array_append(walk.path, r.source_host)
+            FROM relationships r
+            JOIN walk ON r.target_host = walk.source_host
+            WHERE walk.depth < $2
+              AND r.source_host <> ALL(walk.path)
+        )
+        SELECT
+            source_host,
+            target_host,
+            MAX(reference_count) AS reference_count,
+            MIN(depth) AS depth
+        FROM walk
+        GROUP BY source_host, target_host
+        ORDER BY depth ASC, reference_count DESC, source_host ASC, target_host ASC
+        LIMIT $3
+        "
+    );
+
+    sql_query(query)
+        .bind::<Text, _>(focus_host)
+        .bind::<diesel::sql_types::Integer, _>(depth as i32)
+        .bind::<BigInt, _>(limit)
+        .load::<SiteRelationshipGraphEdgeRow>(conn)
+        .context("error loading focused relationship graph edges")
+}
+
+fn build_site_relationship_graph(
+    conn: &mut PgConnection,
+    focus_host: Option<String>,
+    depth: usize,
+    rows: Vec<SiteRelationshipGraphEdgeRow>,
+) -> Result<SiteRelationshipGraph> {
+    let blacklist_domains = load_blacklist_domains(conn)?;
+    let mut hosts = HashSet::<String>::new();
+    let mut incoming_counts = HashMap::<String, usize>::new();
+    let mut outgoing_counts = HashMap::<String, usize>::new();
+    let mut node_depths = HashMap::<String, usize>::new();
+
+    if let Some(host) = focus_host.as_ref() {
+        hosts.insert(host.clone());
+        node_depths.insert(host.clone(), 0);
+    }
+
+    for row in &rows {
+        let edge_depth = row.depth.max(0) as usize;
+        let reference_count = row.reference_count.max(0) as usize;
+        hosts.insert(row.source_host.clone());
+        hosts.insert(row.target_host.clone());
+        *outgoing_counts.entry(row.source_host.clone()).or_insert(0) += reference_count;
+        *incoming_counts.entry(row.target_host.clone()).or_insert(0) += reference_count;
+        merge_min_depth(&mut node_depths, &row.source_host, edge_depth);
+        merge_min_depth(
+            &mut node_depths,
+            &row.target_host,
+            edge_depth.saturating_sub(1),
+        );
+    }
+
+    let mut host_list = hosts.into_iter().collect::<Vec<_>>();
+    host_list.sort();
+    let site_profiles = load_site_profile_badges_by_hosts(conn, &host_list)?;
+    let mut nodes = host_list
+        .into_iter()
+        .map(|host| {
+            let blacklist_match_domain = find_matching_blacklist_domain(&host, &blacklist_domains);
+            SiteRelationshipGraphNode {
+                site_category: site_profiles.get(&host).cloned(),
+                incoming_count: incoming_counts.get(&host).copied().unwrap_or(0),
+                outgoing_count: outgoing_counts.get(&host).copied().unwrap_or(0),
+                is_focus: focus_host.as_deref() == Some(host.as_str()),
+                is_blacklisted: blacklist_match_domain.is_some(),
+                blacklist_match_domain,
+                depth: node_depths.get(&host).copied().unwrap_or(0),
+                host,
+            }
+        })
+        .collect::<Vec<_>>();
+    nodes.sort_by(|left, right| {
+        left.depth
+            .cmp(&right.depth)
+            .then_with(|| right.is_focus.cmp(&left.is_focus))
+            .then_with(|| {
+                (right.incoming_count + right.outgoing_count)
+                    .cmp(&(left.incoming_count + left.outgoing_count))
+            })
+            .then_with(|| left.host.cmp(&right.host))
+    });
+
+    let edges = rows
+        .into_iter()
+        .map(|row| {
+            let is_blacklisted =
+                find_matching_blacklist_domain(&row.target_host, &blacklist_domains).is_some();
+            SiteRelationshipGraphEdge {
+                relationship_key: relationship_key(&row.source_host, &row.target_host),
+                source_host: row.source_host,
+                target_host: row.target_host,
+                reference_count: row.reference_count.max(0) as usize,
+                depth: row.depth.max(0) as usize,
+                is_blacklisted,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(SiteRelationshipGraph {
+        mode: if focus_host.is_some() {
+            "focus".to_string()
+        } else {
+            "overview".to_string()
+        },
+        focus_host,
+        depth,
+        nodes,
+        edges,
+    })
+}
+
+fn merge_min_depth(depths: &mut HashMap<String, usize>, host: &str, depth: usize) {
+    depths
+        .entry(host.to_string())
+        .and_modify(|current| *current = (*current).min(depth))
+        .or_insert(depth);
 }
 
 fn classify_page_snapshot(snapshot: &PageSnapshot) -> ClassificationOutcome {

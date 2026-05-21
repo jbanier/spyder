@@ -1072,6 +1072,40 @@ pub struct SiteRelationship {
     pub intel_leads: Vec<IntelLeadBadge>,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct SiteRelationshipGraph {
+    pub mode: String,
+    pub focus_host: Option<String>,
+    pub depth: usize,
+    pub nodes: Vec<SiteRelationshipGraphNode>,
+    pub edges: Vec<SiteRelationshipGraphEdge>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct SiteRelationshipGraphNode {
+    pub host: String,
+    pub site_category: Option<SiteCategoryBadge>,
+    pub incoming_count: usize,
+    pub outgoing_count: usize,
+    pub is_focus: bool,
+    pub is_blacklisted: bool,
+    pub blacklist_match_domain: Option<String>,
+    pub depth: usize,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(crate = "rocket::serde")]
+pub struct SiteRelationshipGraphEdge {
+    pub source_host: String,
+    pub target_host: String,
+    pub reference_count: usize,
+    pub depth: usize,
+    pub relationship_key: String,
+    pub is_blacklisted: bool,
+}
+
 #[derive(Serialize, Clone, Debug, Eq, PartialEq)]
 #[serde(crate = "rocket::serde")]
 pub struct IntelLeadBadge {
