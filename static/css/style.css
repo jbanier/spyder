@@ -339,6 +339,13 @@ code {
     margin: 0;
 }
 
+.table-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
 .card {
     background:
         linear-gradient(180deg, rgba(28, 28, 46, 0.72), rgba(18, 18, 26, 0.94)),
@@ -993,6 +1000,10 @@ code {
     display: flex;
     flex-wrap: wrap;
     gap: 0.8rem;
+}
+
+.stacked-form {
+    margin-top: 0.85rem;
 }
 
 .filter-form input,

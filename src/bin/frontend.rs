@@ -12,10 +12,11 @@ use spyder::models::{
     CategoryDistributionEntry, CategoryTimelinePoint, PaginatedResult, TopSiteSection,
 };
 use spyder::{
-    add_watchlist_item, collect_stats, count_discovered_service_endpoints, establish_connection,
-    find_matching_blacklist_domain, get_crypto_entity_detail, get_email_entity_detail,
-    get_host_http_observation_detail, get_host_service_observation_detail, get_intel_lead_detail,
-    get_page_detail, get_page_scan_detail, get_site_relationship_graph, get_ssh_host_key_detail,
+    add_auto_blacklist_rule, add_watchlist_item, collect_stats, count_discovered_service_endpoints,
+    establish_connection, find_matching_blacklist_domain, get_auto_blacklist_config,
+    get_crypto_entity_detail, get_email_entity_detail, get_host_http_observation_detail,
+    get_host_service_observation_detail, get_intel_lead_detail, get_page_detail,
+    get_page_scan_detail, get_site_relationship_graph, get_ssh_host_key_detail,
     intel_lead_rule_ids, list_crypto_entities, list_domain_blacklist_rules,
     list_domain_blacklist_summaries, list_email_entities, list_host_http_observations,
     list_host_service_observations, list_intel_leads, list_page_language_distribution,
@@ -24,8 +25,10 @@ use spyder::{
     list_site_category_timeline, list_site_keyword_distribution, list_site_keyword_timeline,
     list_site_profiles, list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
     list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
-    list_watchlist_items, list_work_units, remove_watchlist_item, search_pages_with_blacklist,
-    update_intel_lead_status, valid_watchlist_item_types,
+    list_watchlist_items, list_work_units, remove_auto_blacklist_rule, remove_watchlist_item,
+    search_pages_with_blacklist, set_auto_blacklist_rule_enabled, update_intel_lead_status,
+    valid_watchlist_item_types, AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
+    AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -236,6 +239,13 @@ struct LeadStatusForm {
 #[derive(FromForm)]
 struct WatchlistItemForm {
     item_type: String,
+    value: String,
+    label: Option<String>,
+}
+
+#[derive(FromForm)]
+struct AutoBlacklistRuleForm {
+    rule_type: String,
     value: String,
     label: Option<String>,
 }
@@ -574,8 +584,13 @@ fn blacklist() -> HtmlResult {
     let mut connection = open_connection()?;
     let entries = list_domain_blacklist_summaries(&mut connection)
         .frontend_context("loading blacklist summaries")?;
+    let auto_blacklist = get_auto_blacklist_config(&mut connection)
+        .frontend_context("loading auto blacklist config")?;
     let has_entries = !entries.is_empty();
     let entry_count = entries.len();
+    let has_auto_rules = !auto_blacklist.rules.is_empty();
+    let auto_rule_count = auto_blacklist.rules.len();
+    let has_auto_events = !auto_blacklist.events.is_empty();
 
     Ok(Template::render(
         "blacklist",
@@ -585,8 +600,53 @@ fn blacklist() -> HtmlResult {
             entries: entries,
             has_entries: has_entries,
             entry_count: entry_count,
+            auto_rules: auto_blacklist.rules,
+            has_auto_rules: has_auto_rules,
+            auto_rule_count: auto_rule_count,
+            auto_events: auto_blacklist.events,
+            has_auto_events: has_auto_events,
+            category_options: auto_blacklist.category_options,
+            category_rule_type: AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
+            keyword_rule_type: AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
         },
     ))
+}
+
+#[post("/blacklist/auto", data = "<form>")]
+fn add_blacklist_auto_rule(form: Form<AutoBlacklistRuleForm>) -> Result<Redirect, FrontendError> {
+    let mut connection = open_connection()?;
+    add_auto_blacklist_rule(
+        &mut connection,
+        &form.rule_type,
+        &form.value,
+        form.label.as_deref(),
+    )
+    .frontend_context("saving auto blacklist rule")?;
+    Ok(Redirect::to("/blacklist"))
+}
+
+#[post("/blacklist/auto/<rule_id>/enable")]
+fn enable_blacklist_auto_rule(rule_id: i32) -> Result<Redirect, FrontendError> {
+    let mut connection = open_connection()?;
+    set_auto_blacklist_rule_enabled(&mut connection, rule_id, true)
+        .frontend_context("enabling auto blacklist rule")?;
+    Ok(Redirect::to("/blacklist"))
+}
+
+#[post("/blacklist/auto/<rule_id>/disable")]
+fn disable_blacklist_auto_rule(rule_id: i32) -> Result<Redirect, FrontendError> {
+    let mut connection = open_connection()?;
+    set_auto_blacklist_rule_enabled(&mut connection, rule_id, false)
+        .frontend_context("disabling auto blacklist rule")?;
+    Ok(Redirect::to("/blacklist"))
+}
+
+#[post("/blacklist/auto/<rule_id>/delete")]
+fn delete_blacklist_auto_rule(rule_id: i32) -> Result<Redirect, FrontendError> {
+    let mut connection = open_connection()?;
+    remove_auto_blacklist_rule(&mut connection, rule_id)
+        .frontend_context("removing auto blacklist rule")?;
+    Ok(Redirect::to("/blacklist"))
 }
 
 #[get("/top")]
@@ -1445,6 +1505,18 @@ fn api_blacklist() -> Result<Json<ApiResponse<Vec<spyder::models::DomainBlacklis
     }))
 }
 
+#[get("/api/blacklist/auto")]
+fn api_auto_blacklist() -> Result<Json<ApiResponse<spyder::models::AutoBlacklistConfig>>, Status> {
+    let mut connection = establish_connection().map_err(|_| Status::InternalServerError)?;
+    let config =
+        get_auto_blacklist_config(&mut connection).map_err(|_| Status::InternalServerError)?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: config,
+    }))
+}
+
 #[get("/api/sites?<list_query..>")]
 fn api_sites(
     list_query: Option<ListQuery>,
@@ -2027,6 +2099,10 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 page_scan_detail,
                 list_work,
                 blacklist,
+                add_blacklist_auto_rule,
+                enable_blacklist_auto_rule,
+                disable_blacklist_auto_rule,
+                delete_blacklist_auto_rule,
                 top,
                 analytics,
                 sites,
@@ -2047,6 +2123,7 @@ fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 api_search,
                 api_relationship_graph,
                 api_blacklist,
+                api_auto_blacklist,
                 api_sites,
                 api_page_history,
                 api_page_scan_detail,
@@ -2109,6 +2186,27 @@ mod tests {
               domain VARCHAR NOT NULL UNIQUE,
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE auto_blacklist_rule(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              rule_type VARCHAR NOT NULL,
+              value VARCHAR NOT NULL,
+              label VARCHAR NOT NULL DEFAULT '',
+              enabled BOOLEAN NOT NULL DEFAULT 1,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(rule_type, value)
+            );
+            CREATE TABLE auto_blacklist_event(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              rule_id INTEGER NOT NULL,
+              domain VARCHAR NOT NULL,
+              source_page_id INTEGER,
+              rule_type VARCHAR NOT NULL,
+              matched_value VARCHAR NOT NULL,
+              evidence VARCHAR NOT NULL DEFAULT '',
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE UNIQUE INDEX idx_auto_blacklist_event_unique_page
+              ON auto_blacklist_event(domain, rule_id, COALESCE(source_page_id, 0));
             CREATE TABLE forum_keyword_rule(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               label VARCHAR NOT NULL,

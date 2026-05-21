@@ -61,6 +61,8 @@ pub const WATCHLIST_TYPE_KEYWORD: &str = "keyword";
 pub const WATCHLIST_TYPE_SSH_FINGERPRINT: &str = "ssh_fingerprint";
 pub const WATCHLIST_TYPE_HTTP_FINGERPRINT: &str = "http_fingerprint";
 pub const WATCHLIST_TYPE_FAVICON_HASH: &str = "favicon_hash";
+pub const AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY: &str = "site_category";
+pub const AUTO_BLACKLIST_RULE_TYPE_KEYWORD: &str = "keyword";
 const LEAD_SEVERITY_LOW: &str = "low";
 const LEAD_SEVERITY_MEDIUM: &str = "medium";
 const LEAD_SEVERITY_HIGH: &str = "high";
@@ -852,6 +854,282 @@ pub fn find_matching_blacklist_domain(host: &str, blacklist_domains: &[String]) 
         .filter(|domain| host_matches_blacklist_domain(&normalized_host, domain))
         .max_by_key(|domain| domain.len())
         .cloned()
+}
+
+pub fn auto_blacklist_category_options() -> Vec<AutoBlacklistCategoryOption> {
+    valid_auto_blacklist_site_categories()
+        .iter()
+        .map(|category| AutoBlacklistCategoryOption {
+            value: (*category).to_string(),
+            label: site_category_label(category).to_string(),
+        })
+        .collect()
+}
+
+pub fn normalize_auto_blacklist_rule_type(raw_rule_type: &str) -> Result<String> {
+    let rule_type = raw_rule_type.trim().to_ascii_lowercase();
+    anyhow::ensure!(
+        matches!(
+            rule_type.as_str(),
+            AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY | AUTO_BLACKLIST_RULE_TYPE_KEYWORD
+        ),
+        "invalid auto blacklist rule type: {raw_rule_type}"
+    );
+    Ok(rule_type)
+}
+
+pub fn normalize_auto_blacklist_rule_value(raw_rule_type: &str, raw_value: &str) -> Result<String> {
+    let rule_type = normalize_auto_blacklist_rule_type(raw_rule_type)?;
+    match rule_type.as_str() {
+        AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY => normalize_auto_blacklist_site_category(raw_value),
+        AUTO_BLACKLIST_RULE_TYPE_KEYWORD => normalize_auto_blacklist_keyword(raw_value),
+        _ => unreachable!("auto blacklist rule type was already validated"),
+    }
+}
+
+pub fn normalize_auto_blacklist_label(raw_label: Option<&str>) -> String {
+    raw_label
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn list_auto_blacklist_rules(conn: &mut PgConnection) -> Result<Vec<AutoBlacklistRule>> {
+    use crate::schema::auto_blacklist_rule::dsl as rule_dsl;
+
+    rule_dsl::auto_blacklist_rule
+        .order(rule_dsl::rule_type.asc())
+        .then_order_by(rule_dsl::value.asc())
+        .then_order_by(rule_dsl::id.asc())
+        .select(AutoBlacklistRule::as_select())
+        .load::<AutoBlacklistRule>(conn)
+        .context("error loading auto blacklist rules")
+}
+
+pub fn list_recent_auto_blacklist_events(
+    conn: &mut PgConnection,
+    requested_limit: Option<i64>,
+) -> Result<Vec<AutoBlacklistEvent>> {
+    use crate::schema::auto_blacklist_event::dsl as event_dsl;
+
+    let limit = requested_limit.unwrap_or(50).clamp(1, 200);
+    event_dsl::auto_blacklist_event
+        .order(event_dsl::created_at.desc())
+        .then_order_by(event_dsl::id.desc())
+        .limit(limit)
+        .select(AutoBlacklistEvent::as_select())
+        .load::<AutoBlacklistEvent>(conn)
+        .context("error loading auto blacklist events")
+}
+
+pub fn get_auto_blacklist_config(conn: &mut PgConnection) -> Result<AutoBlacklistConfig> {
+    Ok(AutoBlacklistConfig {
+        rules: list_auto_blacklist_rules(conn)?,
+        events: list_recent_auto_blacklist_events(conn, Some(50))?,
+        category_options: auto_blacklist_category_options(),
+    })
+}
+
+pub fn add_auto_blacklist_rule(
+    conn: &mut PgConnection,
+    raw_rule_type: &str,
+    raw_value: &str,
+    raw_label: Option<&str>,
+) -> Result<AutoBlacklistRule> {
+    use crate::schema::auto_blacklist_rule::dsl as rule_dsl;
+
+    let rule_type = normalize_auto_blacklist_rule_type(raw_rule_type)?;
+    let value = normalize_auto_blacklist_rule_value(&rule_type, raw_value)?;
+    let label = match normalize_auto_blacklist_label(raw_label) {
+        label if !label.is_empty() => label,
+        _ if rule_type == AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY => {
+            site_category_label(&value).to_string()
+        }
+        _ => value.clone(),
+    };
+
+    diesel::insert_into(rule_dsl::auto_blacklist_rule)
+        .values(NewAutoBlacklistRule {
+            rule_type: &rule_type,
+            value: &value,
+            label: &label,
+        })
+        .on_conflict_do_nothing()
+        .execute(conn)
+        .context("error saving auto blacklist rule")?;
+
+    rule_dsl::auto_blacklist_rule
+        .filter(rule_dsl::rule_type.eq(&rule_type))
+        .filter(rule_dsl::value.eq(&value))
+        .select(AutoBlacklistRule::as_select())
+        .first::<AutoBlacklistRule>(conn)
+        .context("error loading saved auto blacklist rule")
+}
+
+pub fn set_auto_blacklist_rule_enabled(
+    conn: &mut PgConnection,
+    rule_id: i32,
+    next_enabled: bool,
+) -> Result<Option<AutoBlacklistRule>> {
+    use crate::schema::auto_blacklist_rule::dsl as rule_dsl;
+
+    let existing = rule_dsl::auto_blacklist_rule
+        .filter(rule_dsl::id.eq(rule_id))
+        .select(AutoBlacklistRule::as_select())
+        .first::<AutoBlacklistRule>(conn)
+        .optional()
+        .context("error loading auto blacklist rule")?;
+    if existing.is_some() {
+        diesel::update(rule_dsl::auto_blacklist_rule.filter(rule_dsl::id.eq(rule_id)))
+            .set(rule_dsl::enabled.eq(next_enabled))
+            .execute(conn)
+            .context("error updating auto blacklist rule")?;
+    }
+
+    rule_dsl::auto_blacklist_rule
+        .filter(rule_dsl::id.eq(rule_id))
+        .select(AutoBlacklistRule::as_select())
+        .first::<AutoBlacklistRule>(conn)
+        .optional()
+        .context("error loading updated auto blacklist rule")
+}
+
+pub fn remove_auto_blacklist_rule(
+    conn: &mut PgConnection,
+    rule_id: i32,
+) -> Result<Option<AutoBlacklistRule>> {
+    use crate::schema::auto_blacklist_rule::dsl as rule_dsl;
+
+    let existing = rule_dsl::auto_blacklist_rule
+        .filter(rule_dsl::id.eq(rule_id))
+        .select(AutoBlacklistRule::as_select())
+        .first::<AutoBlacklistRule>(conn)
+        .optional()
+        .context("error loading auto blacklist rule")?;
+    if existing.is_some() {
+        diesel::delete(rule_dsl::auto_blacklist_rule.filter(rule_dsl::id.eq(rule_id)))
+            .execute(conn)
+            .context("error removing auto blacklist rule")?;
+    }
+    Ok(existing)
+}
+
+pub fn apply_auto_blacklist_rules_to_existing(
+    conn: &mut PgConnection,
+    dry_run: bool,
+    requested_limit: Option<i64>,
+) -> Result<AutoBlacklistBackfillResult> {
+    let limit = requested_limit.unwrap_or(500).clamp(1, 5_000);
+    let rules = list_enabled_auto_blacklist_rules(conn)?;
+    let category_rules = rules
+        .iter()
+        .filter(|rule| rule.rule_type == AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY)
+        .cloned()
+        .collect::<Vec<_>>();
+    let keyword_rules = rules
+        .iter()
+        .filter(|rule| rule.rule_type == AUTO_BLACKLIST_RULE_TYPE_KEYWORD)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut scanned_count = 0usize;
+    let mut matches = Vec::new();
+
+    if !category_rules.is_empty() {
+        let profiles = load_auto_blacklist_profile_backfill_rows(conn, limit)?;
+        scanned_count += profiles.len();
+        for profile in profiles {
+            for rule in &category_rules {
+                if profile.category == rule.value {
+                    matches.push(AutoBlacklistBackfillMatch {
+                        domain: profile.host.clone(),
+                        rule_id: rule.id,
+                        rule_type: rule.rule_type.clone(),
+                        matched_value: rule.value.clone(),
+                        evidence: truncate(
+                            &format!("site category {}", site_category_label(&profile.category)),
+                            240,
+                        ),
+                        source_page_id: profile.source_page_id,
+                    });
+                }
+            }
+        }
+    }
+
+    if !keyword_rules.is_empty() {
+        let pages = load_auto_blacklist_page_backfill_rows(conn, limit)?;
+        scanned_count += pages.len();
+        let page_ids = pages.iter().map(|page| page.id).collect::<Vec<_>>();
+        let tags_by_page = load_page_keyword_tags_by_page_ids(conn, &page_ids)?;
+        for page in pages {
+            let domain = host_from_url(&page.url);
+            if domain.is_empty() {
+                continue;
+            }
+            let tags = tags_by_page.get(&page.id).cloned().unwrap_or_default();
+            let corpus = auto_blacklist_backfill_corpus(&page, &tags);
+            for rule in &keyword_rules {
+                if auto_blacklist_keyword_matches(&corpus, &rule.value) {
+                    matches.push(AutoBlacklistBackfillMatch {
+                        domain: domain.clone(),
+                        rule_id: rule.id,
+                        rule_type: rule.rule_type.clone(),
+                        matched_value: rule.value.clone(),
+                        evidence: truncate(
+                            &format!("keyword phrase '{}' matched", rule.value),
+                            240,
+                        ),
+                        source_page_id: Some(page.id),
+                    });
+                }
+            }
+        }
+    }
+
+    matches.sort_by(|left, right| {
+        left.domain
+            .cmp(&right.domain)
+            .then_with(|| left.rule_id.cmp(&right.rule_id))
+            .then_with(|| left.source_page_id.cmp(&right.source_page_id))
+    });
+    matches.dedup_by(|left, right| {
+        left.domain == right.domain
+            && left.rule_id == right.rule_id
+            && left.source_page_id == right.source_page_id
+    });
+
+    let matched_count = matches.len();
+    let mut blacklisted_count = 0usize;
+    let mut event_count = 0usize;
+    if !dry_run {
+        let mut blacklist_domains = load_blacklist_domains(conn)?;
+        for matched in &matches {
+            if find_matching_blacklist_domain(&matched.domain, &blacklist_domains).is_none() {
+                blacklisted_count += 1;
+                blacklist_domains.push(matched.domain.clone());
+            }
+            add_domain_blacklist_entry(conn, &matched.domain)?;
+            event_count += insert_auto_blacklist_event(
+                conn,
+                matched.rule_id,
+                &matched.domain,
+                matched.source_page_id,
+                &matched.rule_type,
+                &matched.matched_value,
+                &matched.evidence,
+            )?;
+        }
+    }
+
+    Ok(AutoBlacklistBackfillResult {
+        dry_run,
+        scanned_count,
+        matched_count,
+        blacklisted_count,
+        event_count,
+        matches,
+    })
 }
 
 pub fn list_forum_keyword_rules(conn: &mut PgConnection) -> Result<Vec<ForumKeywordRule>> {
@@ -1648,6 +1926,12 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                 ))
                 .execute(conn)
                 .context("error saving site profile")?;
+            apply_auto_blacklist_rules_for_page(
+                conn,
+                &snapshot,
+                stored_page_id,
+                &site_profile_record,
+            )?;
         }
 
         Ok(())
@@ -8024,6 +8308,221 @@ fn load_blacklist_domains(conn: &mut PgConnection) -> Result<Vec<String>> {
         .collect())
 }
 
+fn list_enabled_auto_blacklist_rules(conn: &mut PgConnection) -> Result<Vec<AutoBlacklistRule>> {
+    use crate::schema::auto_blacklist_rule::dsl as rule_dsl;
+
+    rule_dsl::auto_blacklist_rule
+        .filter(rule_dsl::enabled.eq(true))
+        .order(rule_dsl::rule_type.asc())
+        .then_order_by(rule_dsl::value.asc())
+        .then_order_by(rule_dsl::id.asc())
+        .select(AutoBlacklistRule::as_select())
+        .load::<AutoBlacklistRule>(conn)
+        .context("error loading enabled auto blacklist rules")
+}
+
+fn apply_auto_blacklist_rules_for_page(
+    conn: &mut PgConnection,
+    snapshot: &PageSnapshot,
+    stored_page_id: i32,
+    site_profile_record: &NewSiteProfile,
+) -> Result<()> {
+    let rules = list_enabled_auto_blacklist_rules(conn)?;
+    if rules.is_empty() {
+        return Ok(());
+    }
+    let domain = normalize_blacklist_domain(&site_profile_record.host)?;
+    let corpus = snapshot.keyword_corpus.to_ascii_lowercase();
+
+    for rule in rules {
+        let evidence = match rule.rule_type.as_str() {
+            AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY
+                if site_profile_record.category == rule.value =>
+            {
+                Some(format!(
+                    "site category {}",
+                    site_category_label(&site_profile_record.category)
+                ))
+            }
+            AUTO_BLACKLIST_RULE_TYPE_KEYWORD
+                if auto_blacklist_keyword_matches(&corpus, &rule.value) =>
+            {
+                Some(format!(
+                    "keyword phrase '{}' matched scan corpus",
+                    rule.value
+                ))
+            }
+            _ => None,
+        };
+
+        let Some(evidence) = evidence else {
+            continue;
+        };
+        add_domain_blacklist_entry(conn, &domain)?;
+        insert_auto_blacklist_event(
+            conn,
+            rule.id,
+            &domain,
+            Some(stored_page_id),
+            &rule.rule_type,
+            &rule.value,
+            &truncate(&evidence, 240),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn insert_auto_blacklist_event(
+    conn: &mut PgConnection,
+    rule_id: i32,
+    domain: &str,
+    source_page_id: Option<i32>,
+    rule_type: &str,
+    matched_value: &str,
+    evidence: &str,
+) -> Result<usize> {
+    diesel::insert_into(crate::schema::auto_blacklist_event::table)
+        .values(NewAutoBlacklistEvent {
+            rule_id,
+            domain,
+            source_page_id,
+            rule_type,
+            matched_value,
+            evidence,
+        })
+        .on_conflict_do_nothing()
+        .execute(conn)
+        .context("error saving auto blacklist event")
+}
+
+fn load_auto_blacklist_profile_backfill_rows(
+    conn: &mut PgConnection,
+    limit: i64,
+) -> Result<Vec<SiteProfileRecord>> {
+    use crate::schema::site_profile::dsl as site_profile_dsl;
+
+    site_profile_dsl::site_profile
+        .order(site_profile_dsl::last_scanned_at.desc())
+        .then_order_by(site_profile_dsl::id.desc())
+        .limit(limit)
+        .select(SiteProfileRecord::as_select())
+        .load::<SiteProfileRecord>(conn)
+        .context("error loading site profiles for auto blacklist backfill")
+}
+
+fn load_auto_blacklist_page_backfill_rows(
+    conn: &mut PgConnection,
+    limit: i64,
+) -> Result<Vec<Page>> {
+    use crate::schema::page::dsl as page_dsl;
+
+    page_dsl::page
+        .order(page_dsl::last_scanned_at.desc())
+        .then_order_by(page_dsl::id.desc())
+        .limit(limit)
+        .select(Page::as_select())
+        .load::<Page>(conn)
+        .context("error loading pages for auto blacklist backfill")
+}
+
+fn load_page_keyword_tags_by_page_ids(
+    conn: &mut PgConnection,
+    page_ids: &[i32],
+) -> Result<HashMap<i32, Vec<String>>> {
+    use crate::schema::page_keyword_tag::dsl as keyword_tag_dsl;
+
+    if page_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = keyword_tag_dsl::page_keyword_tag
+        .filter(keyword_tag_dsl::page_id.eq_any(page_ids))
+        .select(PageKeywordTag::as_select())
+        .load::<PageKeywordTag>(conn)
+        .context("error loading page keyword tags for auto blacklist backfill")?;
+    let mut grouped = HashMap::<i32, Vec<String>>::new();
+    for row in rows {
+        grouped.entry(row.page_id).or_default().push(row.tag);
+    }
+    Ok(grouped)
+}
+
+fn auto_blacklist_backfill_corpus(page: &Page, tags: &[String]) -> String {
+    let tag_text = tags.join("\n");
+    [
+        page.url.as_str(),
+        page.title.as_str(),
+        page.links.as_str(),
+        page.emails.as_str(),
+        page.coins.as_str(),
+        page.language.as_str(),
+        tag_text.as_str(),
+    ]
+    .join("\n")
+    .to_ascii_lowercase()
+}
+
+fn auto_blacklist_keyword_matches(haystack: &str, phrase: &str) -> bool {
+    !phrase.is_empty() && haystack.to_ascii_lowercase().contains(phrase)
+}
+
+fn valid_auto_blacklist_site_categories() -> [&'static str; 12] {
+    [
+        CATEGORY_SEARCH_ENGINE,
+        CATEGORY_FORUM,
+        CATEGORY_MARKET,
+        CATEGORY_DIRECTORY,
+        CATEGORY_WIKI,
+        CATEGORY_BLOG,
+        CATEGORY_ESCROW,
+        CATEGORY_SHOP,
+        CATEGORY_VENDOR_PAGE,
+        CATEGORY_DOCS,
+        CATEGORY_INDEXER,
+        CATEGORY_CONTENT,
+    ]
+}
+
+fn normalize_auto_blacklist_site_category(raw_category: &str) -> Result<String> {
+    let normalized = raw_category
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-");
+    anyhow::ensure!(
+        !normalized.is_empty(),
+        "auto blacklist site category must not be empty"
+    );
+
+    for category in valid_auto_blacklist_site_categories() {
+        let label = site_category_label(category)
+            .to_ascii_lowercase()
+            .replace(' ', "-");
+        if normalized == category || normalized == label {
+            return Ok(category.to_string());
+        }
+    }
+
+    anyhow::bail!("unsupported auto blacklist site category: {raw_category}")
+}
+
+fn normalize_auto_blacklist_keyword(raw_keyword: &str) -> Result<String> {
+    let normalized = raw_keyword
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_ascii_lowercase();
+    anyhow::ensure!(
+        !normalized.is_empty(),
+        "auto blacklist keyword must not be empty"
+    );
+    Ok(normalized)
+}
+
 fn load_grouped_target_host_counts(
     conn: &mut PgConnection,
     query: &str,
@@ -8474,6 +8973,27 @@ mod tests {
               domain VARCHAR NOT NULL UNIQUE,
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE auto_blacklist_rule(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              rule_type VARCHAR NOT NULL,
+              value VARCHAR NOT NULL,
+              label VARCHAR NOT NULL DEFAULT '',
+              enabled BOOLEAN NOT NULL DEFAULT 1,
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(rule_type, value)
+            );
+            CREATE TABLE auto_blacklist_event(
+              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+              rule_id INTEGER NOT NULL,
+              domain VARCHAR NOT NULL,
+              source_page_id INTEGER,
+              rule_type VARCHAR NOT NULL,
+              matched_value VARCHAR NOT NULL,
+              evidence VARCHAR NOT NULL DEFAULT '',
+              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE UNIQUE INDEX idx_auto_blacklist_event_unique_page
+              ON auto_blacklist_event(domain, rule_id, COALESCE(source_page_id, 0));
             CREATE TABLE forum_keyword_rule(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               label VARCHAR NOT NULL,
@@ -10023,5 +10543,46 @@ mod tests {
             sites.items[0].source_page_url.as_deref(),
             Some("http://alpha.onion")
         );
+    }
+
+    #[test]
+    fn auto_blacklist_category_rules_normalize_slugs_and_labels() {
+        assert_eq!(
+            normalize_auto_blacklist_rule_value(
+                AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
+                "Vendor Page"
+            )
+            .expect("display label normalizes"),
+            CATEGORY_VENDOR_PAGE
+        );
+        assert_eq!(
+            normalize_auto_blacklist_rule_value(AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY, "indexer")
+                .expect("slug normalizes"),
+            CATEGORY_INDEXER
+        );
+        assert!(normalize_auto_blacklist_rule_value(
+            AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
+            "unknown"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn auto_blacklist_keyword_rules_normalize_literal_phrases() {
+        assert_eq!(
+            normalize_auto_blacklist_rule_value(
+                AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
+                "  Escrow   Required  "
+            )
+            .expect("keyword normalizes"),
+            "escrow required"
+        );
+        assert!(
+            normalize_auto_blacklist_rule_value(AUTO_BLACKLIST_RULE_TYPE_KEYWORD, "  ").is_err()
+        );
+        assert!(auto_blacklist_keyword_matches(
+            "Forum post says ESCROW REQUIRED before delivery",
+            "escrow required"
+        ));
     }
 }

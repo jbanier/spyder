@@ -42,6 +42,51 @@ pub struct NewDomainBlacklist<'a> {
     pub domain: &'a str,
 }
 
+#[derive(Selectable, Queryable, Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::auto_blacklist_rule)]
+pub struct AutoBlacklistRule {
+    pub id: i32,
+    pub rule_type: String,
+    pub value: String,
+    pub label: String,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = crate::schema::auto_blacklist_rule)]
+pub struct NewAutoBlacklistRule<'a> {
+    pub rule_type: &'a str,
+    pub value: &'a str,
+    pub label: &'a str,
+}
+
+#[derive(Selectable, Queryable, Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::auto_blacklist_event)]
+pub struct AutoBlacklistEvent {
+    pub id: i32,
+    pub rule_id: i32,
+    pub domain: String,
+    pub source_page_id: Option<i32>,
+    pub rule_type: String,
+    pub matched_value: String,
+    pub evidence: String,
+    pub created_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = crate::schema::auto_blacklist_event)]
+pub struct NewAutoBlacklistEvent<'a> {
+    pub rule_id: i32,
+    pub domain: &'a str,
+    pub source_page_id: Option<i32>,
+    pub rule_type: &'a str,
+    pub matched_value: &'a str,
+    pub evidence: &'a str,
+}
+
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::forum_keyword_rule)]
@@ -1200,6 +1245,43 @@ pub struct DomainBlacklistSummary {
     pub created_at: String,
     pub page_link_count: usize,
     pub page_scan_link_count: usize,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct AutoBlacklistCategoryOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct AutoBlacklistConfig {
+    pub rules: Vec<AutoBlacklistRule>,
+    pub events: Vec<AutoBlacklistEvent>,
+    pub category_options: Vec<AutoBlacklistCategoryOption>,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct AutoBlacklistBackfillMatch {
+    pub domain: String,
+    pub rule_id: i32,
+    pub rule_type: String,
+    pub matched_value: String,
+    pub evidence: String,
+    pub source_page_id: Option<i32>,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct AutoBlacklistBackfillResult {
+    pub dry_run: bool,
+    pub scanned_count: usize,
+    pub matched_count: usize,
+    pub blacklisted_count: usize,
+    pub event_count: usize,
+    pub matches: Vec<AutoBlacklistBackfillMatch>,
 }
 
 #[derive(Serialize, Clone, Debug)]

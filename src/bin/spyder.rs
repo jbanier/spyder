@@ -17,17 +17,20 @@ use spyder::models::{
     PageScanCrypto, PageScanEmail, PageScanLink, PageSnapshot, SiteProfileRecord, WorkUnit,
 };
 use spyder::{
-    add_domain_blacklist_entry, add_forum_keyword_rule, add_watchlist_item, create_work_unit,
+    add_auto_blacklist_rule, add_domain_blacklist_entry, add_forum_keyword_rule,
+    add_watchlist_item, apply_auto_blacklist_rules_to_existing, create_work_unit,
     establish_connection, find_matching_blacklist_domain, get_host_http_observation,
     get_host_service_observation, get_host_ssh_observation, get_pending_work_units,
-    list_domain_blacklist_rules, list_forum_keyword_rules, list_recent_responding_hosts,
-    list_watchlist_items, mark_work_unit_as_done, normalize_crawl_url, page_link_batch_upper_bound,
-    queue_known_pages_for_rescan, recompute_intel_leads_with_reporter, record_work_unit_failure,
+    list_auto_blacklist_rules, list_domain_blacklist_rules, list_forum_keyword_rules,
+    list_recent_responding_hosts, list_watchlist_items, mark_work_unit_as_done,
+    normalize_crawl_url, page_link_batch_upper_bound, queue_known_pages_for_rescan,
+    recompute_intel_leads_with_reporter, record_work_unit_failure, remove_auto_blacklist_rule,
     remove_domain_blacklist_entry, remove_forum_keyword_rule, remove_watchlist_item,
     save_host_http_observation, save_host_service_observation, save_host_ssh_observation,
-    save_host_tls_observation, save_page_info, suppress_intel_lead, AppConnection,
-    IntelLeadRecomputeOptions, SqlDialect, DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE,
-    SSH_STATUS_SUCCESS,
+    save_host_tls_observation, save_page_info, set_auto_blacklist_rule_enabled,
+    suppress_intel_lead, AppConnection, IntelLeadRecomputeOptions, SqlDialect,
+    AUTO_BLACKLIST_RULE_TYPE_KEYWORD, AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
+    DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE, SSH_STATUS_SUCCESS,
 };
 use ssh2::{HashType, HostKeyType, Session};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -2403,6 +2406,116 @@ fn remove_blacklist_domain(raw_domain: &str) -> Result<()> {
     Ok(())
 }
 
+fn list_auto_blacklist() -> Result<()> {
+    let mut connection = establish_connection()?;
+    let rules = list_auto_blacklist_rules(&mut connection)?;
+
+    if rules.is_empty() {
+        println!("No auto blacklist rules configured");
+        return Ok(());
+    }
+
+    for rule in rules {
+        println!(
+            "#{} [{}] {} = {} ({})",
+            rule.id,
+            if rule.enabled { "enabled" } else { "disabled" },
+            rule.rule_type,
+            rule.value,
+            rule.label
+        );
+    }
+    Ok(())
+}
+
+fn add_auto_blacklist_category(category: &str, label: Option<&str>) -> Result<()> {
+    let mut connection = establish_connection()?;
+    let rule = add_auto_blacklist_rule(
+        &mut connection,
+        AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
+        category,
+        label,
+    )?;
+    println!(
+        "Auto blacklist rule #{}: site_category = {} ({})",
+        rule.id, rule.value, rule.label
+    );
+    Ok(())
+}
+
+fn add_auto_blacklist_keyword(keyword: &str, label: Option<&str>) -> Result<()> {
+    let mut connection = establish_connection()?;
+    let rule = add_auto_blacklist_rule(
+        &mut connection,
+        AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
+        keyword,
+        label,
+    )?;
+    println!(
+        "Auto blacklist rule #{}: keyword = {} ({})",
+        rule.id, rule.value, rule.label
+    );
+    Ok(())
+}
+
+fn set_auto_blacklist_enabled(rule_id: i32, enabled: bool) -> Result<()> {
+    let mut connection = establish_connection()?;
+    match set_auto_blacklist_rule_enabled(&mut connection, rule_id, enabled)? {
+        Some(rule) => println!(
+            "{} auto blacklist rule #{} [{}:{}]",
+            if enabled { "Enabled" } else { "Disabled" },
+            rule.id,
+            rule.rule_type,
+            rule.value
+        ),
+        None => println!("No matching auto blacklist rule found"),
+    }
+    Ok(())
+}
+
+fn remove_auto_blacklist(rule_id: i32) -> Result<()> {
+    let mut connection = establish_connection()?;
+    match remove_auto_blacklist_rule(&mut connection, rule_id)? {
+        Some(rule) => println!(
+            "Removed auto blacklist rule #{} [{}:{}]",
+            rule.id, rule.rule_type, rule.value
+        ),
+        None => println!("No matching auto blacklist rule found"),
+    }
+    Ok(())
+}
+
+fn apply_existing_auto_blacklist(dry_run: bool, limit: Option<i64>) -> Result<()> {
+    let mut connection = establish_connection()?;
+    let result = apply_auto_blacklist_rules_to_existing(&mut connection, dry_run, limit)?;
+    println!(
+        "{} scanned {} rows, matched {}, blacklisted {}, recorded {} events",
+        if result.dry_run {
+            "Dry run"
+        } else {
+            "Auto blacklist backfill"
+        },
+        result.scanned_count,
+        result.matched_count,
+        result.blacklisted_count,
+        result.event_count
+    );
+    for matched in result.matches.iter().take(25) {
+        println!(
+            "- {} via #{} [{}:{}] {}",
+            matched.domain,
+            matched.rule_id,
+            matched.rule_type,
+            matched.matched_value,
+            matched.evidence
+        );
+    }
+    if result.matches.len() > 25 {
+        println!("... {} additional matches", result.matches.len() - 25);
+    }
+    Ok(())
+}
+
 fn list_forum_keywords() -> Result<()> {
     let mut connection = establish_connection()?;
     let rules = list_forum_keyword_rules(&mut connection)?;
@@ -3198,6 +3311,13 @@ fn usage(program: &str) {
     eprintln!("    blacklist list");
     eprintln!("    blacklist add <domain>");
     eprintln!("    blacklist remove <domain>");
+    eprintln!("    blacklist auto list");
+    eprintln!("    blacklist auto add-category <category> [label]");
+    eprintln!("    blacklist auto add-keyword <phrase> [label]");
+    eprintln!("    blacklist auto enable <id>");
+    eprintln!("    blacklist auto disable <id>");
+    eprintln!("    blacklist auto remove <id>");
+    eprintln!("    blacklist auto apply-existing --dry-run|--apply [--limit N]");
     eprintln!("    forum-keywords list");
     eprintln!("    forum-keywords add <label> <pattern>");
     eprintln!("    forum-keywords remove <label> <pattern>");
@@ -3393,6 +3513,36 @@ fn parse_leads_recompute_options(
     Ok(options)
 }
 
+fn parse_auto_blacklist_apply_args(
+    args: impl IntoIterator<Item = String>,
+) -> Result<(bool, Option<i64>)> {
+    let mut dry_run = true;
+    let mut mode_seen = false;
+    let mut limit = None;
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--dry-run" => {
+                anyhow::ensure!(!mode_seen, "choose only one of --dry-run or --apply");
+                dry_run = true;
+                mode_seen = true;
+            }
+            "--apply" => {
+                anyhow::ensure!(!mode_seen, "choose only one of --dry-run or --apply");
+                dry_run = false;
+                mode_seen = true;
+            }
+            "--limit" => {
+                limit = Some(parse_i64_option_value(args.next(), "--limit", 1, 5_000)?);
+            }
+            _ => anyhow::bail!("invalid blacklist auto apply-existing option: {arg}"),
+        }
+    }
+
+    Ok((dry_run, limit))
+}
+
 fn parse_i64_option_value(value: Option<String>, option: &str, min: i64, max: i64) -> Result<i64> {
     let raw = value.with_context(|| format!("missing value for {option}"))?;
     let parsed = raw
@@ -3479,6 +3629,67 @@ fn main() {
                 None => {
                     usage(&program);
                     Err(anyhow::anyhow!("no blacklist domain is provided"))
+                }
+            },
+            Some("auto") => match args.next().as_deref() {
+                Some("list") => list_auto_blacklist(),
+                Some("add-category") => match args.next() {
+                    Some(category) => {
+                        add_auto_blacklist_category(&category, args.next().as_deref())
+                    }
+                    None => {
+                        usage(&program);
+                        Err(anyhow::anyhow!(
+                            "blacklist auto add-category requires <category> [label]"
+                        ))
+                    }
+                },
+                Some("add-keyword") => match args.next() {
+                    Some(keyword) => add_auto_blacklist_keyword(&keyword, args.next().as_deref()),
+                    None => {
+                        usage(&program);
+                        Err(anyhow::anyhow!(
+                            "blacklist auto add-keyword requires <phrase> [label]"
+                        ))
+                    }
+                },
+                Some("enable") => match args.next() {
+                    Some(rule_id) => match rule_id.parse::<i32>() {
+                        Ok(rule_id) => set_auto_blacklist_enabled(rule_id, true),
+                        Err(_) => Err(anyhow::anyhow!("invalid auto blacklist rule id: {rule_id}")),
+                    },
+                    None => {
+                        usage(&program);
+                        Err(anyhow::anyhow!("blacklist auto enable requires <id>"))
+                    }
+                },
+                Some("disable") => match args.next() {
+                    Some(rule_id) => match rule_id.parse::<i32>() {
+                        Ok(rule_id) => set_auto_blacklist_enabled(rule_id, false),
+                        Err(_) => Err(anyhow::anyhow!("invalid auto blacklist rule id: {rule_id}")),
+                    },
+                    None => {
+                        usage(&program);
+                        Err(anyhow::anyhow!("blacklist auto disable requires <id>"))
+                    }
+                },
+                Some("remove") => match args.next() {
+                    Some(rule_id) => match rule_id.parse::<i32>() {
+                        Ok(rule_id) => remove_auto_blacklist(rule_id),
+                        Err(_) => Err(anyhow::anyhow!("invalid auto blacklist rule id: {rule_id}")),
+                    },
+                    None => {
+                        usage(&program);
+                        Err(anyhow::anyhow!("blacklist auto remove requires <id>"))
+                    }
+                },
+                Some("apply-existing") => parse_auto_blacklist_apply_args(args)
+                    .and_then(|(dry_run, limit)| apply_existing_auto_blacklist(dry_run, limit)),
+                Some(_) | None => {
+                    usage(&program);
+                    Err(anyhow::anyhow!(
+                        "invalid or missing blacklist auto subcommand"
+                    ))
                 }
             },
             Some(_) | None => {

@@ -155,6 +155,15 @@ cargo run --bin spyder -- blacklist add example.com
 
 # remove a rule
 cargo run --bin spyder -- blacklist remove example.com
+
+# auto-blacklist scanned sites classified as a category
+cargo run --bin spyder -- blacklist auto add-category market
+
+# auto-blacklist scanned sites whose scan corpus includes a phrase
+cargo run --bin spyder -- blacklist auto add-keyword "escrow required"
+
+# review existing data without writing blacklist entries
+cargo run --bin spyder -- blacklist auto apply-existing --dry-run
 ```
 
 Behavior:
@@ -163,6 +172,8 @@ Behavior:
 - blacklisted discovered links are still stored in page and history views
 - blacklisted discovered links are not queued into `work_unit`
 - manually seeded URLs are not removed retroactively
+- auto-blacklist rules add the scanned host to the same domain blacklist when a category or keyword phrase matches
+- auto-blacklist backfill is explicit and dry-run by default
 
 Retry behavior:
 
@@ -219,7 +230,7 @@ Main pages:
 - `http://127.0.0.1:8000/sites`: host-level site classification view
 - `http://127.0.0.1:8000/watchlists`: customer watchlist indicators
 - `http://127.0.0.1:8000/leads`: deterministic intel lead queue
-- `http://127.0.0.1:8000/blacklist`: current blacklist rules and match counts
+- `http://127.0.0.1:8000/blacklist`: current blacklist rules, auto rules, and match counts
 - `http://127.0.0.1:8000/work`: crawl queue
 - `http://127.0.0.1:8000/relationships`: host-to-host reference summary
 - `http://127.0.0.1:8000/entities/emails`: shared email view
@@ -351,7 +362,7 @@ cargo run --bin spyder -- watchlist remove 1
 
 ### Domain Blacklist
 
-`/blacklist` lists configured blacklist rules together with counts of matching current page links and historical scan links.
+`/blacklist` lists configured blacklist rules together with counts of matching current page links and historical scan links. It also manages auto-blacklist category and keyword rules, and shows recent automatic matches.
 
 ## JSON Endpoints
 
@@ -359,6 +370,7 @@ cargo run --bin spyder -- watchlist remove 1
 - `GET /api/search?query=example`
 - `GET /api/search?query=example&limit=25`
 - `GET /api/blacklist`
+- `GET /api/blacklist/auto`
 - `GET /api/sites`
 - `GET /api/pages/<id>/history`
 - `GET /api/pages/<id>/history/<scan_id>`

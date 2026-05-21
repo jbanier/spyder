@@ -1,6 +1,30 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+    auto_blacklist_event (id) {
+        id -> Int4,
+        rule_id -> Int4,
+        domain -> Text,
+        source_page_id -> Nullable<Int4>,
+        rule_type -> Text,
+        matched_value -> Text,
+        evidence -> Text,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
+    auto_blacklist_rule (id) {
+        id -> Int4,
+        rule_type -> Text,
+        value -> Text,
+        label -> Text,
+        enabled -> Bool,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
     domain_blacklist (id) {
         id -> Int4,
         domain -> Text,
@@ -309,8 +333,12 @@ diesel::joinable!(page_scan_email -> page_scan (scan_id));
 diesel::joinable!(page_scan_link -> page_scan (scan_id));
 diesel::joinable!(page_topic_tag -> page (page_id));
 diesel::joinable!(site_profile -> page (source_page_id));
+diesel::joinable!(auto_blacklist_event -> auto_blacklist_rule (rule_id));
+diesel::joinable!(auto_blacklist_event -> page (source_page_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    auto_blacklist_event,
+    auto_blacklist_rule,
     domain_blacklist,
     forum_keyword_rule,
     host_http_observation,
