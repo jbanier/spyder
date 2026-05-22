@@ -319,6 +319,7 @@ impl_has_id!(
     PageScanEmail,
     PageScanCrypto,
     PageLink,
+    SourcePageLinkImportRow,
     PageEmail,
     PageCrypto,
     PageClassificationRecord,
@@ -398,8 +399,25 @@ struct ImportedPageScanCrypto {
 struct ImportedPageLink {
     id: i32,
     source_page_id: i32,
+    source_host: String,
     target_url: String,
     target_host: String,
+    created_at: String,
+}
+
+#[derive(QueryableByName)]
+struct SourcePageLinkImportRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    id: i32,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    source_page_id: i32,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    source_host: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    target_url: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    target_host: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
     created_at: String,
 }
 
@@ -2795,19 +2813,45 @@ fn import_sqlite(sqlite_path: &str) -> Result<()> {
         &mut source,
         &mut target,
         |conn, last_id, limit| {
-            use spyder::schema::page_link::dsl as page_link_dsl;
-
-            page_link_dsl::page_link
-                .filter(page_link_dsl::id.gt(last_id))
-                .order(page_link_dsl::id.asc())
-                .limit(limit)
-                .select(PageLink::as_select())
-                .load::<PageLink>(conn)
-                .map_err(Into::into)
+            diesel::sql_query(
+                "
+                SELECT
+                    pl.id,
+                    pl.source_page_id,
+                    lower(
+                        CASE
+                            WHEN instr(p.url, '://') > 0 THEN
+                                CASE
+                                    WHEN instr(substr(p.url, instr(p.url, '://') + 3), '/') > 0 THEN
+                                        substr(
+                                            substr(p.url, instr(p.url, '://') + 3),
+                                            1,
+                                            instr(substr(p.url, instr(p.url, '://') + 3), '/') - 1
+                                        )
+                                    ELSE substr(p.url, instr(p.url, '://') + 3)
+                                END
+                            ELSE ''
+                        END
+                    ) AS source_host,
+                    pl.target_url,
+                    pl.target_host,
+                    pl.created_at
+                FROM page_link pl
+                JOIN page p ON p.id = pl.source_page_id
+                WHERE pl.id > ?
+                ORDER BY pl.id ASC
+                LIMIT ?
+                ",
+            )
+            .bind::<diesel::sql_types::Integer, _>(last_id)
+            .bind::<diesel::sql_types::BigInt, _>(limit)
+            .load::<SourcePageLinkImportRow>(conn)
+            .map_err(Into::into)
         },
         |row| ImportedPageLink {
             id: row.id,
             source_page_id: row.source_page_id,
+            source_host: row.source_host,
             target_url: row.target_url,
             target_host: row.target_host,
             created_at: row.created_at,

@@ -1635,6 +1635,7 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
         site_profile,
     };
     let snapshot = normalize_page_snapshot(snapshot);
+    let page_host = host_from_url(&snapshot.url);
 
     let new_page = NewPage {
         title: snapshot.title.clone(),
@@ -1795,6 +1796,7 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
             .iter()
             .map(|item| NewPageLink {
                 source_page_id: stored_page_id,
+                source_host: page_host.clone(),
                 target_url: item.target_url.clone(),
                 target_host: item.target_host.clone(),
             })
@@ -7272,41 +7274,34 @@ pub fn list_site_relationships(
         DEFAULT_PAGE_LIMIT,
         MAX_PAGE_LIMIT,
     );
-    let source_host_expr = sql_host_expr("p.url", conn);
     let total_count = scalar_count(
         conn,
-        &format!(
-            "
+        "
             SELECT COUNT(*) AS count
             FROM (
                 SELECT 1
                 FROM page_link pl
-                JOIN page p ON p.id = pl.source_page_id
                 WHERE pl.target_host != ''
-                    AND {source_host_expr} != ''
-                    AND {source_host_expr} != pl.target_host
-                GROUP BY {source_host_expr}, pl.target_host
+                    AND pl.source_host != ''
+                    AND pl.source_host != lower(pl.target_host)
+                GROUP BY pl.source_host, lower(pl.target_host)
             ) AS site_relationships
-            "
-        ),
+            ",
     )
     .context("error counting site relationships")?;
-    let query = format!(
-        "
+    let query = "
         SELECT
-            {source_host_expr} AS source_host,
-            pl.target_host,
+            pl.source_host,
+            lower(pl.target_host) AS target_host,
             COUNT(*) AS reference_count
         FROM page_link pl
-        JOIN page p ON p.id = pl.source_page_id
         WHERE pl.target_host != ''
-            AND {source_host_expr} != ''
-            AND {source_host_expr} != pl.target_host
-        GROUP BY {source_host_expr}, pl.target_host
-        ORDER BY reference_count DESC, source_host ASC, pl.target_host ASC
+            AND pl.source_host != ''
+            AND pl.source_host != lower(pl.target_host)
+        GROUP BY pl.source_host, lower(pl.target_host)
+        ORDER BY reference_count DESC, source_host ASC, target_host ASC
         LIMIT $1 OFFSET $2
-        "
-    );
+        ";
     let rows = sql_query(query)
         .bind::<BigInt, _>(pagination.limit)
         .bind::<BigInt, _>(pagination.offset)
@@ -7380,25 +7375,20 @@ fn load_overview_site_relationship_graph_edges(
     conn: &mut PgConnection,
     limit: i64,
 ) -> Result<Vec<SiteRelationshipGraphEdgeRow>> {
-    let source_host_expr = sql_host_expr("p.url", conn);
-    let source_host = format!("lower(({source_host_expr}))");
-    let query = format!(
-        "
+    let query = "
         SELECT
-            {source_host} AS source_host,
+            pl.source_host,
             lower(pl.target_host) AS target_host,
             COUNT(*) AS reference_count,
             0 AS depth
         FROM page_link pl
-        JOIN page p ON p.id = pl.source_page_id
         WHERE pl.target_host != ''
-          AND {source_host} != ''
-          AND {source_host} != lower(pl.target_host)
-        GROUP BY {source_host}, lower(pl.target_host)
+          AND pl.source_host != ''
+          AND pl.source_host != lower(pl.target_host)
+        GROUP BY pl.source_host, lower(pl.target_host)
         ORDER BY reference_count DESC, source_host ASC, target_host ASC
         LIMIT $1
-        "
-    );
+        ";
 
     sql_query(query)
         .bind::<BigInt, _>(limit)
@@ -7412,32 +7402,21 @@ fn load_focused_site_relationship_graph_edges(
     depth: i64,
     limit: i64,
 ) -> Result<Vec<SiteRelationshipGraphEdgeRow>> {
-    let source_host_expr = sql_host_expr("p.url", conn);
-    let source_host = format!("lower(({source_host_expr}))");
-    let query = format!(
-        "
-        WITH RECURSIVE relationships AS (
+    let query = "
+        WITH RECURSIVE walk(source_host, target_host, reference_count, depth, path) AS (
             SELECT
-                {source_host} AS source_host,
+                pl.source_host,
                 lower(pl.target_host) AS target_host,
-                COUNT(*) AS reference_count
-            FROM page_link pl
-            JOIN page p ON p.id = pl.source_page_id
-            WHERE pl.target_host != ''
-              AND {source_host} != ''
-              AND {source_host} != lower(pl.target_host)
-            GROUP BY {source_host}, lower(pl.target_host)
-        ),
-        walk(source_host, target_host, reference_count, depth, path) AS (
-            SELECT
-                r.source_host,
-                r.target_host,
-                r.reference_count,
+                COUNT(*) AS reference_count,
                 1 AS depth,
-                ARRAY[$1::text, r.source_host]::text[] AS path
-            FROM relationships r
-            WHERE r.target_host = $1
-              AND r.source_host != $1
+                ARRAY[$1::text, pl.source_host]::text[] AS path
+            FROM page_link pl
+            WHERE pl.target_host != ''
+              AND lower(pl.target_host) = $1
+              AND pl.source_host != ''
+              AND pl.source_host != $1
+              AND pl.source_host != lower(pl.target_host)
+            GROUP BY pl.source_host, lower(pl.target_host)
             UNION ALL
             SELECT
                 r.source_host,
@@ -7445,8 +7424,19 @@ fn load_focused_site_relationship_graph_edges(
                 r.reference_count,
                 walk.depth + 1 AS depth,
                 array_append(walk.path, r.source_host)
-            FROM relationships r
-            JOIN walk ON r.target_host = walk.source_host
+            FROM walk
+            JOIN LATERAL (
+                SELECT
+                    pl.source_host,
+                    lower(pl.target_host) AS target_host,
+                    COUNT(*) AS reference_count
+                FROM page_link pl
+                WHERE pl.target_host != ''
+                  AND lower(pl.target_host) = walk.source_host
+                  AND pl.source_host != ''
+                  AND pl.source_host != lower(pl.target_host)
+                GROUP BY pl.source_host, lower(pl.target_host)
+            ) r ON true
             WHERE walk.depth < $2
               AND r.source_host <> ALL(walk.path)
         )
@@ -7459,8 +7449,7 @@ fn load_focused_site_relationship_graph_edges(
         GROUP BY source_host, target_host
         ORDER BY depth ASC, reference_count DESC, source_host ASC, target_host ASC
         LIMIT $3
-        "
-    );
+        ";
 
     sql_query(query)
         .bind::<Text, _>(focus_host)
@@ -9067,6 +9056,7 @@ mod tests {
             CREATE TABLE page_link(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               source_page_id INTEGER NOT NULL,
+              source_host VARCHAR NOT NULL DEFAULT '',
               target_url VARCHAR NOT NULL,
               target_host VARCHAR NOT NULL DEFAULT '',
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -10319,6 +10309,7 @@ mod tests {
             CREATE TABLE page_link(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               source_page_id INTEGER NOT NULL,
+              source_host VARCHAR NOT NULL DEFAULT '',
               target_url VARCHAR NOT NULL,
               target_host VARCHAR NOT NULL DEFAULT '',
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -10418,11 +10409,11 @@ mod tests {
               (10, 'bitcoin', 'bc1qalpha000000000000000000000000000000000'),
               (11, 'ethereum', '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
-            INSERT INTO page_link(source_page_id, target_url, target_host, created_at)
+            INSERT INTO page_link(source_page_id, source_host, target_url, target_host, created_at)
             VALUES
-              (1, 'http://beta.onion/about', 'beta.onion', '2026-04-29 10:05:00'),
-              (2, 'http://beta.onion/contact', 'beta.onion', '2026-04-30 11:00:00'),
-              (2, 'http://gamma.onion/faq', 'gamma.onion', '2026-04-30 11:00:00');
+              (1, 'alpha.onion', 'http://beta.onion/about', 'beta.onion', '2026-04-29 10:05:00'),
+              (2, 'alpha.onion', 'http://beta.onion/contact', 'beta.onion', '2026-04-30 11:00:00'),
+              (2, 'alpha.onion', 'http://gamma.onion/faq', 'gamma.onion', '2026-04-30 11:00:00');
 
             INSERT INTO page_email(page_id, email, created_at)
             VALUES

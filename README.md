@@ -298,6 +298,8 @@ The list view is paginated.
 
 The relationship graph opens with an overview of the strongest observed host links. Entering a focus host switches to a three-hop inbound path view that shows how scanned sites led to that host, with zoom, pan, fit, and reset controls.
 
+Relationship queries use the denormalized `page_link.source_host` column and partial indexes on `(source_host, lower(target_host))` and `(lower(target_host), source_host)`. Run the relationship graph index migration before using the graph on large crawls.
+
 Blacklisted target hosts are clearly marked in both the dashboard and relationship table views.
 
 Source and target hosts also show category badges when the host has been classified.

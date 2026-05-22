@@ -225,6 +225,7 @@ diesel::table! {
     page_link (id) {
         id -> Int4,
         source_page_id -> Int4,
+        source_host -> Text,
         target_url -> Text,
         target_host -> Text,
         created_at -> Text,

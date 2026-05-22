@@ -2280,6 +2280,7 @@ mod tests {
             CREATE TABLE page_link(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               source_page_id INTEGER NOT NULL,
+              source_host VARCHAR NOT NULL DEFAULT '',
               target_url VARCHAR NOT NULL,
               target_host VARCHAR NOT NULL DEFAULT '',
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,

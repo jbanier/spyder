@@ -421,6 +421,7 @@ pub struct NewPageScan {
 pub struct PageLink {
     pub id: i32,
     pub source_page_id: i32,
+    pub source_host: String,
     pub target_url: String,
     pub target_host: String,
     pub created_at: String,
@@ -430,6 +431,7 @@ pub struct PageLink {
 #[diesel(table_name = crate::schema::page_link)]
 pub struct NewPageLink {
     pub source_page_id: i32,
+    pub source_host: String,
     pub target_url: String,
     pub target_host: String,
 }
