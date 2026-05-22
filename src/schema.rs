@@ -321,6 +321,8 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(auto_blacklist_event -> auto_blacklist_rule (rule_id));
+diesel::joinable!(auto_blacklist_event -> page (source_page_id));
 diesel::joinable!(intel_lead_evidence -> intel_lead (lead_id));
 diesel::joinable!(page_classification -> page (page_id));
 diesel::joinable!(page_crypto -> page (page_id));
@@ -334,8 +336,6 @@ diesel::joinable!(page_scan_email -> page_scan (scan_id));
 diesel::joinable!(page_scan_link -> page_scan (scan_id));
 diesel::joinable!(page_topic_tag -> page (page_id));
 diesel::joinable!(site_profile -> page (source_page_id));
-diesel::joinable!(auto_blacklist_event -> auto_blacklist_rule (rule_id));
-diesel::joinable!(auto_blacklist_event -> page (source_page_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     auto_blacklist_event,
