@@ -159,6 +159,9 @@ cargo run --bin spyder -- blacklist remove example.com
 # auto-blacklist scanned sites classified as a category
 cargo run --bin spyder -- blacklist auto add-category market
 
+# auto-blacklist SEO spam detections
+cargo run --bin spyder -- blacklist auto add-category seo-spam
+
 # auto-blacklist scanned sites whose scan corpus includes a phrase
 cargo run --bin spyder -- blacklist auto add-keyword "escrow required"
 
@@ -332,6 +335,8 @@ The dedicated `/top` leaderboards remain available from the dashboard and from `
 Language detection is fully local and deterministic. Spyder combines declared page language metadata such as `html[lang]` and language-related meta tags with the existing `whatlang` text detector, then stores the chosen language, confidence, source, and compact evidence.
 
 Page topics are also static. They are scored from weighted matches across title, headings, meta tags, body text, URL paths, and outbound link paths. The current rules cover broad operational categories such as marketplace, forum, directory, search, documentation, crypto, credentials, data leak, malware, phishing, exploit, and infrastructure. No LLM call is used.
+
+SEO spam detection is also deterministic. It contributes a `seo-spam` site category when a page combines signals such as oversized multilingual meta keywords, explicit `index, follow` robots metadata, hidden links, visible links concentrated on one external host, and repeated title churn across recent scans.
 
 ### Customer Watchlists
 

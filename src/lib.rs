@@ -45,6 +45,7 @@ const CATEGORY_VENDOR_PAGE: &str = "vendor-page";
 const CATEGORY_DOCS: &str = "docs";
 const CATEGORY_INDEXER: &str = "indexer";
 const CATEGORY_CONTENT: &str = "content";
+const CATEGORY_SEO_SPAM: &str = "seo-spam";
 const CATEGORY_UNKNOWN: &str = "unknown";
 const CONFIDENCE_HIGH: &str = "high";
 const CONFIDENCE_MEDIUM: &str = "medium";
@@ -1592,6 +1593,77 @@ fn normalize_topic_observations(topics: &[TopicObservation]) -> Vec<TopicObserva
     normalized
 }
 
+fn add_history_classification_signals(
+    conn: &mut PgConnection,
+    stored_page_id: i32,
+    signals: &mut ClassificationSignals,
+) -> Result<()> {
+    use crate::schema::page_scan::dsl as scan_dsl;
+
+    let recent_titles = scan_dsl::page_scan
+        .filter(scan_dsl::page_id.eq(stored_page_id))
+        .order(scan_dsl::id.desc())
+        .limit(8)
+        .select(scan_dsl::title)
+        .load::<String>(conn)
+        .context("error loading recent scan titles for classification")?;
+    let distinct_title_count = recent_titles
+        .iter()
+        .filter_map(|title| normalized_churn_title(title))
+        .collect::<HashSet<_>>()
+        .len();
+
+    if distinct_title_count >= 4 {
+        push_classification_hint(
+            signals,
+            CATEGORY_SEO_SPAM,
+            format!("title:randomized-across-scans:{distinct_title_count}"),
+            3,
+        );
+    } else if distinct_title_count >= 3 {
+        push_classification_hint(
+            signals,
+            CATEGORY_SEO_SPAM,
+            format!("title:varies-across-scans:{distinct_title_count}"),
+            2,
+        );
+    }
+
+    Ok(())
+}
+
+fn normalized_churn_title(title: &str) -> Option<String> {
+    let normalized = title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_ascii_lowercase();
+    (!normalized.is_empty() && normalized != "no title" && normalized.len() >= 4)
+        .then_some(normalized)
+}
+
+fn push_classification_hint(
+    signals: &mut ClassificationSignals,
+    category: &str,
+    evidence: String,
+    weight: i32,
+) {
+    if signals
+        .hints
+        .iter()
+        .any(|hint| hint.category == category && hint.evidence == evidence)
+    {
+        return;
+    }
+
+    signals.hints.push(CategoryHint {
+        category: category.to_string(),
+        evidence,
+        weight,
+    });
+}
+
 fn topic_confidence_for_score(score: i32, fallback: &str) -> String {
     if score >= 18 {
         CONFIDENCE_HIGH.to_string()
@@ -1634,7 +1706,7 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
         page_link, page_scan, page_scan_crypto, page_scan_email, page_scan_link, page_topic_tag,
         site_profile,
     };
-    let snapshot = normalize_page_snapshot(snapshot);
+    let mut snapshot = normalize_page_snapshot(snapshot);
     let page_host = host_from_url(&snapshot.url);
 
     let new_page = NewPage {
@@ -1874,6 +1946,12 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                 .execute(conn)
                 .context("error saving page topic tags")?;
         }
+
+        add_history_classification_signals(
+            conn,
+            stored_page_id,
+            &mut snapshot.classification_signals,
+        )?;
 
         let classification = classify_page_snapshot(&snapshot);
         if !classification.host.is_empty() {
@@ -8456,7 +8534,7 @@ fn auto_blacklist_keyword_matches(haystack: &str, phrase: &str) -> bool {
     !phrase.is_empty() && haystack.to_ascii_lowercase().contains(phrase)
 }
 
-fn valid_auto_blacklist_site_categories() -> [&'static str; 12] {
+fn valid_auto_blacklist_site_categories() -> [&'static str; 13] {
     [
         CATEGORY_SEARCH_ENGINE,
         CATEGORY_FORUM,
@@ -8470,6 +8548,7 @@ fn valid_auto_blacklist_site_categories() -> [&'static str; 12] {
         CATEGORY_DOCS,
         CATEGORY_INDEXER,
         CATEGORY_CONTENT,
+        CATEGORY_SEO_SPAM,
     ]
 }
 
@@ -8781,6 +8860,7 @@ fn is_known_site_category(category: &str) -> bool {
             | CATEGORY_DOCS
             | CATEGORY_INDEXER
             | CATEGORY_CONTENT
+            | CATEGORY_SEO_SPAM
             | CATEGORY_UNKNOWN
     )
 }
@@ -8829,6 +8909,7 @@ fn site_category_label(category: &str) -> &'static str {
         CATEGORY_DOCS => "Docs",
         CATEGORY_INDEXER => "Indexer",
         CATEGORY_CONTENT => "Content",
+        CATEGORY_SEO_SPAM => "SEO Spam",
         _ => "Unknown",
     }
 }
@@ -10556,6 +10637,11 @@ mod tests {
             "unknown"
         )
         .is_err());
+        assert_eq!(
+            normalize_auto_blacklist_rule_value(AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY, "SEO Spam")
+                .expect("seo spam label normalizes"),
+            CATEGORY_SEO_SPAM
+        );
     }
 
     #[test]
@@ -10575,5 +10661,68 @@ mod tests {
             "Forum post says ESCROW REQUIRED before delivery",
             "escrow required"
         ));
+    }
+
+    #[test]
+    fn seo_spam_site_category_can_be_auto_blacklisted() {
+        let mut conn = setup_connection();
+        add_auto_blacklist_rule(
+            &mut conn,
+            AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
+            "seo-spam",
+            None,
+        )
+        .expect("add seo spam auto blacklist rule");
+
+        let snapshot = PageSnapshot {
+            title: "Promo Gateway".to_string(),
+            url: "http://spam.onion".to_string(),
+            language: "English".to_string(),
+            language_detection: LanguageDetection::unknown(),
+            keyword_corpus: "http://spam.onion\nPromo Gateway\nkeyword stuffed doorway".to_string(),
+            links: vec![LinkObservation {
+                target_url: "https://money.example".to_string(),
+                target_host: "money.example".to_string(),
+            }],
+            emails: Vec::new(),
+            crypto_refs: Vec::new(),
+            classification_signals: ClassificationSignals {
+                word_count: 40,
+                hints: vec![
+                    CategoryHint {
+                        category: CATEGORY_SEO_SPAM.to_string(),
+                        evidence: "meta-keywords:many-languages:10".to_string(),
+                        weight: 8,
+                    },
+                    CategoryHint {
+                        category: CATEGORY_SEO_SPAM.to_string(),
+                        evidence: "links:single-external-visible-host:money.example".to_string(),
+                        weight: 6,
+                    },
+                ],
+                ..ClassificationSignals::default()
+            },
+            topic_observations: Vec::new(),
+        };
+        save_page_info(&mut conn, &snapshot).expect("save seo spam page");
+
+        let sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
+        let site = sites
+            .items
+            .iter()
+            .find(|site| site.host == "spam.onion")
+            .expect("seo spam site profile");
+        assert_eq!(site.category, CATEGORY_SEO_SPAM);
+        assert_eq!(site.label, "SEO Spam");
+
+        let blacklist = list_domain_blacklist_rules(&mut conn).expect("blacklist rules");
+        assert!(blacklist.iter().any(|rule| rule.domain == "spam.onion"));
+        let events =
+            list_recent_auto_blacklist_events(&mut conn, None).expect("auto blacklist events");
+        assert!(events.iter().any(|event| {
+            event.domain == "spam.onion"
+                && event.rule_type == AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY
+                && event.matched_value == CATEGORY_SEO_SPAM
+        }));
     }
 }

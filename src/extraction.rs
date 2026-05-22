@@ -4,7 +4,7 @@ use crate::models::{
 };
 use anyhow::{Context, Result};
 use regex::Regex;
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use url::Url;
@@ -376,6 +376,8 @@ fn extract_classification_signals(
         push_hint(&mut signals, "indexer", "links:many-outbound", 2);
     }
 
+    add_seo_spam_hints(document, base_url, &mut signals);
+
     for link in links {
         if let Ok(parsed) = Url::parse(&link.target_url) {
             add_path_hints(
@@ -405,6 +407,394 @@ fn extract_classification_signals(
     }
 
     signals
+}
+
+fn add_seo_spam_hints(document: &Html, base_url: &Url, signals: &mut ClassificationSignals) {
+    let meta_keyword_contents = meta_keyword_contents(document);
+    if !meta_keyword_contents.is_empty() {
+        let keyword_count = meta_keyword_count(&meta_keyword_contents);
+        if keyword_count >= 75 {
+            push_hint(
+                signals,
+                "seo-spam",
+                &format!("meta-keywords:massive:{keyword_count}"),
+                7,
+            );
+        } else if keyword_count >= 35 {
+            push_hint(
+                signals,
+                "seo-spam",
+                &format!("meta-keywords:large:{keyword_count}"),
+                4,
+            );
+        }
+
+        let language_count = meta_keyword_language_count(&meta_keyword_contents);
+        if language_count >= 10 {
+            push_hint(
+                signals,
+                "seo-spam",
+                &format!("meta-keywords:many-languages:{language_count}"),
+                8,
+            );
+        } else if language_count >= 6 {
+            push_hint(
+                signals,
+                "seo-spam",
+                &format!("meta-keywords:multi-language:{language_count}"),
+                5,
+            );
+        }
+    }
+
+    if meta_robots_allows_index_follow(document) {
+        push_hint(signals, "seo-spam", "meta-robots:index-follow", 2);
+    }
+
+    let link_profile = link_visibility_profile(document, base_url);
+    if link_profile.hidden_link_count >= 3 {
+        push_hint(
+            signals,
+            "seo-spam",
+            &format!("links:many-hidden:{}", link_profile.hidden_link_count),
+            6,
+        );
+    } else if link_profile.hidden_link_count > 0 {
+        push_hint(signals, "seo-spam", "links:hidden", 3);
+    }
+
+    if link_profile.visible_http_link_count >= 3
+        && link_profile.internal_visible_link_count == 0
+        && link_profile.external_hosts.len() == 1
+    {
+        let weight = if link_profile.visible_http_link_count >= 5 {
+            6
+        } else {
+            4
+        };
+        if let Some(host) = link_profile.external_hosts.iter().next() {
+            push_hint(
+                signals,
+                "seo-spam",
+                &format!("links:single-external-visible-host:{host}"),
+                weight,
+            );
+        }
+    }
+}
+
+fn meta_keyword_contents(document: &Html) -> Vec<String> {
+    let selector = Selector::parse("meta[name][content]").expect("valid selector");
+    document
+        .select(&selector)
+        .filter_map(|element| {
+            let name = element.value().attr("name")?.trim().to_ascii_lowercase();
+            if name == "keywords" || name == "news_keywords" || name.contains("keyword") {
+                element
+                    .value()
+                    .attr("content")
+                    .map(str::trim)
+                    .filter(|content| !content.is_empty())
+                    .map(str::to_string)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn meta_keyword_count(contents: &[String]) -> usize {
+    contents
+        .iter()
+        .flat_map(|content| keyword_terms(content))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+fn keyword_terms(content: &str) -> Vec<String> {
+    let delimited = content
+        .split(|character| matches!(character, ',' | ';' | '|' | '\n' | '\r' | '\t'))
+        .collect::<Vec<_>>();
+    let raw_terms = if delimited.len() > 1 {
+        delimited
+    } else {
+        content.split_whitespace().collect::<Vec<_>>()
+    };
+
+    raw_terms
+        .into_iter()
+        .map(normalize_keyword_term)
+        .filter(|term| {
+            term.chars()
+                .filter(|character| character.is_alphanumeric())
+                .count()
+                >= 2
+        })
+        .collect()
+}
+
+fn normalize_keyword_term(term: &str) -> String {
+    term.trim()
+        .trim_matches(|character: char| !character.is_alphanumeric())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn meta_keyword_language_count(contents: &[String]) -> usize {
+    let mut languages = HashSet::new();
+    for content in contents {
+        add_script_language_hints(content, &mut languages);
+        add_latin_keyword_language_hints(content, &mut languages);
+        for chunk in keyword_language_detection_chunks(content) {
+            if let Some(info) = detect(&chunk) {
+                if info.confidence() >= 0.45 {
+                    languages.insert(info.lang().code().to_string());
+                }
+            }
+        }
+    }
+    languages.len()
+}
+
+fn keyword_language_detection_chunks(content: &str) -> Vec<String> {
+    let terms = keyword_terms(content)
+        .into_iter()
+        .filter(|term| alphabetic_count(term) >= 4)
+        .collect::<Vec<_>>();
+    let mut chunks = terms
+        .iter()
+        .filter(|term| alphabetic_count(term) >= 12)
+        .cloned()
+        .collect::<Vec<_>>();
+    for group in terms.chunks(8) {
+        let chunk = group.join(" ");
+        if alphabetic_count(&chunk) >= 24 {
+            chunks.push(chunk);
+        }
+    }
+    chunks
+}
+
+fn alphabetic_count(value: &str) -> usize {
+    value
+        .chars()
+        .filter(|character| character.is_alphabetic())
+        .count()
+}
+
+fn add_latin_keyword_language_hints(content: &str, languages: &mut HashSet<String>) {
+    const MARKERS: &[(&str, &[&str])] = &[
+        ("en", &[" cheap ", " free ", " best online "]),
+        ("es", &[" comprar ", " mejor ", " barato "]),
+        ("fr", &[" acheter ", " meilleur ", " pas cher "]),
+        ("de", &[" kaufen ", " beste ", " guenstig "]),
+        ("it", &[" comprare ", " migliore ", " economico "]),
+        ("pt", &[" comprar ", " melhor ", " barato "]),
+        ("nl", &[" kopen ", " goedkoop ", " beste "]),
+        ("pl", &[" kupic ", " darmowe ", " najlepsze "]),
+        ("tr", &[" satin al ", " ucretsiz ", " en iyi "]),
+        ("id", &[" beli ", " murah ", " terbaik "]),
+        ("vi", &[" mua ", " mien phi ", " tot nhat "]),
+    ];
+
+    let haystack = language_marker_haystack(content);
+    for (language, markers) in MARKERS {
+        if markers.iter().any(|marker| haystack.contains(marker)) {
+            languages.insert((*language).to_string());
+        }
+    }
+}
+
+fn language_marker_haystack(content: &str) -> String {
+    let mut normalized = String::with_capacity(content.len() + 2);
+    normalized.push(' ');
+    for character in content.to_ascii_lowercase().chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character);
+        } else {
+            normalized.push(' ');
+        }
+    }
+    normalized.push(' ');
+    let compact = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!(" {compact} ")
+}
+
+fn add_script_language_hints(content: &str, languages: &mut HashSet<String>) {
+    let mut script_counts = HashMap::<&'static str, usize>::new();
+    for character in content.chars() {
+        let codepoint = character as u32;
+        let script = if (0x0400..=0x052F).contains(&codepoint) {
+            Some("script:cyrillic")
+        } else if (0x0600..=0x06FF).contains(&codepoint) {
+            Some("script:arabic")
+        } else if (0x0590..=0x05FF).contains(&codepoint) {
+            Some("script:hebrew")
+        } else if (0x0370..=0x03FF).contains(&codepoint) {
+            Some("script:greek")
+        } else if (0x0900..=0x097F).contains(&codepoint) {
+            Some("script:devanagari")
+        } else if (0x0E00..=0x0E7F).contains(&codepoint) {
+            Some("script:thai")
+        } else if (0x3040..=0x30FF).contains(&codepoint) {
+            Some("script:kana")
+        } else if (0x4E00..=0x9FFF).contains(&codepoint) {
+            Some("script:han")
+        } else if (0xAC00..=0xD7AF).contains(&codepoint) {
+            Some("script:hangul")
+        } else {
+            None
+        };
+        if let Some(script) = script {
+            *script_counts.entry(script).or_default() += 1;
+        }
+    }
+
+    for (script, count) in script_counts {
+        if count >= 2 {
+            languages.insert(script.to_string());
+        }
+    }
+}
+
+fn meta_robots_allows_index_follow(document: &Html) -> bool {
+    let selector = Selector::parse("meta[name][content]").expect("valid selector");
+    document.select(&selector).any(|element| {
+        let name = element
+            .value()
+            .attr("name")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        if !matches!(name.as_str(), "robots" | "googlebot" | "bingbot") {
+            return false;
+        }
+        let content = element
+            .value()
+            .attr("content")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let directives = content
+            .split(|character: char| {
+                character == ',' || character == ';' || character.is_whitespace()
+            })
+            .map(str::trim)
+            .filter(|directive| !directive.is_empty())
+            .collect::<HashSet<_>>();
+        directives.contains("index")
+            && directives.contains("follow")
+            && !directives.contains("noindex")
+            && !directives.contains("nofollow")
+    })
+}
+
+#[derive(Default)]
+struct LinkVisibilityProfile {
+    visible_http_link_count: usize,
+    internal_visible_link_count: usize,
+    hidden_link_count: usize,
+    external_hosts: HashSet<String>,
+}
+
+fn link_visibility_profile(document: &Html, base_url: &Url) -> LinkVisibilityProfile {
+    let selector = Selector::parse("a[href]").expect("valid selector");
+    let base_host = base_url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let mut profile = LinkVisibilityProfile::default();
+
+    for element in document.select(&selector) {
+        let Some(raw_href) = element.value().attr("href") else {
+            continue;
+        };
+        let Ok(target_url) = base_url.join(raw_href) else {
+            continue;
+        };
+        if !matches!(target_url.scheme(), "http" | "https") {
+            continue;
+        }
+
+        if link_element_is_hidden(&element) {
+            profile.hidden_link_count += 1;
+            continue;
+        }
+
+        let target_host = target_url
+            .host_str()
+            .unwrap_or_default()
+            .trim()
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        if target_host.is_empty() {
+            continue;
+        }
+
+        profile.visible_http_link_count += 1;
+        if target_host == base_host {
+            profile.internal_visible_link_count += 1;
+        } else {
+            profile.external_hosts.insert(target_host);
+        }
+    }
+
+    profile
+}
+
+fn link_element_is_hidden(element: &ElementRef<'_>) -> bool {
+    let value = element.value();
+    if value.attr("hidden").is_some() {
+        return true;
+    }
+    if value
+        .attr("aria-hidden")
+        .map(|attr| attr.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if value
+        .attr("style")
+        .map(inline_style_marks_hidden)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    value
+        .attr("class")
+        .map(class_or_id_marks_hidden)
+        .unwrap_or(false)
+        || value
+            .attr("id")
+            .map(class_or_id_marks_hidden)
+            .unwrap_or(false)
+}
+
+fn inline_style_marks_hidden(style: &str) -> bool {
+    let compact = style
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    compact.contains("display:none")
+        || compact.contains("visibility:hidden")
+        || compact.contains("opacity:0")
+        || compact.contains("font-size:0")
+        || compact.contains("width:0")
+        || compact.contains("height:0")
+        || compact.contains("max-width:0")
+        || compact.contains("max-height:0")
+}
+
+fn class_or_id_marks_hidden(value: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
+        .any(|token| {
+            matches!(
+                token,
+                "hidden" | "invisible" | "visually-hidden" | "sr-only" | "d-none" | "u-hidden"
+            )
+        })
 }
 
 fn add_keyword_hints(
@@ -1074,6 +1464,59 @@ mod tests {
             .topic_observations
             .iter()
             .any(|topic| topic.topic == "marketplace"));
+    }
+
+    #[test]
+    fn snapshot_detects_seo_spam_signals() {
+        let snapshot = extract_page_snapshot(
+            "https://doorway.example/",
+            r#"
+            <html>
+                <head>
+                    <title>Random Promo 8f31</title>
+                    <meta name="robots" content="index, follow">
+                    <meta name="keywords" content="
+                        cheap free best online, comprar mejor barato, acheter meilleur pas cher,
+                        kaufen beste guenstig, comprare migliore economico, comprar melhor barato,
+                        kopen goedkoop beste, kupic darmowe najlepsze, satin al ucretsiz en iyi,
+                        beli murah terbaik, mua mien phi tot nhat,
+                        alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron
+                    ">
+                </head>
+                <body>
+                    <a href="https://money.example/a">Offer A</a>
+                    <a href="https://money.example/b">Offer B</a>
+                    <a href="https://money.example/c">Offer C</a>
+                    <a href="https://money.example/d">Offer D</a>
+                    <a href="https://money.example/e">Offer E</a>
+                    <a href="https://hidden.example/a" style="display:none">Hidden A</a>
+                    <a href="https://hidden.example/b" class="hidden">Hidden B</a>
+                    <a href="https://hidden.example/c" aria-hidden="true">Hidden C</a>
+                </body>
+            </html>
+            "#,
+        )
+        .expect("snapshot");
+
+        let seo_hints = snapshot
+            .classification_signals
+            .hints
+            .iter()
+            .filter(|hint| hint.category == "seo-spam")
+            .map(|hint| hint.evidence.as_str())
+            .collect::<Vec<_>>();
+        assert!(seo_hints
+            .iter()
+            .any(|evidence| evidence.starts_with("meta-keywords:many-languages")));
+        assert!(seo_hints
+            .iter()
+            .any(|evidence| evidence == &"meta-robots:index-follow"));
+        assert!(seo_hints
+            .iter()
+            .any(|evidence| evidence.starts_with("links:many-hidden")));
+        assert!(seo_hints.iter().any(
+            |evidence| evidence.starts_with("links:single-external-visible-host:money.example")
+        ));
     }
 
     #[test]

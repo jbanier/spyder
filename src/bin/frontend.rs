@@ -1832,6 +1832,7 @@ fn analytics_chart_color(series_key: &str) -> &'static str {
         "docs" => "#7dd3fc",
         "indexer" => "#66f2ff",
         "content" => "#98a2b3",
+        "seo-spam" => "#ef4444",
         _ => fallback_chart_color(series_key),
     }
 }
