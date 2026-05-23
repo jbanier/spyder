@@ -1,3 +1,11 @@
+-- This migration rewrites a large page_link column and builds two large
+-- relationship indexes. Keep the tuning scoped to Diesel's migration
+-- transaction so it does not persist after the migration completes.
+SET LOCAL statement_timeout = 0;
+SET LOCAL work_mem = '4GB';
+SET LOCAL maintenance_work_mem = '8GB';
+SET LOCAL max_parallel_maintenance_workers = 8;
+
 ALTER TABLE page_link
   ADD COLUMN source_host TEXT NOT NULL DEFAULT '';
 
