@@ -225,6 +225,12 @@ SPYDER_DASHBOARD_DEEP=1 cargo run --bin frontend
 
 On large PostgreSQL databases, run new index migrations during a maintenance window. If writes must continue while indexes build, create the same indexes manually with PostgreSQL `CREATE INDEX CONCURRENTLY` before marking the migration applied.
 
+The `/` and `/analytics` pages use the frontend context cache. On a cold cache, the first request waits up to 750 ms for the background refresh, then serves a lightweight warming view instead of blocking on expensive rollups. Tune that first-request wait with:
+
+```bash
+SPYDER_FRONTEND_CACHE_COLD_WAIT_MS=250 cargo run --bin frontend
+```
+
 Main pages:
 
 - `http://127.0.0.1:8000/`: dashboard

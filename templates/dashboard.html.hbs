@@ -12,6 +12,13 @@
     </div>
 </section>
 
+{{#if cache_refresh_pending}}
+<section class="cache-notice">
+    <strong>Dashboard cache is warming.</strong>
+    <span>Refresh shortly for current scan stats and recent pages.</span>
+</section>
+{{/if}}
+
 <section class="card">
     <div class="section-heading">
         <h2>Scan Stats</h2>

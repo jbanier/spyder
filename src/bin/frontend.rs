@@ -13,7 +13,7 @@ use rocket::serde::{json::Json, Deserialize, Serialize};
 use rocket::{get, launch, post, routes, Build, Data, Request, Response, Rocket, State};
 use rocket_dyn_templates::{context, Template};
 use spyder::models::{
-    CategoryDistributionEntry, CategoryTimelinePoint, PaginatedResult, TopSiteSection,
+    CategoryDistributionEntry, CategoryTimelinePoint, PaginatedResult, Stats, TopSiteSection,
 };
 use spyder::{
     add_auto_blacklist_rule, add_watchlist_item, collect_stats, count_discovered_service_endpoints,
@@ -33,7 +33,7 @@ use spyder::{
     set_auto_blacklist_rule_enabled, update_intel_lead_status, valid_watchlist_item_types,
     AUTO_BLACKLIST_RULE_TYPE_KEYWORD, AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -47,6 +47,7 @@ type DbConnection = PooledConnection<ConnectionManager<PgConnection>>;
 
 const DEFAULT_FRONTEND_DB_POOL_SIZE: u32 = 8;
 const DEFAULT_FRONTEND_CACHE_TTL_SECONDS: u64 = 30;
+const DEFAULT_FRONTEND_CACHE_COLD_WAIT_MS: u64 = 750;
 
 const CACHE_DASHBOARD: &str = "/";
 const CACHE_PAGES: &str = "/pages";
@@ -115,6 +116,7 @@ impl<T> FrontendContext<T> for anyhow::Result<T> {
 struct AppState {
     pool: DbPool,
     cache: Arc<FrontendCache>,
+    cache_cold_wait: Duration,
 }
 
 impl AppState {
@@ -134,6 +136,78 @@ impl AppState {
                 )
             })?;
         Ok(connection)
+    }
+
+    fn background_cached_context(
+        &self,
+        key: &'static str,
+        label: &'static str,
+        build: fn(&AppState) -> Result<Value, FrontendError>,
+        fallback: fn() -> Result<Value, FrontendError>,
+    ) -> Result<Value, FrontendError> {
+        if let Some(value) = self.cache.fresh_context(key) {
+            return Ok(value);
+        }
+
+        let stale_value = self.cache.stale_context(key);
+        self.spawn_context_refresh(key, label, build);
+        if let Some(value) = stale_value {
+            return Ok(value);
+        }
+
+        let started_at = Instant::now();
+        while started_at.elapsed() < self.cache_cold_wait {
+            if let Some(value) = self.cache.stale_context(key) {
+                return Ok(value);
+            }
+            let remaining = self
+                .cache_cold_wait
+                .checked_sub(started_at.elapsed())
+                .unwrap_or_default();
+            thread::sleep(remaining.min(Duration::from_millis(25)));
+        }
+
+        fallback()
+    }
+
+    fn spawn_context_refresh(
+        &self,
+        key: &'static str,
+        label: &'static str,
+        build: fn(&AppState) -> Result<Value, FrontendError>,
+    ) {
+        if !self.cache.begin_refresh(key) {
+            return;
+        }
+
+        let state = self.clone();
+        let spawn_result = thread::Builder::new()
+            .name(format!("spyder-cache-refresh-{label}"))
+            .spawn(move || {
+                let _refresh_guard = CacheRefreshGuard {
+                    cache: state.cache.clone(),
+                    key,
+                };
+                if let Err(error) = state.cache.refresh_context(key, || build(&state)) {
+                    eprintln!("FRONTEND CACHE REFRESH ERROR: {label}: {}", error.detail);
+                }
+            });
+
+        if let Err(error) = spawn_result {
+            self.cache.finish_refresh(key);
+            eprintln!("FRONTEND CACHE REFRESH ERROR: failed to spawn {label}: {error}");
+        }
+    }
+}
+
+struct CacheRefreshGuard {
+    cache: Arc<FrontendCache>,
+    key: &'static str,
+}
+
+impl Drop for CacheRefreshGuard {
+    fn drop(&mut self) {
+        self.cache.finish_refresh(self.key);
     }
 }
 
@@ -255,12 +329,14 @@ impl<T: Clone> TimedCache<T> {
 
 struct FrontendCache {
     contexts: TimedCache<Value>,
+    refreshing: Mutex<HashSet<&'static str>>,
 }
 
 impl FrontendCache {
     fn new(ttl: Duration) -> Self {
         Self {
             contexts: TimedCache::new(ttl),
+            refreshing: Mutex::new(HashSet::new()),
         }
     }
 
@@ -281,6 +357,14 @@ impl FrontendCache {
         }
     }
 
+    fn fresh_context(&self, key: &'static str) -> Option<Value> {
+        self.contexts.fresh_value_at(key, Instant::now())
+    }
+
+    fn stale_context(&self, key: &'static str) -> Option<Value> {
+        self.contexts.stale_value(key)
+    }
+
     fn refresh_context<F>(&self, key: &'static str, refresh: F) -> Result<Value, FrontendError>
     where
         F: FnOnce() -> Result<Value, FrontendError>,
@@ -290,6 +374,20 @@ impl FrontendCache {
 
     fn invalidate_many(&self, keys: &[&'static str]) {
         self.contexts.invalidate_many(keys);
+    }
+
+    fn begin_refresh(&self, key: &'static str) -> bool {
+        self.refreshing
+            .lock()
+            .expect("frontend cache refresh mutex poisoned")
+            .insert(key)
+    }
+
+    fn finish_refresh(&self, key: &'static str) {
+        self.refreshing
+            .lock()
+            .expect("frontend cache refresh mutex poisoned")
+            .remove(key);
     }
 }
 
@@ -334,6 +432,10 @@ fn build_app_state() -> Result<AppState, FrontendError> {
         "SPYDER_FRONTEND_CACHE_TTL_SECONDS",
         DEFAULT_FRONTEND_CACHE_TTL_SECONDS,
     );
+    let cache_cold_wait_ms = env_u64(
+        "SPYDER_FRONTEND_CACHE_COLD_WAIT_MS",
+        DEFAULT_FRONTEND_CACHE_COLD_WAIT_MS,
+    );
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     let pool = Pool::builder()
         .max_size(pool_size)
@@ -345,6 +447,7 @@ fn build_app_state() -> Result<AppState, FrontendError> {
     Ok(AppState {
         pool,
         cache: Arc::new(FrontendCache::new(Duration::from_secs(cache_ttl_seconds))),
+        cache_cold_wait: Duration::from_millis(cache_cold_wait_ms),
     })
 }
 
@@ -546,6 +649,20 @@ fn render_cached_context(
     Ok(Template::render(template, context))
 }
 
+fn render_background_cached_context(
+    state: &State<AppState>,
+    key: &'static str,
+    label: &'static str,
+    template: &'static str,
+    build: fn(&AppState) -> Result<Value, FrontendError>,
+    fallback: fn() -> Result<Value, FrontendError>,
+) -> HtmlResult {
+    let context = state
+        .inner()
+        .background_cached_context(key, label, build, fallback)?;
+    Ok(Template::render(template, context))
+}
+
 fn render_pages(
     state: &State<AppState>,
     title: &str,
@@ -626,7 +743,14 @@ fn list_query_is_default(query: &ListQuery) -> bool {
 
 #[get("/")]
 fn index(state: &State<AppState>) -> HtmlResult {
-    render_cached_context(state, CACHE_DASHBOARD, "dashboard", build_dashboard_context)
+    render_background_cached_context(
+        state,
+        CACHE_DASHBOARD,
+        "/",
+        "dashboard",
+        build_dashboard_context,
+        build_dashboard_warming_context,
+    )
 }
 
 fn build_dashboard_context(state: &AppState) -> Result<Value, FrontendError> {
@@ -693,6 +817,39 @@ fn build_dashboard_context(state: &AppState) -> Result<Value, FrontendError> {
         has_ssh_host_keys: ssh_host_keys.total_count > 0,
         has_any_service_intel: http_observations.total_count > 0 || service_observations.total_count > 0 || ssh_host_keys.total_count > 0,
         show_dashboard_deep_sections: show_deep_sections,
+    })
+}
+
+fn build_dashboard_warming_context() -> Result<Value, FrontendError> {
+    let stats = Stats {
+        total_pages: 0,
+        total_domains: 0,
+        pending_work_units: 0,
+        failed_work_units: 0,
+        last_scrape: "Refreshing".to_string(),
+    };
+
+    template_context(context! {
+        title: "Spyder Dashboard",
+        description: "Track scanned pages, shared entities, retries, and site-to-site references across clearnet and Tor targets.",
+        stats: stats,
+        pages: Vec::<Value>::new(),
+        email_entities: Vec::<Value>::new(),
+        crypto_entities: Vec::<Value>::new(),
+        relationships: Vec::<Value>::new(),
+        http_observations: Vec::<Value>::new(),
+        service_observations: Vec::<Value>::new(),
+        ssh_host_keys: Vec::<Value>::new(),
+        has_pages: false,
+        has_email_entities: false,
+        has_crypto_entities: false,
+        has_relationships: false,
+        has_http_observations: false,
+        has_service_observations: false,
+        has_ssh_host_keys: false,
+        has_any_service_intel: false,
+        show_dashboard_deep_sections: dashboard_deep_sections_enabled(),
+        cache_refresh_pending: true,
     })
 }
 
@@ -1081,7 +1238,14 @@ fn build_top_context(state: &AppState) -> Result<Value, FrontendError> {
 
 #[get("/analytics")]
 fn analytics(state: &State<AppState>) -> HtmlResult {
-    render_cached_context(state, CACHE_ANALYTICS, "analytics", build_analytics_context)
+    render_background_cached_context(
+        state,
+        CACHE_ANALYTICS,
+        "/analytics",
+        "analytics",
+        build_analytics_context,
+        build_analytics_warming_context,
+    )
 }
 
 fn build_analytics_context(state: &AppState) -> Result<Value, FrontendError> {
@@ -1265,6 +1429,71 @@ fn build_analytics_context(state: &AppState) -> Result<Value, FrontendError> {
         keyword_last_day: keyword_last_day,
         topic_first_day: topic_first_day,
         topic_last_day: topic_last_day,
+    })
+}
+
+fn build_analytics_warming_context() -> Result<Value, FrontendError> {
+    let metrics = vec![
+        CategoryMetricView {
+            value: "0".to_string(),
+            label: "Classified Hosts".to_string(),
+        },
+        CategoryMetricView {
+            value: "0".to_string(),
+            label: "Active Categories".to_string(),
+        },
+        CategoryMetricView {
+            value: "0".to_string(),
+            label: "Service Endpoints".to_string(),
+        },
+        CategoryMetricView {
+            value: "0".to_string(),
+            label: "Pages With Language".to_string(),
+        },
+        CategoryMetricView {
+            value: "0".to_string(),
+            label: "Topic-Tagged Pages".to_string(),
+        },
+        CategoryMetricView {
+            value: "Refreshing".to_string(),
+            label: "First Classified Day".to_string(),
+        },
+        CategoryMetricView {
+            value: "Refreshing".to_string(),
+            label: "Latest Classified Day".to_string(),
+        },
+    ];
+
+    template_context(context! {
+        title: "Site Analytics",
+        description: "See site classifications, discovered services, page language detections, and static topic tags across the current index.",
+        metrics: metrics,
+        category_legend: Vec::<Value>::new(),
+        category_pie_svg: "",
+        category_histogram_svg: "",
+        keyword_legend: Vec::<Value>::new(),
+        keyword_pie_svg: "",
+        keyword_histogram_svg: "",
+        language_legend: Vec::<Value>::new(),
+        language_pie_svg: "",
+        topic_legend: Vec::<Value>::new(),
+        topic_pie_svg: "",
+        topic_histogram_svg: "",
+        has_distribution: false,
+        has_timeline: false,
+        has_keyword_distribution: false,
+        has_keyword_timeline: false,
+        has_language_distribution: false,
+        has_topic_distribution: false,
+        has_topic_timeline: false,
+        total_hosts: 0,
+        first_day: "Refreshing",
+        last_day: "Refreshing",
+        keyword_first_day: "Refreshing",
+        keyword_last_day: "Refreshing",
+        topic_first_day: "Refreshing",
+        topic_last_day: "Refreshing",
+        cache_refresh_pending: true,
     })
 }
 
@@ -2349,10 +2578,14 @@ fn cache_warmer_fairing() -> AdHoc {
 
 fn warm_default_caches(state: &AppState) {
     for route in CACHED_ROUTES {
-        if let Err(error) = state
+        if !state.cache.begin_refresh(route.key) {
+            continue;
+        }
+        let result = state
             .cache
-            .refresh_context(route.key, || (route.build)(state))
-        {
+            .refresh_context(route.key, || (route.build)(state));
+        state.cache.finish_refresh(route.key);
+        if let Err(error) = result {
             eprintln!(
                 "FRONTEND CACHE WARMER: failed to refresh {}: {}",
                 route.label, error.detail

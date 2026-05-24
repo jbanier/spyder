@@ -384,6 +384,26 @@ code {
     border-color: rgba(0, 255, 136, 0.38);
 }
 
+.cache-notice {
+    align-items: center;
+    background: rgba(255, 176, 0, 0.11);
+    border: 1px solid rgba(255, 176, 0, 0.34);
+    color: var(--foreground);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1.35rem;
+    padding: 0.9rem 1rem;
+}
+
+.cache-notice strong {
+    color: var(--warning);
+}
+
+.cache-notice span {
+    color: var(--muted-foreground);
+}
+
 .dashboard-grid {
     display: grid;
     gap: 1.35rem;

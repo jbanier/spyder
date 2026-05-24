@@ -2189,22 +2189,34 @@ pub fn list_page_summaries_with_blacklist(
             {host_expr} AS host,
             selected_pages.language,
             selected_pages.last_scanned_at,
-            (
-                SELECT COUNT(*)
-                FROM page_link pl
-                WHERE pl.source_page_id = selected_pages.id
-            ) AS outbound_link_count,
-            (
-                SELECT COUNT(*)
-                FROM page_email pe
-                WHERE pe.page_id = selected_pages.id
-            ) AS email_count,
-            (
-                SELECT COUNT(*)
-                FROM page_crypto pc
-                WHERE pc.page_id = selected_pages.id
-            ) AS crypto_count
+            COALESCE(link_counts.outbound_link_count, 0) AS outbound_link_count,
+            COALESCE(email_counts.email_count, 0) AS email_count,
+            COALESCE(crypto_counts.crypto_count, 0) AS crypto_count
         FROM selected_pages
+        LEFT JOIN (
+            SELECT
+                pl.source_page_id AS page_id,
+                COUNT(*) AS outbound_link_count
+            FROM page_link pl
+            JOIN selected_pages sp ON sp.id = pl.source_page_id
+            GROUP BY pl.source_page_id
+        ) AS link_counts ON link_counts.page_id = selected_pages.id
+        LEFT JOIN (
+            SELECT
+                pe.page_id,
+                COUNT(*) AS email_count
+            FROM page_email pe
+            JOIN selected_pages sp ON sp.id = pe.page_id
+            GROUP BY pe.page_id
+        ) AS email_counts ON email_counts.page_id = selected_pages.id
+        LEFT JOIN (
+            SELECT
+                pc.page_id,
+                COUNT(*) AS crypto_count
+            FROM page_crypto pc
+            JOIN selected_pages sp ON sp.id = pc.page_id
+            GROUP BY pc.page_id
+        ) AS crypto_counts ON crypto_counts.page_id = selected_pages.id
         ORDER BY selected_pages.last_scanned_at DESC, selected_pages.id DESC
         "
     );
@@ -7146,24 +7158,32 @@ fn keyword_tag_label(tag: &str) -> String {
 pub fn list_site_keyword_distribution(
     conn: &mut PgConnection,
 ) -> Result<Vec<CategoryDistributionEntry>> {
-    let host_expr = sql_host_expr("p.url", conn);
+    let host_expr = sql_host_without_port_expr("p.url", conn);
     let query = format!(
         "
-        SELECT
-            keyword_hosts.category,
-            COUNT(*) AS host_count
-        FROM (
+        WITH keyword_pages AS (
             SELECT
                 {host_expr} AS host,
                 pkt.tag AS category
             FROM page_keyword_tag pkt
             JOIN page p ON p.id = pkt.page_id
-            JOIN site_profile sp ON sp.host = {host_expr}
-            WHERE sp.category = 'forum'
-                AND pkt.tag LIKE 'keyword:%'
-                AND {host_expr} != ''
-            GROUP BY {host_expr}, pkt.tag
-        ) AS keyword_hosts
+            WHERE pkt.tag LIKE 'keyword:%'
+        ),
+        keyword_hosts AS (
+            SELECT
+                kp.host,
+                kp.category
+            FROM keyword_pages kp
+            JOIN site_profile sp
+              ON sp.host = kp.host
+             AND sp.category = 'forum'
+            WHERE kp.host != ''
+            GROUP BY kp.host, kp.category
+        )
+        SELECT
+            keyword_hosts.category,
+            COUNT(*) AS host_count
+        FROM keyword_hosts
         GROUP BY keyword_hosts.category
         ORDER BY host_count DESC, keyword_hosts.category ASC
         "
@@ -7183,22 +7203,30 @@ pub fn list_site_keyword_distribution(
 }
 
 pub fn list_site_keyword_timeline(conn: &mut PgConnection) -> Result<Vec<CategoryTimelinePoint>> {
-    let host_expr = sql_host_expr("p.url", conn);
+    let host_expr = sql_host_without_port_expr("p.url", conn);
     let day_expr = sql_day_bucket_expr("keyword_hosts.first_seen_at", conn);
     let query = format!(
         "
-        WITH keyword_hosts AS (
+        WITH keyword_pages AS (
             SELECT
                 {host_expr} AS host,
                 pkt.tag AS category,
-                MIN(pkt.created_at) AS first_seen_at
+                pkt.created_at
             FROM page_keyword_tag pkt
             JOIN page p ON p.id = pkt.page_id
-            JOIN site_profile sp ON sp.host = {host_expr}
-            WHERE sp.category = 'forum'
-                AND pkt.tag LIKE 'keyword:%'
-                AND {host_expr} != ''
-            GROUP BY {host_expr}, pkt.tag
+            WHERE pkt.tag LIKE 'keyword:%'
+        ),
+        keyword_hosts AS (
+            SELECT
+                kp.host,
+                kp.category,
+                MIN(kp.created_at) AS first_seen_at
+            FROM keyword_pages kp
+            JOIN site_profile sp
+              ON sp.host = kp.host
+             AND sp.category = 'forum'
+            WHERE kp.host != ''
+            GROUP BY kp.host, kp.category
         )
         SELECT
             {day_expr} AS day,
