@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use diesel::connection::SimpleConnection;
+use tracing::{info, error};
 use diesel::deserialize::QueryableByName;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -577,11 +578,11 @@ impl CrawlFailure {
 }
 
 fn print_status(message: impl Display) {
-    println!("==> {message}");
+    info!("{}", message);
 }
 
 fn print_progress(current: usize, total: usize, message: impl Display) {
-    println!("[{current}/{total}] {message}");
+    info!(current, total, "{}", message);
 }
 
 fn count_label(count: usize, singular: &str, plural: &str) -> String {
@@ -986,14 +987,16 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
                     }
                 }
                 Err(failure) => {
-                    eprintln!(
-                        "[{current}/{attempted}] Failed to process {} ({})",
-                        result.job.crawl_url,
-                        failure_kind_label(failure.kind)
+                    error!(
+                        current,
+                        attempted,
+                        url = %result.job.crawl_url,
+                        failure_kind = ?failure.kind,
+                        "Failed to process work unit"
                     );
-                    eprintln!(
-                        "ERROR: couldn't extract page information: {:?}",
-                        failure.error
+                    error!(
+                        error = ?failure.error,
+                        "Couldn't extract page information"
                     );
                     record_work_unit_failure(
                         &mut connection,
@@ -1001,9 +1004,11 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
                         &failure.error.to_string(),
                         failure.kind == FailureKind::Retriable,
                     )?;
-                    eprintln!(
-                        "[{current}/{attempted}] Recorded failure state for {}",
-                        result.job.work_unit_url
+                    info!(
+                        current,
+                        attempted,
+                        url = %result.job.work_unit_url,
+                        "Recorded failure state"
                     );
                 }
             }
@@ -1020,7 +1025,8 @@ fn rescan_known_pages(client: &Client, options: RescanKnownOptions) -> Result<()
     print_status("Queueing known pages for rescan");
     let queued_count =
         queue_known_pages_for_rescan(&mut connection, options.limit, options.onion_only)?;
-    println!(
+    info!(
+        queued_count,
         "Queued {} known page{} for rescan",
         queued_count,
         if queued_count == 1 { "" } else { "s" }
@@ -3683,6 +3689,9 @@ fn is_retriable_status(status: StatusCode) -> bool {
 }
 
 fn main() {
+    // Initialize structured logging
+    spyder::logging::init_tracing();
+
     let mut args = env::args();
     let program = args.next().unwrap_or_else(|| "spyder".to_string());
     let result = match args.next().as_deref() {

@@ -1,5 +1,6 @@
 use anyhow::Context as AnyhowContext;
 use diesel::connection::SimpleConnection;
+use tracing::{warn, error};
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
 use rocket::fairing::{AdHoc, Fairing, Info, Kind};
@@ -77,7 +78,7 @@ struct FrontendError {
 impl FrontendError {
     fn internal(context: &'static str, error: anyhow::Error) -> Self {
         let detail = format!("{context}: {error:#}");
-        eprintln!("FRONTEND ERROR: {detail}");
+        error!(context, error = ?error, "Frontend error");
         Self {
             status: Status::InternalServerError,
             title: "Internal Server Error",
@@ -213,7 +214,7 @@ impl AppState {
 
         if let Err(error) = spawn_result {
             self.cache.finish_refresh(key);
-            eprintln!("FRONTEND CACHE REFRESH ERROR: failed to spawn {label}: {error}");
+            error!(label, error = %error, "Failed to spawn cache refresh");
         }
     }
 
@@ -228,9 +229,10 @@ impl AppState {
             return;
         }
 
-        eprintln!(
-            "FRONTEND CACHE WARMER: refreshed {label} in {:.3}s",
-            elapsed.as_secs_f64()
+        warn!(
+            route = label,
+            duration_secs = elapsed.as_secs_f64(),
+            "Slow cache refresh"
         );
     }
 }
@@ -3160,6 +3162,9 @@ fn rocket() -> _ {
 }
 
 fn build_rocket() -> Rocket<Build> {
+    // Initialize structured logging
+    spyder::logging::init_tracing();
+
     let state = build_app_state()
         .unwrap_or_else(|error| panic!("failed to initialize frontend state: {}", error.detail));
 

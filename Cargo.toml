@@ -23,6 +23,9 @@ whatlang = "0.18.0"
 ssh2 = "0.9"
 native-tls = "0.2"
 sha2 = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+lazy_static = "1.4"
 
 
 [[bin]]
