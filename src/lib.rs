@@ -32,7 +32,7 @@ const MAX_PAGE_LIMIT: i64 = 200;
 const DEFAULT_RELATIONSHIP_GRAPH_LIMIT: i64 = 80;
 const MIN_RELATIONSHIP_GRAPH_LIMIT: i64 = 10;
 const MAX_RELATIONSHIP_GRAPH_DEPTH: i64 = 4;
-const DEFAULT_RELATIONSHIP_GRAPH_DEPTH: i64 = 3;
+const DEFAULT_RELATIONSHIP_GRAPH_DEPTH: i64 = 2;
 const CATEGORY_SEARCH_ENGINE: &str = "search-engine";
 const CATEGORY_FORUM: &str = "forum";
 const CATEGORY_MARKET: &str = "market";
@@ -7532,19 +7532,15 @@ fn load_overview_site_relationship_graph_edges(
     conn: &mut PgConnection,
     limit: i64,
 ) -> Result<Vec<SiteRelationshipGraphEdgeRow>> {
-    // For overview mode, we just want the top cross-site relationships.
-    // The existing indexes on source_host and target_host should help here.
+    // Use the materialized view for fast overview queries.
+    // The view is pre-aggregated, so this query is just a simple SELECT with ORDER BY and LIMIT.
     let query = "
         SELECT
-            pl.source_host,
-            lower(pl.target_host) AS target_host,
-            COUNT(*) AS reference_count,
+            source_host,
+            target_host,
+            reference_count,
             0 AS depth
-        FROM page_link pl
-        WHERE pl.target_host != ''
-          AND pl.source_host != ''
-          AND pl.source_host != lower(pl.target_host)
-        GROUP BY pl.source_host, lower(pl.target_host)
+        FROM site_relationship_overview
         ORDER BY reference_count DESC, source_host ASC, target_host ASC
         LIMIT $1
         ";
@@ -7714,6 +7710,24 @@ fn merge_min_depth(depths: &mut HashMap<String, usize>, host: &str, depth: usize
         .entry(host.to_string())
         .and_modify(|current| *current = (*current).min(depth))
         .or_insert(depth);
+}
+
+pub fn refresh_relationship_overview(conn: &mut PgConnection) -> Result<()> {
+    // Refresh the materialized view used for overview queries.
+    // This should be called after significant crawl operations or periodically
+    // to keep the overview data current.
+    //
+    // Use CONCURRENTLY to allow reads during refresh (requires unique index).
+    // If CONCURRENTLY fails (first time, or after schema changes), fall back to blocking refresh.
+    let result = conn.batch_execute("REFRESH MATERIALIZED VIEW CONCURRENTLY site_relationship_overview");
+
+    if result.is_err() {
+        // Fall back to non-concurrent refresh if concurrent refresh fails
+        conn.batch_execute("REFRESH MATERIALIZED VIEW site_relationship_overview")
+            .context("error refreshing relationship overview materialized view")?;
+    }
+
+    Ok(())
 }
 
 fn classify_page_snapshot(snapshot: &PageSnapshot) -> ClassificationOutcome {

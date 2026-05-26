@@ -24,12 +24,13 @@ use spyder::{
     list_auto_blacklist_rules, list_domain_blacklist_rules, list_forum_keyword_rules,
     list_recent_responding_hosts, list_watchlist_items, mark_work_unit_as_done,
     normalize_crawl_url, page_link_batch_upper_bound, queue_known_pages_for_rescan,
-    recompute_intel_leads_with_reporter, record_work_unit_failure, remove_auto_blacklist_rule,
-    remove_domain_blacklist_entry, remove_forum_keyword_rule, remove_watchlist_item,
-    save_host_http_observation, save_host_service_observation, save_host_ssh_observation,
-    save_host_tls_observation, save_page_info, set_auto_blacklist_rule_enabled,
-    suppress_intel_lead, url_matches_blacklist, AppConnection, IntelLeadRecomputeOptions,
-    PageSaveOutcome, SqlDialect, WorkQueueOutcome, AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
+    recompute_intel_leads_with_reporter, record_work_unit_failure,
+    refresh_relationship_overview, remove_auto_blacklist_rule, remove_domain_blacklist_entry,
+    remove_forum_keyword_rule, remove_watchlist_item, save_host_http_observation,
+    save_host_service_observation, save_host_ssh_observation, save_host_tls_observation,
+    save_page_info, set_auto_blacklist_rule_enabled, suppress_intel_lead,
+    url_matches_blacklist, AppConnection, IntelLeadRecomputeOptions, PageSaveOutcome,
+    SqlDialect, WorkQueueOutcome, AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
     AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY, DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE,
     SSH_STATUS_SUCCESS,
 };
@@ -3371,6 +3372,19 @@ fn suppress_lead(lead_id: i32) -> Result<()> {
     }
 }
 
+fn refresh_relationships() -> Result<()> {
+    println!("Refreshing relationship overview materialized view...");
+    let start = std::time::Instant::now();
+    let mut connection = establish_connection()?;
+    refresh_relationship_overview(&mut connection)?;
+    let elapsed = start.elapsed();
+    println!(
+        "Relationship overview refreshed successfully in {:.2}s",
+        elapsed.as_secs_f64()
+    );
+    Ok(())
+}
+
 fn usage(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
@@ -3407,6 +3421,7 @@ fn usage(program: &str) {
         "    leads recompute [--limit N] [--since-scan-id ID] [--rule RULE] [--blacklist-after-link-id ID] [--blacklist-link-batch-size N]"
     );
     eprintln!("    leads suppress <lead_id>");
+    eprintln!("    refresh-relationships              refresh the relationship graph overview cache.");
 }
 
 fn print_error(error: &anyhow::Error) {
@@ -3882,6 +3897,7 @@ fn main() {
                 Err(anyhow::anyhow!("invalid or missing leads subcommand"))
             }
         },
+        Some("refresh-relationships") => refresh_relationships(),
         Some(_) | None => {
             usage(&program);
             Err(anyhow::anyhow!("invalid or missing subcommand"))
