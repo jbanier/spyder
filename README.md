@@ -172,11 +172,18 @@ cargo run --bin spyder -- blacklist auto apply-existing --dry-run
 Behavior:
 
 - blacklisted domains match the exact host and any subdomain
-- blacklisted discovered links are still stored in page and history views
-- blacklisted discovered links are not queued into `work_unit`
-- manually seeded URLs are not removed retroactively
-- auto-blacklist rules add the scanned host to the same domain blacklist when a category or keyword phrase matches
+- blacklisted seed URLs and discovered links are not queued into `work_unit`
+- pending work units whose URLs become blacklisted are marked `done` before fetching
+- pages whose host matches the blacklist are not stored in `page`
+- auto-blacklist rules add the scanned host to the same domain blacklist when a category or keyword phrase matches, then purge the triggering page
 - auto-blacklist backfill is explicit and dry-run by default
+
+To remove already-stored blacklisted pages in PostgreSQL, run the cleanup script repeatedly until `selected_page_count` is `0`:
+
+```bash
+psql "$DATABASE_URL" -f scripts/cleanup_blacklisted_pages.sql
+psql "$DATABASE_URL" -v batch_size=100000 -f scripts/cleanup_blacklisted_pages.sql
+```
 
 Retry behavior:
 
@@ -231,7 +238,7 @@ The `/` and `/analytics` pages use the frontend context cache. On a cold cache, 
 SPYDER_FRONTEND_CACHE_COLD_WAIT_MS=250 cargo run --bin frontend
 ```
 
-The default `/pages` view avoids an exact filtered total count because excluding blacklist suffix matches requires a large anti-match over `site_profile` on large crawls. It fetches one extra row to keep next/previous pagination accurate and displays a lower-bound count such as `50+ records`. The explicit `include_blacklisted=true` view still uses an exact total because it does not need the blacklist anti-match.
+The default `/pages` and `/search` views assume blacklist enforcement happened before storage. They no longer provide display-time blacklist filters.
 
 By default the background warmer now prebuilds only `/` and `/analytics`. To disable it entirely or opt back into more routes:
 
@@ -275,6 +282,21 @@ Main pages:
 - `http://127.0.0.1:8000/entities/services`: non-HTTP service endpoints
 - `http://127.0.0.1:8000/entities/ssh`: SSH host keys
 - `http://127.0.0.1:8000/search`: search titles, URLs, language, topics, emails, and wallets
+
+### Ubuntu Supervisor Script
+
+On Ubuntu Linux, `scripts/start_spyder_stack.sh` starts the frontend, onion-only crawl worker, service scanner, and lead recompute loops. It sources `.env` and optional `scripts/spyder-stack.env`, defaults to `ALL_PROXY=socks5h://127.0.0.1:9050`, and writes logs under `logs/`.
+
+```bash
+scripts/start_spyder_stack.sh
+```
+
+Useful overrides:
+
+```bash
+SPYDER_WORK_CONCURRENCY=8 SPYDER_SCAN_CONCURRENCY=4 scripts/start_spyder_stack.sh
+SPYDER_WORK_INTERVAL_SECONDS=10 SPYDER_LEADS_INTERVAL_SECONDS=1800 scripts/start_spyder_stack.sh
+```
 
 ## Web UI Views
 
@@ -457,7 +479,7 @@ diesel print-schema > src/schema.rs
 - Crypto extraction is pattern-based. It is useful for discovery and cross-matching, not for full wallet validation.
 - Site categorization is heuristic and deterministic. It is explainable, but it is still an inference layer rather than ground truth.
 - Tor crawling depends on an external SOCKS proxy such as Tor running locally.
-- Completed pages are not automatically recrawled on a schedule yet; rescanning still requires explicit operator action.
+- Automatic rescanning is handled by the optional shell supervisor script; without it, rescanning still requires explicit operator action.
 
 ## Troubleshooting
 

@@ -78,6 +78,19 @@ const MANY_NEW_OUTBOUND_LINK_THRESHOLD: usize = 25;
 const HIGH_DEGREE_SOURCE_HOST_THRESHOLD: i64 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PageSaveOutcome {
+    Stored,
+    SkippedBlacklisted,
+    PurgedAfterAutoBlacklist,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkQueueOutcome {
+    Queued,
+    SkippedBlacklisted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SqlDialect {
     Postgres,
     Sqlite,
@@ -857,6 +870,17 @@ pub fn find_matching_blacklist_domain(host: &str, blacklist_domains: &[String]) 
         .cloned()
 }
 
+pub fn host_matches_blacklist(host: &str, blacklist_domains: &[String]) -> bool {
+    find_matching_blacklist_domain(host, blacklist_domains).is_some()
+}
+
+pub fn url_matches_blacklist(url: &str, blacklist_domains: &[String]) -> bool {
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+        .is_some_and(|host| host_matches_blacklist(&host, blacklist_domains))
+}
+
 pub fn auto_blacklist_category_options() -> Vec<AutoBlacklistCategoryOption> {
     valid_auto_blacklist_site_categories()
         .iter()
@@ -1419,6 +1443,20 @@ pub fn create_work_unit(conn: &mut PgConnection, url: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn create_work_unit_unless_blacklisted(
+    conn: &mut PgConnection,
+    url: &str,
+    blacklist_domains: &[String],
+) -> Result<WorkQueueOutcome> {
+    let normalized_url = normalize_crawl_url(url);
+    if url_matches_blacklist(&normalized_url, blacklist_domains) {
+        return Ok(WorkQueueOutcome::SkippedBlacklisted);
+    }
+
+    create_work_unit(conn, &normalized_url)?;
+    Ok(WorkQueueOutcome::Queued)
+}
+
 pub fn requeue_work_unit(conn: &mut PgConnection, url: &str) -> Result<()> {
     use crate::schema::work_unit::dsl as work_unit_dsl;
 
@@ -1467,7 +1505,7 @@ pub fn queue_known_pages_for_rescan(
         if onion_only && !host.ends_with(".onion") {
             continue;
         }
-        if find_matching_blacklist_domain(&host, &blacklist_domains).is_some() {
+        if host_matches_blacklist(&host, &blacklist_domains) {
             continue;
         }
         if limit.is_some_and(|max_count| queued_count >= max_count) {
@@ -1695,7 +1733,7 @@ fn compute_page_keyword_tags(snapshot: &PageSnapshot, rules: &[ForumKeywordRule]
     tags
 }
 
-pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Result<()> {
+pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Result<PageSaveOutcome> {
     use crate::schema::page::dsl::{
         coins as page_coins, emails as page_emails, language as page_language,
         last_scanned_at as page_last_scanned_at, links as page_links, title as page_title,
@@ -1708,6 +1746,10 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
     };
     let mut snapshot = normalize_page_snapshot(snapshot);
     let page_host = host_from_url(&snapshot.url);
+    let blacklist_domains = load_blacklist_domains(conn)?;
+    if host_matches_blacklist(&page_host, &blacklist_domains) {
+        return Ok(PageSaveOutcome::SkippedBlacklisted);
+    }
 
     let new_page = NewPage {
         title: snapshot.title.clone(),
@@ -2012,12 +2054,51 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                 stored_page_id,
                 &site_profile_record,
             )?;
+            if host_matches_blacklist(&page_host, &load_blacklist_domains(conn)?) {
+                delete_page_and_empty_site_profile(conn, stored_page_id, &page_host)?;
+                return Ok(PageSaveOutcome::PurgedAfterAutoBlacklist);
+            }
         }
 
-        Ok(())
-    })?;
+        Ok(PageSaveOutcome::Stored)
+    })
+}
+
+fn delete_page_and_empty_site_profile(
+    conn: &mut PgConnection,
+    page_id: i32,
+    host: &str,
+) -> Result<()> {
+    use crate::schema::page::dsl as page_dsl;
+    use crate::schema::site_profile::dsl as site_profile_dsl;
+
+    diesel::delete(page_dsl::page.filter(page_dsl::id.eq(page_id)))
+        .execute(conn)
+        .context("error deleting blacklisted page")?;
+
+    if !host.trim().is_empty() && page_count_for_host(conn, host)? == 0 {
+        diesel::delete(site_profile_dsl::site_profile.filter(site_profile_dsl::host.eq(host)))
+            .execute(conn)
+            .context("error deleting empty blacklisted site profile")?;
+    }
 
     Ok(())
+}
+
+fn page_count_for_host(conn: &mut PgConnection, host: &str) -> Result<i64> {
+    let host_expr = sql_host_without_port_expr("p.url", conn);
+    let query = format!(
+        "
+        SELECT COUNT(*) AS count
+        FROM page p
+        WHERE {host_expr} = $1
+        "
+    );
+    Ok(sql_query(query)
+        .bind::<Text, _>(host)
+        .get_result::<CountRow>(conn)
+        .context("error counting pages for host")?
+        .count)
 }
 
 pub fn mark_work_unit_as_done(conn: &mut PgConnection, work_unit_id: i32) -> Result<()> {
@@ -2138,35 +2219,20 @@ pub fn list_page_summaries(
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<PageSummary>> {
-    list_page_summaries_with_blacklist(conn, requested_limit, requested_offset, false)
-}
-
-pub fn list_page_summaries_with_blacklist(
-    conn: &mut PgConnection,
-    requested_limit: Option<i64>,
-    requested_offset: Option<i64>,
-    include_blacklisted: bool,
-) -> Result<PaginatedResult<PageSummary>> {
     let pagination = normalize_pagination(
         requested_limit,
         requested_offset,
         DEFAULT_PAGE_LIMIT,
         MAX_PAGE_LIMIT,
     );
-    let page_host_expr = sql_host_without_port_expr("p.url", conn);
-    let blacklist_filter = sql_blacklist_host_filter(&page_host_expr, include_blacklisted);
-    let total_count = if include_blacklisted {
-        scalar_count(
-            conn,
-            "
+    let total_count = scalar_count(
+        conn,
+        "
             SELECT COALESCE(SUM(sp.page_count), 0) AS count
             FROM site_profile sp
             ",
-        )
-        .context("error counting pages for summary")?
-    } else {
-        0
-    };
+    )
+    .context("error counting pages for summary")?;
     let host_expr = sql_host_expr("selected_pages.url", conn);
     let query = format!(
         "
@@ -2178,7 +2244,6 @@ pub fn list_page_summaries_with_blacklist(
                 p.language,
                 p.last_scanned_at
             FROM page p
-            WHERE {blacklist_filter}
             ORDER BY p.last_scanned_at DESC, p.id DESC
             LIMIT $1 OFFSET $2
         )
@@ -2220,18 +2285,11 @@ pub fn list_page_summaries_with_blacklist(
         ORDER BY selected_pages.last_scanned_at DESC, selected_pages.id DESC
         "
     );
-    let mut rows = sql_query(query)
-        .bind::<BigInt, _>(pagination.limit + 1)
+    let rows = sql_query(query)
+        .bind::<BigInt, _>(pagination.limit)
         .bind::<BigInt, _>(pagination.offset)
         .load::<PageSummaryRow>(conn)
         .context("error querying page summaries")?;
-    let has_next_page = rows.len() as i64 > pagination.limit;
-    rows.truncate(pagination.limit as usize);
-    let total_count = if include_blacklisted {
-        total_count
-    } else {
-        pagination.offset + rows.len() as i64 + i64::from(has_next_page)
-    };
     let site_profiles = load_site_profile_badges_by_hosts(
         conn,
         &rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>(),
@@ -5512,16 +5570,6 @@ pub fn search_pages(
     requested_limit: Option<i64>,
     requested_offset: Option<i64>,
 ) -> Result<PaginatedResult<SearchResult>> {
-    search_pages_with_blacklist(conn, query, requested_limit, requested_offset, false)
-}
-
-pub fn search_pages_with_blacklist(
-    conn: &mut PgConnection,
-    query: &str,
-    requested_limit: Option<i64>,
-    requested_offset: Option<i64>,
-    include_blacklisted: bool,
-) -> Result<PaginatedResult<SearchResult>> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         let pagination = normalize_pagination(requested_limit, requested_offset, 10, 50);
@@ -5535,13 +5583,11 @@ pub fn search_pages_with_blacklist(
 
     let pagination = normalize_pagination(requested_limit, requested_offset, 10, 50);
     if let Some(keyword_query) = parse_keyword_search_query(trimmed) {
-        return search_sites_by_keyword_tag(conn, &keyword_query, pagination, include_blacklisted);
+        return search_sites_by_keyword_tag(conn, &keyword_query, pagination);
     }
 
     let pattern = format!("%{}%", escape_like(trimmed));
     let host_expr = sql_host_expr("p.url", conn);
-    let host_without_port_expr = sql_host_without_port_expr("p.url", conn);
-    let blacklist_filter = sql_blacklist_host_filter(&host_without_port_expr, include_blacklisted);
     let title_match = sql_case_insensitive_match_expr("p.title", "$1", conn);
     let url_match = sql_case_insensitive_match_expr("p.url", "$2", conn);
     let language_match = sql_case_insensitive_match_expr("p.language", "$3", conn);
@@ -5557,8 +5603,7 @@ pub fn search_pages_with_blacklist(
         "
         SELECT COUNT(*) AS count
         FROM page p
-        WHERE {blacklist_filter}
-          AND (
+        WHERE (
             {title_match}
             OR {url_match}
             OR {language_match}
@@ -5611,8 +5656,7 @@ pub fn search_pages_with_blacklist(
             p.language,
             p.last_scanned_at AS scraped_at
         FROM page p
-        WHERE {blacklist_filter}
-          AND (
+        WHERE (
             {title_match}
             OR {url_match}
             OR {language_match}
@@ -5701,12 +5745,9 @@ fn search_sites_by_keyword_tag(
     conn: &mut PgConnection,
     keyword_query: &str,
     pagination: PaginationInput,
-    include_blacklisted: bool,
 ) -> Result<PaginatedResult<SearchResult>> {
     let tag_pattern = format!("%keyword:{}%", escape_like(keyword_query));
     let host_expr = sql_host_expr("p.url", conn);
-    let host_without_port_expr = sql_host_without_port_expr("p.url", conn);
-    let blacklist_filter = sql_blacklist_host_filter(&host_without_port_expr, include_blacklisted);
     let tag_match = sql_case_insensitive_match_expr("pkt.tag", "$1", conn);
     let count_sql = format!(
         "
@@ -5718,7 +5759,6 @@ fn search_sites_by_keyword_tag(
             JOIN site_profile sp ON sp.host = {host_expr}
             WHERE sp.category = 'forum'
                 AND {host_expr} != ''
-                AND {blacklist_filter}
                 AND {tag_match}
         ) AS matching_hosts
         "
@@ -5737,7 +5777,6 @@ fn search_sites_by_keyword_tag(
             JOIN site_profile sp ON sp.host = {host_expr}
             WHERE sp.category = 'forum'
                 AND {host_expr} != ''
-                AND {blacklist_filter}
                 AND {tag_match}
         ),
         ranked_pages AS (
@@ -9019,23 +9058,6 @@ fn sql_host_without_port_expr(column: &str, conn: &impl AppConnection) -> String
             )
             "
         ),
-    }
-}
-
-fn sql_blacklist_host_filter(host_expr: &str, include_blacklisted: bool) -> String {
-    if include_blacklisted {
-        "TRUE".to_string()
-    } else {
-        format!(
-            "
-            NOT EXISTS (
-                SELECT 1
-                FROM domain_blacklist db
-                WHERE {host_expr} = lower(db.domain)
-                   OR {host_expr} LIKE ('%.' || lower(db.domain))
-            )
-            "
-        )
     }
 }
 

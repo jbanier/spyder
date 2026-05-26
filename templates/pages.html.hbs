@@ -5,17 +5,6 @@
     <p class="lead">{{description}}</p>
 </section>
 
-<section class="card">
-    <form class="filter-form" action="/pages" method="get">
-        <input type="hidden" name="limit" value="{{pagination.limit}}">
-        <label class="checkbox-control">
-            <input type="checkbox" name="include_blacklisted" value="true" {{#if include_blacklisted}}checked{{/if}}>
-            <span>Show blacklisted sites</span>
-        </label>
-        <button class="btn" type="submit">Apply</button>
-    </form>
-</section>
-
 {{#if has_pages}}
 <section class="card">
     <div class="section-heading">
