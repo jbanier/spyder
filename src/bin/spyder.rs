@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use diesel::connection::SimpleConnection;
-use tracing::{info, error};
+use tracing::{debug, error, info, warn};
 use diesel::deserialize::QueryableByName;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -784,7 +784,7 @@ fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
         create_work_unit_unless_blacklisted(&mut connection, &normalized_url, &blacklist_domains)?,
         WorkQueueOutcome::SkippedBlacklisted
     ) {
-        println!("Skipped seed URL because its domain is blacklisted: {normalized_url}");
+        warn!(url = %normalized_url, "Skipped seed URL because its domain is blacklisted");
         return Ok(0);
     }
 
@@ -805,14 +805,14 @@ fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
     }
     print_status("Queueing discovered links from the seed page");
     let outcome = enqueue_discovered_links(&mut connection, &capture.snapshot)?;
-    println!(
-        "Queued {} discovered URLs from the seed page",
-        outcome.queued_count
+    info!(
+        queued_count = outcome.queued_count,
+        "Queued discovered URLs from the seed page"
     );
     if outcome.skipped_blacklisted_count > 0 {
-        println!(
-            "Skipped {} discovered URLs whose domains are blacklisted",
-            outcome.skipped_blacklisted_count
+        info!(
+            skipped_count = outcome.skipped_blacklisted_count,
+            "Skipped discovered URLs whose domains are blacklisted"
         );
     }
 
@@ -829,25 +829,25 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
 
     if work_units.is_empty() {
         if options.onion_only {
-            println!(
-                "No pending .onion work units to process ({} non-onion pending URLs skipped)",
-                pending_count
+            info!(
+                skipped_count = pending_count,
+                "No pending .onion work units to process"
             );
         } else {
-            println!("No pending work units to process");
+            info!("No pending work units to process");
         }
         return Ok(());
     }
 
     if options.onion_only {
         let skipped_count = pending_count - work_units.len();
-        println!(
-            "Working with {} pending work units whose host ends in .onion ({} skipped)",
-            work_units.len(),
-            skipped_count
+        info!(
+            work_unit_count = work_units.len(),
+            skipped_count,
+            "Working with pending .onion work units"
         );
     } else {
-        println!("Working with {} pending work units", work_units.len());
+        info!(work_unit_count = work_units.len(), "Working with pending work units");
     }
     let mut processed_urls = HashSet::new();
     let mut jobs = Vec::new();
@@ -881,9 +881,10 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
 
     let attempted = jobs.len();
     if attempted == 0 {
-        println!(
-            "No unique pending work units to process ({} duplicates skipped, {} blacklisted skipped)",
-            duplicate_count, blacklisted_count
+        info!(
+            duplicate_count,
+            blacklisted_count,
+            "No unique pending work units to process"
         );
         return Ok(());
     }
@@ -1055,7 +1056,7 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
     let candidates =
         list_recent_responding_hosts(&mut connection, options.recent_hours, Some(options.limit))?;
     if candidates.is_empty() {
-        println!("No recently responding hosts to scan");
+        info!("No recently responding hosts to scan");
         return Ok(());
     }
 
@@ -1166,9 +1167,7 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
 
     let attempted = jobs.len();
     if attempted == 0 {
-        println!(
-            "No stale service endpoints to scan across {} hosts ({} skipped)",
-            total_hosts, skipped
+        info!("No stale service endpoints to scan across {} hosts ({} skipped)", total_hosts, skipped
         );
         return Ok(());
     }
@@ -1268,11 +1267,9 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                     Err(error) => {
                         let status = classify_ssh_probe_error(&error);
                         failures += 1;
-                        eprintln!(
-                            "[{current}/{attempted}] SSH scan failed for {}:{} ({status})",
-                            result.job.host, result.job.port
+                        info!("[{current}/{attempted}] SSH scan failed for {}:{} ({status})", result.job.host, result.job.port
                         );
-                        eprintln!("ERROR: {error:?}");
+                        error!("{error:?}");
                     }
                 },
                 HostProbeCapture::Http(capture) => match capture {
@@ -1303,11 +1300,9 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                     Err(error) => {
                         let status = classify_service_probe_error(&error);
                         failures += 1;
-                        eprintln!(
-                            "[{current}/{attempted}] HTTP probe failed for {}:{} ({status})",
-                            result.job.host, result.job.port
+                        info!("[{current}/{attempted}] HTTP probe failed for {}:{} ({status})", result.job.host, result.job.port
                         );
-                        eprintln!("ERROR: {error:?}");
+                        error!("{error:?}");
                     }
                 },
                 HostProbeCapture::Service(capture) => match capture {
@@ -1345,12 +1340,14 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                             );
                         } else {
                             failures += 1;
-                            eprintln!(
-                                "[{current}/{attempted}] {} probe mismatch for {}:{} ({})",
-                                service.to_uppercase(),
-                                result.job.host,
-                                result.job.port,
-                                capture.status
+                            warn!(
+                                current,
+                                attempted,
+                                service = service.to_uppercase(),
+                                host = %result.job.host,
+                                port = result.job.port,
+                                status = %capture.status,
+                                "Service probe mismatch"
                             );
                         }
                     }
@@ -1362,13 +1359,16 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                         };
                         let status = classify_service_probe_error(&error);
                         failures += 1;
-                        eprintln!(
-                            "[{current}/{attempted}] {} probe failed for {}:{} ({status})",
-                            service.to_uppercase(),
-                            result.job.host,
-                            result.job.port
+                        error!(
+                            current,
+                            attempted,
+                            service = service.to_uppercase(),
+                            host = %result.job.host,
+                            port = result.job.port,
+                            status = %status,
+                            error = ?error,
+                            "Service probe failed"
                         );
-                        eprintln!("ERROR: {error:?}");
                     }
                 },
             }
@@ -1377,9 +1377,7 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
         Ok::<(), anyhow::Error>(())
     })?;
 
-    println!(
-        "Attempted {} service endpoints across {} hosts ({} successes, {} failures, {} skipped)",
-        attempted, total_hosts, successes, failures, skipped
+    info!("Attempted {} service endpoints across {} hosts ({} successes, {} failures, {} skipped)", attempted, total_hosts, successes, failures, skipped
     );
     Ok(())
 }
@@ -1394,7 +1392,7 @@ fn load_best_effort_tls_proxy_config() -> Option<SocksProxyConfig> {
     match load_socks_proxy_config() {
         Ok(proxy) => proxy,
         Err(error) => {
-            eprintln!("WARNING: TLS fingerprint probe disabled: {error:#}");
+            warn!("TLS fingerprint probe disabled: {error:#}");
             None
         }
     }
@@ -2430,12 +2428,12 @@ fn list_blacklist() -> Result<()> {
     let entries = list_domain_blacklist_rules(&mut connection)?;
 
     if entries.is_empty() {
-        println!("No blacklisted domains configured");
+        info!("No blacklisted domains configured");
         return Ok(());
     }
 
     for entry in entries {
-        println!("{}", entry.domain);
+        info!(domain = %entry.domain, "Blacklist entry");
     }
     Ok(())
 }
@@ -2443,14 +2441,14 @@ fn list_blacklist() -> Result<()> {
 fn add_blacklist_domain(raw_domain: &str) -> Result<()> {
     let mut connection = establish_connection()?;
     let entry = add_domain_blacklist_entry(&mut connection, raw_domain)?;
-    println!("Blacklisted {}", entry.domain);
+    info!(domain = %entry.domain, "Domain blacklisted");
     Ok(())
 }
 
 fn remove_blacklist_domain(raw_domain: &str) -> Result<()> {
     let mut connection = establish_connection()?;
     let domain = remove_domain_blacklist_entry(&mut connection, raw_domain)?;
-    println!("Removed blacklist entry {}", domain);
+    info!(domain = %domain, "Removed blacklist entry");
     Ok(())
 }
 
@@ -2459,14 +2457,12 @@ fn list_auto_blacklist() -> Result<()> {
     let rules = list_auto_blacklist_rules(&mut connection)?;
 
     if rules.is_empty() {
-        println!("No auto blacklist rules configured");
+        info!("No auto blacklist rules configured");
         return Ok(());
     }
 
     for rule in rules {
-        println!(
-            "#{} [{}] {} = {} ({})",
-            rule.id,
+        info!("#{} [{}] {} = {} ({})", rule.id,
             if rule.enabled { "enabled" } else { "disabled" },
             rule.rule_type,
             rule.value,
@@ -2484,9 +2480,7 @@ fn add_auto_blacklist_category(category: &str, label: Option<&str>) -> Result<()
         category,
         label,
     )?;
-    println!(
-        "Auto blacklist rule #{}: site_category = {} ({})",
-        rule.id, rule.value, rule.label
+    info!("Auto blacklist rule #{}: site_category = {} ({})", rule.id, rule.value, rule.label
     );
     Ok(())
 }
@@ -2499,9 +2493,7 @@ fn add_auto_blacklist_keyword(keyword: &str, label: Option<&str>) -> Result<()> 
         keyword,
         label,
     )?;
-    println!(
-        "Auto blacklist rule #{}: keyword = {} ({})",
-        rule.id, rule.value, rule.label
+    info!("Auto blacklist rule #{}: keyword = {} ({})", rule.id, rule.value, rule.label
     );
     Ok(())
 }
@@ -2509,14 +2501,14 @@ fn add_auto_blacklist_keyword(keyword: &str, label: Option<&str>) -> Result<()> 
 fn set_auto_blacklist_enabled(rule_id: i32, enabled: bool) -> Result<()> {
     let mut connection = establish_connection()?;
     match set_auto_blacklist_rule_enabled(&mut connection, rule_id, enabled)? {
-        Some(rule) => println!(
-            "{} auto blacklist rule #{} [{}:{}]",
-            if enabled { "Enabled" } else { "Disabled" },
-            rule.id,
-            rule.rule_type,
-            rule.value
+        Some(rule) => info!(
+            action = if enabled { "Enabled" } else { "Disabled" },
+            rule_id = rule.id,
+            rule_type = %rule.rule_type,
+            value = %rule.value,
+            "Auto blacklist rule updated"
         ),
-        None => println!("No matching auto blacklist rule found"),
+        None => info!("No matching auto blacklist rule found"),
     }
     Ok(())
 }
@@ -2524,11 +2516,13 @@ fn set_auto_blacklist_enabled(rule_id: i32, enabled: bool) -> Result<()> {
 fn remove_auto_blacklist(rule_id: i32) -> Result<()> {
     let mut connection = establish_connection()?;
     match remove_auto_blacklist_rule(&mut connection, rule_id)? {
-        Some(rule) => println!(
-            "Removed auto blacklist rule #{} [{}:{}]",
-            rule.id, rule.rule_type, rule.value
+        Some(rule) => info!(
+            rule_id = rule.id,
+            rule_type = %rule.rule_type,
+            value = %rule.value,
+            "Removed auto blacklist rule"
         ),
-        None => println!("No matching auto blacklist rule found"),
+        None => info!("No matching auto blacklist rule found"),
     }
     Ok(())
 }
@@ -2536,9 +2530,7 @@ fn remove_auto_blacklist(rule_id: i32) -> Result<()> {
 fn apply_existing_auto_blacklist(dry_run: bool, limit: Option<i64>) -> Result<()> {
     let mut connection = establish_connection()?;
     let result = apply_auto_blacklist_rules_to_existing(&mut connection, dry_run, limit)?;
-    println!(
-        "{} scanned {} rows, matched {}, blacklisted {}, recorded {} events",
-        if result.dry_run {
+    info!("{} scanned {} rows, matched {}, blacklisted {}, recorded {} events", if result.dry_run {
             "Dry run"
         } else {
             "Auto blacklist backfill"
@@ -2549,9 +2541,7 @@ fn apply_existing_auto_blacklist(dry_run: bool, limit: Option<i64>) -> Result<()
         result.event_count
     );
     for matched in result.matches.iter().take(25) {
-        println!(
-            "- {} via #{} [{}:{}] {}",
-            matched.domain,
+        info!("- {} via #{} [{}:{}] {}", matched.domain,
             matched.rule_id,
             matched.rule_type,
             matched.matched_value,
@@ -2559,7 +2549,7 @@ fn apply_existing_auto_blacklist(dry_run: bool, limit: Option<i64>) -> Result<()
         );
     }
     if result.matches.len() > 25 {
-        println!("... {} additional matches", result.matches.len() - 25);
+        info!("Additional matches truncated");
     }
     Ok(())
 }
@@ -2569,12 +2559,12 @@ fn list_forum_keywords() -> Result<()> {
     let rules = list_forum_keyword_rules(&mut connection)?;
 
     if rules.is_empty() {
-        println!("No forum keyword rules configured");
+        info!("No forum keyword rules configured");
         return Ok(());
     }
 
     for rule in rules {
-        println!("keyword:{} => {}", rule.label, rule.pattern);
+        info!("keyword:{} => {}", rule.label, rule.pattern);
     }
     Ok(())
 }
@@ -2582,7 +2572,7 @@ fn list_forum_keywords() -> Result<()> {
 fn add_forum_keyword(label: &str, pattern: &str) -> Result<()> {
     let mut connection = establish_connection()?;
     let rule = add_forum_keyword_rule(&mut connection, label, pattern)?;
-    println!("Added keyword:{} => {}", rule.label, rule.pattern);
+    info!("Added keyword:{} => {}", rule.label, rule.pattern);
     Ok(())
 }
 
@@ -2590,8 +2580,8 @@ fn remove_forum_keyword(label: &str, pattern: &str) -> Result<()> {
     let mut connection = establish_connection()?;
     let removed = remove_forum_keyword_rule(&mut connection, label, pattern)?;
     match removed {
-        Some((label, pattern)) => println!("Removed keyword:{} => {}", label, pattern),
-        None => println!("No matching forum keyword rule found"),
+        Some((label, pattern)) => info!(label = %label, pattern = %pattern, "Removed forum keyword rule"),
+        None => info!("No matching forum keyword rule found"),
     }
     Ok(())
 }
@@ -2600,7 +2590,7 @@ fn list_watchlist() -> Result<()> {
     let mut connection = establish_connection()?;
     let items = list_watchlist_items(&mut connection)?;
     if items.is_empty() {
-        println!("No watchlist items configured");
+        info!("No watchlist items configured");
         return Ok(());
     }
     for item in items {
@@ -2609,7 +2599,7 @@ fn list_watchlist() -> Result<()> {
         } else {
             format!(" ({})", item.label)
         };
-        println!("#{} [{}] {}{}", item.id, item.item_type, item.value, label);
+        info!("#{} [{}] {}{}", item.id, item.item_type, item.value, label);
     }
     Ok(())
 }
@@ -2617,18 +2607,15 @@ fn list_watchlist() -> Result<()> {
 fn add_watchlist(item_type: &str, value: &str, label: Option<&str>) -> Result<()> {
     let mut connection = establish_connection()?;
     let item = add_watchlist_item(&mut connection, item_type, value, label)?;
-    println!("Watching #{} [{}] {}", item.id, item.item_type, item.value);
+    info!("Watching #{} [{}] {}", item.id, item.item_type, item.value);
     Ok(())
 }
 
 fn remove_watchlist(item_id: i32) -> Result<()> {
     let mut connection = establish_connection()?;
     match remove_watchlist_item(&mut connection, item_id)? {
-        Some(item) => println!(
-            "Removed watchlist item #{} [{}] {}",
-            item.id, item.item_type, item.value
-        ),
-        None => println!("No matching watchlist item found"),
+        Some(item) => info!(id = item.id, item_type = %item.item_type, value = %item.value, "Removed watchlist item"),
+        None => info!("No matching watchlist item found"),
     }
     Ok(())
 }
@@ -3158,7 +3145,7 @@ fn import_sqlite(sqlite_path: &str) -> Result<()> {
     )?;
 
     refresh_imported_site_profile_scan_stats(&mut target)?;
-    println!("SQLite import completed successfully");
+    info!("SQLite import completed successfully");
     Ok(())
 }
 
@@ -3300,7 +3287,7 @@ where
     }
 
     reset_postgres_identity_sequence(target, table_name)?;
-    println!("Imported {total} rows into {table_name}");
+    info!("Imported {total} rows into {table_name}");
     Ok(total)
 }
 
@@ -3337,28 +3324,26 @@ fn recompute_leads(options: LeadsRecomputeCliOptions) -> Result<()> {
         |message| print_status(message),
     )?;
     for rule in &summary.rule_summaries {
-        println!(
-            "Lead rule {}: {} candidates, {} created, {} updated, {} evidence rows touched",
-            rule.rule_id,
+        info!("Lead rule {}: {} candidates, {} created, {} updated, {} evidence rows touched", rule.rule_id,
             rule.candidate_count,
             rule.created_count,
             rule.updated_count,
             rule.evidence_count
         );
     }
-    println!(
-        "Recomputed intel leads: {} candidates, {} created, {} updated, {} evidence rows touched",
-        summary.candidate_count,
+    info!("Recomputed intel leads: {} candidates, {} created, {} updated, {} evidence rows touched", summary.candidate_count,
         summary.created_count,
         summary.updated_count,
         summary.evidence_count
     );
     if should_page_blacklist {
         match blacklist_batch_upper_bound {
-            Some(next_after_link_id) => println!(
-                "Next blacklist batch: cargo run --bin spyder -- leads recompute --rule blacklisted-site-link --blacklist-after-link-id {next_after_link_id} --blacklist-link-batch-size {blacklist_link_batch_size}"
+            Some(next_after_link_id) => info!(
+                next_after_link_id,
+                blacklist_link_batch_size,
+                "Next blacklist batch available - run with --blacklist-after-link-id"
             ),
-            None => println!("No page_link rows remain after id {blacklist_after_link_id}"),
+            None => info!(after_link_id = blacklist_after_link_id, "No page_link rows remain"),
         }
     }
     Ok(())
@@ -3368,9 +3353,7 @@ fn suppress_lead(lead_id: i32) -> Result<()> {
     let mut connection = establish_connection()?;
     match suppress_intel_lead(&mut connection, lead_id)? {
         Some(lead) => {
-            println!(
-                "Suppressed lead #{} [{}] {}",
-                lead.id, lead.severity, lead.title
+            info!("Suppressed lead #{} [{}] {}", lead.id, lead.severity, lead.title
             );
             Ok(())
         }
@@ -3379,67 +3362,52 @@ fn suppress_lead(lead_id: i32) -> Result<()> {
 }
 
 fn refresh_relationships() -> Result<()> {
-    println!("Refreshing relationship overview materialized view...");
+    info!("Refreshing relationship overview materialized view...");
     let start = std::time::Instant::now();
     let mut connection = establish_connection()?;
     refresh_relationship_overview(&mut connection)?;
     let elapsed = start.elapsed();
-    println!(
-        "Relationship overview refreshed successfully in {:.2}s",
-        elapsed.as_secs_f64()
-    );
+    info!(duration_secs = elapsed.as_secs_f64(), "Relationship overview refreshed successfully");
     Ok(())
 }
 
 fn usage(program: &str) {
-    eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
-    eprintln!("Subcommands:");
-    eprintln!("    add <url>      enqueue the seed page and discovered links.");
-    eprintln!("    blacklist list");
-    eprintln!("    blacklist add <domain>");
-    eprintln!("    blacklist remove <domain>");
-    eprintln!("    blacklist auto list");
-    eprintln!("    blacklist auto add-category <category> [label]");
-    eprintln!("    blacklist auto add-keyword <phrase> [label]");
-    eprintln!("    blacklist auto enable <id>");
-    eprintln!("    blacklist auto disable <id>");
-    eprintln!("    blacklist auto remove <id>");
-    eprintln!("    blacklist auto apply-existing --dry-run|--apply [--limit N]");
-    eprintln!("    forum-keywords list");
-    eprintln!("    forum-keywords add <label> <pattern>");
-    eprintln!("    forum-keywords remove <label> <pattern>");
-    eprintln!("    watchlist list");
-    eprintln!("    watchlist add <type> <value> [label]");
-    eprintln!("    watchlist remove <id>");
-    eprintln!(
-        "    import-sqlite <sqlite_path> import an existing SQLite database into PostgreSQL."
-    );
-    eprintln!(
-        "    ssh-scan [--recent-hours N] [--stale-hours N] [--limit N] [--concurrency N] scan recent hosts for SSH, auxiliary HTTP, IRC, and FTP services."
-    );
-    eprintln!(
-        "    work [--onion-only] [--concurrency N] process pending work units and store page metadata."
-    );
-    eprintln!(
-        "    rescan-known [--onion-only] [--limit N] [--concurrency N] [--queue-only] queue known pages and scan them for updates."
-    );
-    eprintln!(
-        "    leads recompute [--limit N] [--since-scan-id ID] [--rule RULE] [--blacklist-after-link-id ID] [--blacklist-link-batch-size N]"
-    );
-    eprintln!("    leads suppress <lead_id>");
-    eprintln!("    refresh-relationships              refresh the relationship graph overview cache.");
+    info!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
+    info!("Subcommands:");
+    info!("    add <url>      enqueue the seed page and discovered links.");
+    info!("    blacklist list");
+    info!("    blacklist add <domain>");
+    info!("    blacklist remove <domain>");
+    info!("    blacklist auto list");
+    info!("    blacklist auto add-category <category> [label]");
+    info!("    blacklist auto add-keyword <phrase> [label]");
+    info!("    blacklist auto enable <id>");
+    info!("    blacklist auto disable <id>");
+    info!("    blacklist auto remove <id>");
+    info!("    blacklist auto apply-existing --dry-run|--apply [--limit N]");
+    info!("    forum-keywords list");
+    info!("    forum-keywords add <label> <pattern>");
+    info!("    forum-keywords remove <label> <pattern>");
+    info!("    watchlist list");
+    info!("    watchlist add <type> <value> [label]");
+    info!("    watchlist remove <id>");
+    info!("    import-sqlite <sqlite_path> import an existing SQLite database into PostgreSQL.");
+    info!("    ssh-scan [--recent-hours N] [--stale-hours N] [--limit N] [--concurrency N] scan recent hosts for SSH, auxiliary HTTP, IRC, and FTP services.");
+    info!("    work [--onion-only] [--concurrency N] process pending work units and store page metadata.");
+    info!("    rescan-known [--onion-only] [--limit N] [--concurrency N] [--queue-only] queue known pages and scan them for updates.");
+    info!("    leads recompute [--limit N] [--since-scan-id ID] [--rule RULE] [--blacklist-after-link-id ID] [--blacklist-link-batch-size N]");
+    info!("    leads suppress <lead_id>");
+    info!("    refresh-relationships              refresh the relationship graph overview cache.");
 }
 
 fn print_error(error: &anyhow::Error) {
-    eprintln!("ERROR: {error:?}");
+    error!("{error:?}");
 
     if error
         .chain()
         .any(|cause| cause.to_string().contains("no such table:"))
     {
-        eprintln!(
-            "HINT: database schema is missing. Run `diesel setup` and `diesel migration run`."
-        );
+        warn!("HINT: database schema is missing. Run `diesel setup` and `diesel migration run`.");
     }
 }
 
@@ -3698,7 +3666,7 @@ fn main() {
         Some("add") => match args.next() {
             Some(url) => build_http_client().and_then(|client| {
                 enqueue_seed_and_links(&client, &url).map(|count| {
-                    println!("Enqueued {count} URLs");
+                    info!("Enqueued {count} URLs");
                 })
             }),
             None => {

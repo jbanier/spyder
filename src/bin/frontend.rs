@@ -1,6 +1,6 @@
 use anyhow::Context as AnyhowContext;
 use diesel::connection::SimpleConnection;
-use tracing::{warn, error};
+use tracing::{error, info, warn};
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
 use rocket::fairing::{AdHoc, Fairing, Info, Kind};
@@ -202,10 +202,11 @@ impl AppState {
                 let result = state.cache.refresh_context(key, || build(&state));
                 let elapsed = started_at.elapsed();
                 if let Err(error) = result {
-                    eprintln!(
-                        "FRONTEND CACHE REFRESH ERROR: {label} after {:.3}s: {}",
-                        elapsed.as_secs_f64(),
-                        error.detail
+                    error!(
+                        route = label,
+                        duration_secs = elapsed.as_secs_f64(),
+                        error = %error.detail,
+                        "Cache refresh failed"
                     );
                 } else {
                     state.log_cache_route_duration(label, elapsed);
@@ -388,7 +389,7 @@ impl FrontendCache {
         match self.contexts.get_or_refresh(key, refresh)? {
             CacheRead::Fresh(value) | CacheRead::Refreshed(value) => Ok(value),
             CacheRead::Stale { value, error } => {
-                eprintln!("FRONTEND CACHE REFRESH ERROR: {key}: {}", error.detail);
+                error!(route = key, error = %error.detail, "Cache refresh error, serving stale data");
                 Ok(value)
             }
         }
@@ -445,12 +446,12 @@ impl Fairing for RequestTimer {
 
     async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
         let started_at = request.local_cache(Instant::now);
-        eprintln!(
-            "{} {} served in {:.3}s status={}",
-            request.method(),
-            request.uri(),
-            started_at.elapsed().as_secs_f64(),
-            response.status().code
+        info!(
+            method = %request.method(),
+            uri = %request.uri(),
+            duration_secs = started_at.elapsed().as_secs_f64(),
+            status = response.status().code,
+            "Request served"
         );
     }
 }
@@ -534,7 +535,7 @@ fn parse_cache_warm_routes(raw_value: Option<String>) -> HashSet<&'static str> {
                 .iter()
                 .find(|route| route.key == entry || route.label == entry);
             if route.is_none() && !entry.is_empty() {
-                eprintln!("FRONTEND CACHE WARMER: unknown route in configuration: {entry}");
+                warn!(route = %entry, "Unknown route in cache configuration");
             }
             route.map(|route| route.key)
         })
@@ -2590,7 +2591,7 @@ fn cache_warmer_fairing() -> AdHoc {
     AdHoc::on_liftoff("frontend default-page cache warmer", |rocket| {
         Box::pin(async move {
             let Some(state) = rocket.state::<AppState>() else {
-                eprintln!("FRONTEND CACHE WARMER: AppState is not managed; skipping");
+                warn!("AppState is not managed, skipping cache warmer");
                 return;
             };
             let state = (*state).clone();
@@ -2607,7 +2608,7 @@ fn cache_warmer_fairing() -> AdHoc {
                     thread::sleep(interval);
                 })
             {
-                eprintln!("FRONTEND CACHE WARMER: failed to start: {error}");
+                error!(error = %error, "Cache warmer failed to start");
             }
         })
     })
@@ -2628,11 +2629,11 @@ fn warm_default_caches(state: &AppState) {
         let elapsed = started_at.elapsed();
         state.cache.finish_refresh(route.key);
         if let Err(error) = result {
-            eprintln!(
-                "FRONTEND CACHE WARMER: failed to refresh {} after {:.3}s: {}",
-                route.label,
-                elapsed.as_secs_f64(),
-                error.detail
+            error!(
+                route = route.label,
+                duration_secs = elapsed.as_secs_f64(),
+                error = %error.detail,
+                "Cache warmer failed to refresh"
             );
         } else {
             state.log_cache_route_duration(route.label, elapsed);
