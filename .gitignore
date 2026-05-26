@@ -19,3 +19,4 @@ target/
 pages.db
 Cargo.lock
 db.sqlite
+logs/
