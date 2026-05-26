@@ -2155,18 +2155,18 @@ pub fn list_page_summaries_with_blacklist(
     );
     let page_host_expr = sql_host_without_port_expr("p.url", conn);
     let blacklist_filter = sql_blacklist_host_filter(&page_host_expr, include_blacklisted);
-    let profile_blacklist_filter = sql_blacklist_host_filter("lower(sp.host)", include_blacklisted);
-    let total_count = scalar_count(
-        conn,
-        &format!(
+    let total_count = if include_blacklisted {
+        scalar_count(
+            conn,
             "
             SELECT COALESCE(SUM(sp.page_count), 0) AS count
             FROM site_profile sp
-            WHERE {profile_blacklist_filter}
-            "
-        ),
-    )
-    .context("error counting pages for summary")?;
+            ",
+        )
+        .context("error counting pages for summary")?
+    } else {
+        0
+    };
     let host_expr = sql_host_expr("selected_pages.url", conn);
     let query = format!(
         "
@@ -2220,11 +2220,18 @@ pub fn list_page_summaries_with_blacklist(
         ORDER BY selected_pages.last_scanned_at DESC, selected_pages.id DESC
         "
     );
-    let rows = sql_query(query)
-        .bind::<BigInt, _>(pagination.limit)
+    let mut rows = sql_query(query)
+        .bind::<BigInt, _>(pagination.limit + 1)
         .bind::<BigInt, _>(pagination.offset)
         .load::<PageSummaryRow>(conn)
         .context("error querying page summaries")?;
+    let has_next_page = rows.len() as i64 > pagination.limit;
+    rows.truncate(pagination.limit as usize);
+    let total_count = if include_blacklisted {
+        total_count
+    } else {
+        pagination.offset + rows.len() as i64 + i64::from(has_next_page)
+    };
     let site_profiles = load_site_profile_badges_by_hosts(
         conn,
         &rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>(),

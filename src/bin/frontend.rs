@@ -48,6 +48,8 @@ type DbConnection = PooledConnection<ConnectionManager<PgConnection>>;
 const DEFAULT_FRONTEND_DB_POOL_SIZE: u32 = 8;
 const DEFAULT_FRONTEND_CACHE_TTL_SECONDS: u64 = 30;
 const DEFAULT_FRONTEND_CACHE_COLD_WAIT_MS: u64 = 750;
+const DEFAULT_FRONTEND_CACHE_WARM_ROUTES: &str = "/,/analytics";
+const DEFAULT_FRONTEND_CACHE_SLOW_ROUTE_MS: u64 = 5_000;
 
 const CACHE_DASHBOARD: &str = "/";
 const CACHE_PAGES: &str = "/pages";
@@ -117,6 +119,8 @@ struct AppState {
     pool: DbPool,
     cache: Arc<FrontendCache>,
     cache_cold_wait: Duration,
+    cache_warm_routes: HashSet<&'static str>,
+    cache_slow_route_log_threshold: Duration,
 }
 
 impl AppState {
@@ -128,7 +132,12 @@ impl AppState {
             )
         })?;
         connection
-            .batch_execute("SET TIME ZONE 'UTC';")
+            .batch_execute(
+                "
+                SET application_name = 'spyder-frontend';
+                SET TIME ZONE 'UTC';
+                ",
+            )
             .map_err(|error| {
                 FrontendError::internal(
                     "configuring database connection",
@@ -188,8 +197,17 @@ impl AppState {
                     cache: state.cache.clone(),
                     key,
                 };
-                if let Err(error) = state.cache.refresh_context(key, || build(&state)) {
-                    eprintln!("FRONTEND CACHE REFRESH ERROR: {label}: {}", error.detail);
+                let started_at = Instant::now();
+                let result = state.cache.refresh_context(key, || build(&state));
+                let elapsed = started_at.elapsed();
+                if let Err(error) = result {
+                    eprintln!(
+                        "FRONTEND CACHE REFRESH ERROR: {label} after {:.3}s: {}",
+                        elapsed.as_secs_f64(),
+                        error.detail
+                    );
+                } else {
+                    state.log_cache_route_duration(label, elapsed);
                 }
             });
 
@@ -197,6 +215,23 @@ impl AppState {
             self.cache.finish_refresh(key);
             eprintln!("FRONTEND CACHE REFRESH ERROR: failed to spawn {label}: {error}");
         }
+    }
+
+    fn should_warm_cache_route(&self, key: &'static str) -> bool {
+        self.cache_warm_routes.contains(key)
+    }
+
+    fn log_cache_route_duration(&self, label: &'static str, elapsed: Duration) {
+        if self.cache_slow_route_log_threshold.is_zero()
+            || elapsed < self.cache_slow_route_log_threshold
+        {
+            return;
+        }
+
+        eprintln!(
+            "FRONTEND CACHE WARMER: refreshed {label} in {:.3}s",
+            elapsed.as_secs_f64()
+        );
     }
 }
 
@@ -436,6 +471,12 @@ fn build_app_state() -> Result<AppState, FrontendError> {
         "SPYDER_FRONTEND_CACHE_COLD_WAIT_MS",
         DEFAULT_FRONTEND_CACHE_COLD_WAIT_MS,
     );
+    let cache_slow_route_ms = env_u64(
+        "SPYDER_FRONTEND_CACHE_SLOW_ROUTE_MS",
+        DEFAULT_FRONTEND_CACHE_SLOW_ROUTE_MS,
+    );
+    let cache_warm_routes =
+        parse_cache_warm_routes(env::var("SPYDER_FRONTEND_CACHE_WARM_ROUTES").ok());
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     let pool = Pool::builder()
         .max_size(pool_size)
@@ -448,6 +489,8 @@ fn build_app_state() -> Result<AppState, FrontendError> {
         pool,
         cache: Arc::new(FrontendCache::new(Duration::from_secs(cache_ttl_seconds))),
         cache_cold_wait: Duration::from_millis(cache_cold_wait_ms),
+        cache_warm_routes,
+        cache_slow_route_log_threshold: Duration::from_millis(cache_slow_route_ms),
     })
 }
 
@@ -463,6 +506,37 @@ fn env_u64(key: &str, default_value: u64) -> u64 {
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(default_value)
+}
+
+fn parse_cache_warm_routes(raw_value: Option<String>) -> HashSet<&'static str> {
+    let raw_value = raw_value.unwrap_or_else(|| DEFAULT_FRONTEND_CACHE_WARM_ROUTES.to_string());
+    let trimmed = raw_value.trim();
+    if trimmed.is_empty()
+        || matches!(
+            trimmed.to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "none" | "off"
+        )
+    {
+        return HashSet::new();
+    }
+
+    if trimmed.eq_ignore_ascii_case("all") {
+        return CACHED_ROUTES.iter().map(|route| route.key).collect();
+    }
+
+    trimmed
+        .split(',')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            let route = CACHED_ROUTES
+                .iter()
+                .find(|route| route.key == entry || route.label == entry);
+            if route.is_none() && !entry.is_empty() {
+                eprintln!("FRONTEND CACHE WARMER: unknown route in configuration: {entry}");
+            }
+            route.map(|route| route.key)
+        })
+        .collect()
 }
 
 fn template_context<T: Serialize>(context: T) -> Result<Value, FrontendError> {
@@ -722,6 +796,13 @@ fn build_pages_context(
         .unwrap_or_default();
     let pagination = pagination_context("/pages", &pages, &extra_params);
     let has_pagination = pagination.has_previous_page || pagination.has_next_page;
+    let page_count_label = if include_blacklisted {
+        format!("{} records", pages.total_count)
+    } else if pagination.has_next_page {
+        format!("{}+ records", pages.offset + pages.items.len() as i64)
+    } else {
+        format!("{} records", pages.total_count)
+    };
 
     template_context(context! {
         title: title,
@@ -729,6 +810,7 @@ fn build_pages_context(
         pages: pages.items,
         has_pages: has_pages,
         page_count: pages.total_count,
+        page_count_label: page_count_label,
         include_blacklisted: include_blacklisted,
         pagination: pagination,
         has_pagination: has_pagination,
@@ -2578,18 +2660,27 @@ fn cache_warmer_fairing() -> AdHoc {
 
 fn warm_default_caches(state: &AppState) {
     for route in CACHED_ROUTES {
+        if !state.should_warm_cache_route(route.key) {
+            continue;
+        }
         if !state.cache.begin_refresh(route.key) {
             continue;
         }
+        let started_at = Instant::now();
         let result = state
             .cache
             .refresh_context(route.key, || (route.build)(state));
+        let elapsed = started_at.elapsed();
         state.cache.finish_refresh(route.key);
         if let Err(error) = result {
             eprintln!(
-                "FRONTEND CACHE WARMER: failed to refresh {}: {}",
-                route.label, error.detail
+                "FRONTEND CACHE WARMER: failed to refresh {} after {:.3}s: {}",
+                route.label,
+                elapsed.as_secs_f64(),
+                error.detail
             );
+        } else {
+            state.log_cache_route_duration(route.label, elapsed);
         }
     }
 }

@@ -231,6 +231,33 @@ The `/` and `/analytics` pages use the frontend context cache. On a cold cache, 
 SPYDER_FRONTEND_CACHE_COLD_WAIT_MS=250 cargo run --bin frontend
 ```
 
+The default `/pages` view avoids an exact filtered total count because excluding blacklist suffix matches requires a large anti-match over `site_profile` on large crawls. It fetches one extra row to keep next/previous pagination accurate and displays a lower-bound count such as `50+ records`. The explicit `include_blacklisted=true` view still uses an exact total because it does not need the blacklist anti-match.
+
+By default the background warmer now prebuilds only `/` and `/analytics`. To disable it entirely or opt back into more routes:
+
+```bash
+SPYDER_FRONTEND_CACHE_WARM_ROUTES=none cargo run --bin frontend
+SPYDER_FRONTEND_CACHE_WARM_ROUTES=all cargo run --bin frontend
+SPYDER_FRONTEND_CACHE_WARM_ROUTES=/,/analytics,/pages cargo run --bin frontend
+```
+
+Frontend cache refreshes slower than 5 seconds are written to stderr. Tune or disable that route-level timing log with:
+
+```bash
+SPYDER_FRONTEND_CACHE_SLOW_ROUTE_MS=1000 cargo run --bin frontend
+SPYDER_FRONTEND_CACHE_SLOW_ROUTE_MS=0 cargo run --bin frontend
+```
+
+For statement-level slow query logging, enable PostgreSQL's `log_min_duration_statement` on the `spyder` database or role. While a long query is still running, inspect it live with:
+
+```sql
+SELECT pid, now() - query_start AS runtime, wait_event_type, wait_event, query
+FROM pg_stat_activity
+WHERE application_name = 'spyder-frontend'
+  AND state <> 'idle'
+ORDER BY query_start;
+```
+
 Main pages:
 
 - `http://127.0.0.1:8000/`: dashboard
