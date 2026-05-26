@@ -7505,6 +7505,11 @@ pub fn get_site_relationship_graph(
     requested_depth: Option<i64>,
     requested_limit: Option<i64>,
 ) -> Result<SiteRelationshipGraph> {
+    // Set a 30-second timeout for relationship graph queries to prevent long-running queries
+    // on large databases from hanging the frontend
+    conn.batch_execute("SET LOCAL statement_timeout = '30s'")
+        .context("error setting statement timeout for relationship graph")?;
+
     let limit = requested_limit
         .unwrap_or(DEFAULT_RELATIONSHIP_GRAPH_LIMIT)
         .clamp(MIN_RELATIONSHIP_GRAPH_LIMIT, MAX_PAGE_LIMIT);
@@ -7527,6 +7532,8 @@ fn load_overview_site_relationship_graph_edges(
     conn: &mut PgConnection,
     limit: i64,
 ) -> Result<Vec<SiteRelationshipGraphEdgeRow>> {
+    // For overview mode, we just want the top cross-site relationships.
+    // The existing indexes on source_host and target_host should help here.
     let query = "
         SELECT
             pl.source_host,

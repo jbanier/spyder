@@ -518,9 +518,27 @@ function initRelationshipGraph(container) {
     };
     const loadGraph = async (focus = focusInput.value.trim(), depth = relationshipGraphDepth(depthInput)) => {
         const normalizedFocus = focus.trim();
+        const startTime = Date.now();
+        const timeoutMs = 30000; // 30 seconds
+
         setStatus("Loading graph...");
+
+        // Update elapsed time every second
+        const progressInterval = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            setStatus(`Loading graph... ${elapsed}s elapsed`);
+        }, 1000);
+
         try {
-            const response = await fetch(relationshipGraphUrl(normalizedFocus, depth));
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+            const response = await fetch(relationshipGraphUrl(normalizedFocus, depth), {
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            clearInterval(progressInterval);
+
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
@@ -529,14 +547,38 @@ function initRelationshipGraph(container) {
                 throw new Error("Graph response was not successful");
             }
             graph = payload.data;
-            setStatus(`${graph.mode === "focus" ? "Focused" : "Overview"}: ${graph.nodes.length} sites, ${graph.edges.length} links`);
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            setStatus(`${graph.mode === "focus" ? "Focused" : "Overview"}: ${graph.nodes.length} sites, ${graph.edges.length} links (loaded in ${elapsed}s)`);
             renderGraph();
         } catch (error) {
+            clearInterval(progressInterval);
             console.error("Relationship graph request failed", error);
             graph = null;
             positions = new Map();
             viewport.replaceChildren();
-            setStatus("Graph failed to load");
+
+            if (error.name === 'AbortError') {
+                setStatus("Graph load timed out after 30s. Try focusing on a specific host or reducing depth.");
+                const emptyText = createSvgElement("text", {
+                    x: graphSize().width / 2,
+                    y: graphSize().height / 2 - 20,
+                    class: "relationship-graph-empty",
+                    "text-anchor": "middle",
+                });
+                emptyText.textContent = "Graph load timed out after 30 seconds";
+                viewport.appendChild(emptyText);
+                const hintText = createSvgElement("text", {
+                    x: graphSize().width / 2,
+                    y: graphSize().height / 2 + 10,
+                    class: "relationship-graph-empty",
+                    "text-anchor": "middle",
+                    "font-size": "14",
+                });
+                hintText.textContent = "Try focusing on a specific host or reducing the depth";
+                viewport.appendChild(hintText);
+            } else {
+                setStatus("Graph failed to load");
+            }
         }
     };
 
@@ -620,7 +662,43 @@ function initRelationshipGraph(container) {
 
     focusInput.value = container.dataset.initialFocus ?? focusInput.value;
     depthInput.value = container.dataset.initialDepth ?? depthInput.value;
-    loadGraph(focusInput.value.trim(), relationshipGraphDepth(depthInput));
+
+    // Only auto-load if there's a focus host, otherwise show a prompt
+    const initialFocus = focusInput.value.trim();
+    if (initialFocus) {
+        loadGraph(initialFocus, relationshipGraphDepth(depthInput));
+    } else {
+        setStatus("Enter a host above and click Focus, or click Overview to see top relationships");
+        const size = graphSize();
+        const emptyText = createSvgElement("text", {
+            x: size.width / 2,
+            y: size.height / 2 - 30,
+            class: "relationship-graph-empty",
+            "text-anchor": "middle",
+        });
+        emptyText.textContent = "Relationship graph ready";
+        viewport.appendChild(emptyText);
+
+        const instructionText1 = createSvgElement("text", {
+            x: size.width / 2,
+            y: size.height / 2 + 5,
+            class: "relationship-graph-empty",
+            "text-anchor": "middle",
+            "font-size": "14",
+        });
+        instructionText1.textContent = "Enter a host name above and click 'Focus' to explore relationships";
+        viewport.appendChild(instructionText1);
+
+        const instructionText2 = createSvgElement("text", {
+            x: size.width / 2,
+            y: size.height / 2 + 28,
+            class: "relationship-graph-empty",
+            "text-anchor": "middle",
+            "font-size": "14",
+        });
+        instructionText2.textContent = "or click 'Overview' to see the most connected sites";
+        viewport.appendChild(instructionText2);
+    }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
