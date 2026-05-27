@@ -20,3 +20,5 @@ pages.db
 Cargo.lock
 db.sqlite
 logs/
+backups/
+backups
