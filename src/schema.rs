@@ -281,6 +281,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    query_log (id) {
+        id -> Int4,
+        query_name -> Text,
+        duration_ms -> Int8,
+        executed_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     site_profile (id) {
         id -> Int4,
         host -> Text,
@@ -360,6 +369,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     page_scan_email,
     page_scan_link,
     page_topic_tag,
+    query_log,
     site_profile,
     watchlist_item,
     work_unit,

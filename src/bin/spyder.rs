@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use diesel::connection::SimpleConnection;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use diesel::deserialize::QueryableByName;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;

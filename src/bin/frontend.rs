@@ -46,12 +46,6 @@ type HtmlResult = Result<Template, FrontendError>;
 type DbPool = Pool<ConnectionManager<PgConnection>>;
 type DbConnection = PooledConnection<ConnectionManager<PgConnection>>;
 
-const DEFAULT_FRONTEND_DB_POOL_SIZE: u32 = 8;
-const DEFAULT_FRONTEND_CACHE_TTL_SECONDS: u64 = 30;
-const DEFAULT_FRONTEND_CACHE_COLD_WAIT_MS: u64 = 750;
-const DEFAULT_FRONTEND_CACHE_WARM_ROUTES: &str = "/,/analytics";
-const DEFAULT_FRONTEND_CACHE_SLOW_ROUTE_MS: u64 = 5_000;
-
 const CACHE_DASHBOARD: &str = "/";
 const CACHE_PAGES: &str = "/pages";
 const CACHE_ANALYTICS: &str = "/analytics";
@@ -122,6 +116,7 @@ struct AppState {
     cache_cold_wait: Duration,
     cache_warm_routes: HashSet<&'static str>,
     cache_slow_route_log_threshold: Duration,
+    metrics: spyder::metrics::Metrics,
 }
 
 impl AppState {
@@ -458,31 +453,19 @@ impl Fairing for RequestTimer {
 
 fn build_app_state() -> Result<AppState, FrontendError> {
     dotenvy::dotenv().ok();
-    let database_url = env::var("DATABASE_URL")
-        .context("DATABASE_URL must be set")
-        .frontend_context("reading database URL")?;
-    let pool_size = env_u32(
-        "SPYDER_FRONTEND_DB_POOL_SIZE",
-        DEFAULT_FRONTEND_DB_POOL_SIZE,
-    )
-    .max(1);
-    let cache_ttl_seconds = env_u64(
-        "SPYDER_FRONTEND_CACHE_TTL_SECONDS",
-        DEFAULT_FRONTEND_CACHE_TTL_SECONDS,
-    );
-    let cache_cold_wait_ms = env_u64(
-        "SPYDER_FRONTEND_CACHE_COLD_WAIT_MS",
-        DEFAULT_FRONTEND_CACHE_COLD_WAIT_MS,
-    );
-    let cache_slow_route_ms = env_u64(
-        "SPYDER_FRONTEND_CACHE_SLOW_ROUTE_MS",
-        DEFAULT_FRONTEND_CACHE_SLOW_ROUTE_MS,
-    );
+
+    // Load and validate configuration
+    let config = spyder::config::SpyderConfig::from_env()
+        .frontend_context("loading configuration")?;
+    config.validate()
+        .frontend_context("validating configuration")?;
+
     let cache_warm_routes =
-        parse_cache_warm_routes(env::var("SPYDER_FRONTEND_CACHE_WARM_ROUTES").ok());
-    let manager = ConnectionManager::<PgConnection>::new(database_url);
+        parse_cache_warm_routes(Some(&config.frontend.cache_warm_routes));
+
+    let manager = ConnectionManager::<PgConnection>::new(config.database.url.clone());
     let pool = Pool::builder()
-        .max_size(pool_size)
+        .max_size(config.frontend.pool_size)
         .build(manager)
         .map_err(|error| {
             FrontendError::internal("building database pool", anyhow::Error::new(error))
@@ -490,29 +473,16 @@ fn build_app_state() -> Result<AppState, FrontendError> {
 
     Ok(AppState {
         pool,
-        cache: Arc::new(FrontendCache::new(Duration::from_secs(cache_ttl_seconds))),
-        cache_cold_wait: Duration::from_millis(cache_cold_wait_ms),
+        cache: Arc::new(FrontendCache::new(config.cache_ttl())),
+        cache_cold_wait: config.cache_cold_wait(),
         cache_warm_routes,
-        cache_slow_route_log_threshold: Duration::from_millis(cache_slow_route_ms),
+        cache_slow_route_log_threshold: config.cache_slow_route_threshold(),
+        metrics: spyder::metrics::Metrics::new(),
     })
 }
 
-fn env_u32(key: &str, default_value: u32) -> u32 {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())
-        .unwrap_or(default_value)
-}
-
-fn env_u64(key: &str, default_value: u64) -> u64 {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(default_value)
-}
-
-fn parse_cache_warm_routes(raw_value: Option<String>) -> HashSet<&'static str> {
-    let raw_value = raw_value.unwrap_or_else(|| DEFAULT_FRONTEND_CACHE_WARM_ROUTES.to_string());
+fn parse_cache_warm_routes(raw_value: Option<&str>) -> HashSet<&'static str> {
+    let raw_value = raw_value.unwrap_or(spyder::config::DEFAULT_FRONTEND_CACHE_WARM_ROUTES);
     let trimmed = raw_value.trim();
     if trimmed.is_empty()
         || matches!(
@@ -2290,6 +2260,11 @@ fn api_stats(state: &State<AppState>) -> Result<Json<ApiResponse<spyder::models:
     }))
 }
 
+#[get("/api/metrics")]
+fn api_metrics(state: &State<AppState>) -> Json<spyder::metrics::MetricsSnapshot> {
+    Json(state.metrics.snapshot())
+}
+
 #[get("/api/search?<search..>")]
 fn api_search(
     state: &State<AppState>,
@@ -3206,6 +3181,7 @@ fn build_rocket() -> Rocket<Build> {
                 ssh_entities,
                 search_page,
                 api_stats,
+                api_metrics,
                 api_search,
                 api_relationship_graph,
                 api_blacklist,

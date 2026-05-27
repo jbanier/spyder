@@ -1,6 +1,9 @@
+pub mod config;
 pub mod extraction;
 pub mod logging;
+pub mod metrics;
 pub mod models;
+pub mod query_timer;
 pub mod schema;
 
 use anyhow::{Context, Result};
@@ -27,13 +30,12 @@ pub const SSH_STATUS_SUCCESS: &str = "success";
 pub const MAX_RETRY_ATTEMPTS: i32 = 5;
 #[cfg(test)]
 const SQLITE_BUSY_TIMEOUT_MS: i32 = 5_000;
-const DEFAULT_TOP_SITE_LIMIT: i64 = 25;
-const DEFAULT_PAGE_LIMIT: i64 = 50;
-const MAX_PAGE_LIMIT: i64 = 200;
-const DEFAULT_RELATIONSHIP_GRAPH_LIMIT: i64 = 80;
-const MIN_RELATIONSHIP_GRAPH_LIMIT: i64 = 10;
-const MAX_RELATIONSHIP_GRAPH_DEPTH: i64 = 4;
-const DEFAULT_RELATIONSHIP_GRAPH_DEPTH: i64 = 2;
+// Use config module constants for default values
+use config::{
+    DEFAULT_TOP_SITE_LIMIT, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT,
+    DEFAULT_RELATIONSHIP_GRAPH_LIMIT, MIN_RELATIONSHIP_GRAPH_LIMIT,
+    MAX_RELATIONSHIP_GRAPH_DEPTH, DEFAULT_RELATIONSHIP_GRAPH_DEPTH,
+};
 const CATEGORY_SEARCH_ENGINE: &str = "search-engine";
 const CATEGORY_FORUM: &str = "forum";
 const CATEGORY_MARKET: &str = "market";
@@ -2167,6 +2169,7 @@ pub fn record_work_unit_failure(
 
 pub fn get_pending_work_units(conn: &mut PgConnection) -> Result<Vec<WorkUnit>> {
     use crate::schema::work_unit::dsl::*;
+    let _timer = crate::query_timer::QueryTimer::start("get_pending_work_units");
 
     crate::schema::work_unit::table
         .filter(status.eq(STATUS_PENDING))
@@ -2761,6 +2764,7 @@ pub fn get_page_scan_detail(
 
 pub fn collect_stats(conn: &mut PgConnection) -> Result<Stats> {
     use crate::schema::work_unit::dsl as work_dsl;
+    let _timer = crate::query_timer::QueryTimer::start("collect_stats");
 
     let total_pages = scalar_count(
         conn,
