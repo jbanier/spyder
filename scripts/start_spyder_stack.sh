@@ -26,6 +26,7 @@ load_env_file "$ROOT_DIR/scripts/spyder-stack.env"
 : "${SPYDER_WORK_INTERVAL_SECONDS:=5}"
 : "${SPYDER_SCAN_INTERVAL_SECONDS:=3600}"
 : "${SPYDER_LEADS_INTERVAL_SECONDS:=900}"
+: "${SPYDER_REFRESH_INTERVAL_SECONDS:=300}"
 : "${SPYDER_LOG_DIR:=$ROOT_DIR/logs}"
 
 export ALL_PROXY all_proxy
@@ -117,5 +118,13 @@ start_loop service-scan "$SPYDER_SCAN_INTERVAL_SECONDS" \
 start_loop leads "$SPYDER_LEADS_INTERVAL_SECONDS" \
     cargo run --release --bin spyder -- leads recompute --limit "$SPYDER_LEADS_LIMIT"
 
+start_loop refresh "$SPYDER_REFRESH_INTERVAL_SECONDS" \
+    cargo run --release --bin spyder -- refresh-relationships
+
 echo "Spyder stack running. Logs are in $SPYDER_LOG_DIR"
+echo "  - Frontend on http://127.0.0.1:8000"
+echo "  - Crawler: every ${SPYDER_WORK_INTERVAL_SECONDS}s"
+echo "  - Service scan: every ${SPYDER_SCAN_INTERVAL_SECONDS}s"
+echo "  - Leads recompute: every ${SPYDER_LEADS_INTERVAL_SECONDS}s"
+echo "  - Relationship refresh: every ${SPYDER_REFRESH_INTERVAL_SECONDS}s"
 wait
