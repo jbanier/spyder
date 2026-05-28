@@ -796,4 +796,42 @@ document.addEventListener("DOMContentLoaded", () => {
     for (const graphContainer of document.querySelectorAll("[data-relationship-graph]")) {
         initRelationshipGraph(graphContainer);
     }
+
+    // Table row click handler for relationship page
+    document.addEventListener("click", (event) => {
+        const row = event.target.closest("tr[data-source-host]");
+        if (!row) {
+            return;
+        }
+
+        // Find the relationship graph container and form
+        const graphContainer = document.querySelector("[data-relationship-graph]");
+        const form = graphContainer?.querySelector("[data-relationship-graph-form]");
+        const focusInput = form?.querySelector("input[name=focus]");
+        const depthInput = form?.querySelector("input[name=depth]");
+
+        if (!focusInput || !depthInput) {
+            return;
+        }
+
+        const sourceHost = row.dataset.sourceHost;
+        if (sourceHost) {
+            // Populate the search input and trigger visualization
+            focusInput.value = sourceHost;
+
+            // Scroll to the graph so user sees the result
+            graphContainer?.scrollIntoView({ behavior: "smooth", block: "start" });
+
+            // Trigger the same logic as form submit
+            const depth = parseInt(depthInput.value) || 3;
+            const url = new URL(window.location);
+            url.searchParams.set("focus", sourceHost);
+            url.searchParams.set("depth", String(depth));
+            window.history.pushState({}, "", url);
+
+            // Find and call the loadGraph function
+            // This requires accessing the closure - we'll trigger form submit instead
+            form.dispatchEvent(new Event("submit"));
+        }
+    });
 });
