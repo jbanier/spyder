@@ -595,12 +595,7 @@ function initRelationshipGraph(container) {
             return;
         }
         const action = button.dataset.relationshipGraphAction;
-        if (action === "overview") {
-            focusInput.value = "";
-            const depth = relationshipGraphDepth(depthInput);
-            updateRelationshipPageUrl("", depth);
-            loadGraph("", depth);
-        } else if (action === "zoom-in") {
+        if (action === "zoom-in") {
             scale = clampNumber(scale * 1.2, 0.15, 4);
             setTransform();
         } else if (action === "zoom-out") {
