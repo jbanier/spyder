@@ -709,36 +709,28 @@ function initRelationshipGraph(container) {
     if (initialFocus) {
         loadGraph(initialFocus, relationshipGraphDepth(depthInput));
     } else {
-        setStatus("Enter a host above and click Focus, or click Overview to see top relationships");
+        setStatus("Ready to visualize");
         const size = graphSize();
-        const emptyText = createSvgElement("text", {
+
+        const line1 = createSvgElement("text", {
             x: size.width / 2,
-            y: size.height / 2 - 30,
+            y: size.height / 2 - 15,
             class: "relationship-graph-empty",
             "text-anchor": "middle",
         });
-        emptyText.textContent = "Relationship graph ready";
-        viewport.appendChild(emptyText);
+        line1.textContent = "Enter a host above to explore its relationship network";
 
-        const instructionText1 = createSvgElement("text", {
+        const line2 = createSvgElement("text", {
             x: size.width / 2,
-            y: size.height / 2 + 5,
+            y: size.height / 2 + 15,
             class: "relationship-graph-empty",
             "text-anchor": "middle",
             "font-size": "14",
         });
-        instructionText1.textContent = "Enter a host name above and click 'Focus' to explore relationships";
-        viewport.appendChild(instructionText1);
+        line2.textContent = "Or browse the table below to find hosts of interest";
 
-        const instructionText2 = createSvgElement("text", {
-            x: size.width / 2,
-            y: size.height / 2 + 28,
-            class: "relationship-graph-empty",
-            "text-anchor": "middle",
-            "font-size": "14",
-        });
-        instructionText2.textContent = "or click 'Overview' to see the most connected sites";
-        viewport.appendChild(instructionText2);
+        viewport.appendChild(line1);
+        viewport.appendChild(line2);
     }
 }
 
