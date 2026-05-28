@@ -589,6 +589,52 @@ function initRelationshipGraph(container) {
         updateRelationshipPageUrl(focus, depth);
         loadGraph(focus, depth);
     });
+
+    // Clear button handler
+    container.addEventListener("click", (event) => {
+        const clearButton = event.target.closest("[data-relationship-graph-clear]");
+        if (clearButton) {
+            event.preventDefault();
+            focusInput.value = "";
+            const depth = relationshipGraphDepth(depthInput);
+            updateRelationshipPageUrl("", depth);
+
+            // Reset graph to placeholder state
+            graph = null;
+            positions = new Map();
+            viewport.replaceChildren();
+
+            const size = graphSize();
+            svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
+
+            const line1 = createSvgElement("text", {
+                x: size.width / 2,
+                y: size.height / 2 - 15,
+                class: "relationship-graph-empty",
+                "text-anchor": "middle",
+            });
+            line1.textContent = "Enter a host above to explore its relationship network";
+
+            const line2 = createSvgElement("text", {
+                x: size.width / 2,
+                y: size.height / 2 + 15,
+                class: "relationship-graph-empty",
+                "text-anchor": "middle",
+                "font-size": "14",
+            });
+            line2.textContent = "Or browse the table below to find hosts of interest";
+
+            viewport.appendChild(line1);
+            viewport.appendChild(line2);
+
+            setStatus("Ready to visualize");
+            scale = 1;
+            translate = { x: 0, y: 0 };
+            setTransform();
+            return;
+        }
+    });
+
     container.addEventListener("click", (event) => {
         const button = event.target.closest("[data-relationship-graph-action]");
         if (!button) {
