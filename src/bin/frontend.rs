@@ -27,7 +27,7 @@ use spyder::{
     list_page_language_distribution, list_page_scan_summaries, list_page_summaries,
     list_page_topic_distribution, list_page_topic_timeline, list_site_category_distribution,
     list_site_category_timeline, list_site_keyword_distribution, list_site_keyword_timeline,
-    list_site_profiles, list_site_relationships, list_ssh_host_keys, list_top_referenced_sites,
+    list_site_profiles, list_site_relationships, list_site_relationships_fast, list_ssh_host_keys, list_top_referenced_sites,
     list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
     list_watchlist_items, list_work_units, remove_auto_blacklist_rule, remove_watchlist_item,
     search_pages, set_auto_blacklist_rule_enabled, update_intel_lead_status,
@@ -1811,32 +1811,51 @@ fn build_relationships_context(
     state: &AppState,
     query: RelationshipQuery,
 ) -> Result<Value, FrontendError> {
-    let mut connection = state.connection()?;
-    let relationships = list_site_relationships(&mut connection, query.limit, query.offset)
-        .frontend_context("loading site relationships")?;
-    let has_relationships = !relationships.items.is_empty();
     let relationship_focus = query.focus.unwrap_or_default();
     let relationship_focus = relationship_focus.trim().to_string();
     let relationship_depth = query.depth.unwrap_or(3).clamp(1, 4);
-    let relationship_depth_param = relationship_depth.to_string();
-    let mut extra_params = Vec::new();
-    if !relationship_focus.is_empty() {
-        extra_params.push(("focus", relationship_focus.as_str()));
-    }
-    extra_params.push(("depth", relationship_depth_param.as_str()));
-    let pagination = pagination_context("/relationships", &relationships, &extra_params);
-    let has_pagination = pagination.has_previous_page || pagination.has_next_page;
-    let relationship_focus_value = relationship_focus.clone();
+
+    // For initial page load without pagination params, skip the expensive table query
+    // Users can use the graph visualization to explore relationships
+    let (relationships, has_pagination) = if query.limit.is_none() && query.offset.is_none() {
+        // Fast initial load - no database query
+        (Vec::new(), false)
+    } else {
+        // User requested pagination - load table data
+        let mut connection = state.connection()?;
+        let relationships = list_site_relationships_fast(&mut connection, query.limit, query.offset)
+            .frontend_context("loading site relationships")?;
+        let relationship_depth_param = relationship_depth.to_string();
+        let mut extra_params = Vec::new();
+        if !relationship_focus.is_empty() {
+            extra_params.push(("focus", relationship_focus.as_str()));
+        }
+        extra_params.push(("depth", relationship_depth_param.as_str()));
+        let pagination = pagination_context("/relationships", &relationships, &extra_params);
+        let has_pagination = pagination.has_previous_page || pagination.has_next_page;
+        (relationships.items, has_pagination)
+    };
+
+    let has_relationships = !relationships.is_empty();
+    let relationship_count = relationships.len() as i64;
 
     template_context(context! {
         title: "Site Relationships",
         description: "Host-level references observed while scanning pages.",
-        relationships: relationships.items,
-        relationship_count: relationships.total_count,
+        relationships: relationships,
+        relationship_count: relationship_count,
         has_relationships: has_relationships,
-        pagination: pagination,
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
         has_pagination: has_pagination,
-        relationship_focus: relationship_focus_value,
+        relationship_focus: relationship_focus,
         relationship_depth: relationship_depth,
     })
 }

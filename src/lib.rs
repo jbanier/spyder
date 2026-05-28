@@ -7504,6 +7504,87 @@ pub fn list_site_relationships(
     })
 }
 
+pub fn list_site_relationships_fast(
+    conn: &mut PgConnection,
+    requested_limit: Option<i64>,
+    requested_offset: Option<i64>,
+) -> Result<PaginatedResult<SiteRelationship>> {
+    let pagination = normalize_pagination(
+        requested_limit,
+        requested_offset,
+        DEFAULT_PAGE_LIMIT,
+        MAX_PAGE_LIMIT,
+    );
+
+    // Query the materialized view for fast table data - no expensive COUNT needed
+    let query = "
+        SELECT
+            source_host,
+            target_host,
+            reference_count
+        FROM site_relationship_overview
+        ORDER BY reference_count DESC, source_host ASC, target_host ASC
+        LIMIT $1 OFFSET $2
+        ";
+    let rows = sql_query(query)
+        .bind::<BigInt, _>(pagination.limit)
+        .bind::<BigInt, _>(pagination.offset)
+        .load::<SiteRelationshipRow>(conn)
+        .context("error loading site relationships from materialized view")?;
+
+    let blacklist_domains = load_blacklist_domains(conn)?;
+    let site_profiles = load_site_profile_badges_by_hosts(
+        conn,
+        &rows
+            .iter()
+            .flat_map(|row| [row.source_host.clone(), row.target_host.clone()])
+            .collect::<Vec<_>>(),
+    )?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        let blacklist_match_domain =
+            find_matching_blacklist_domain(&row.target_host, &blacklist_domains);
+        let intel_leads = load_active_lead_badges_for_sources(
+            conn,
+            &[source_ref(
+                "relationship",
+                0,
+                relationship_key(&row.source_host, &row.target_host),
+            )],
+        )?;
+        items.push(SiteRelationship {
+            source_site_category: site_profiles.get(&row.source_host).cloned(),
+            target_site_category: site_profiles.get(&row.target_host).cloned(),
+            source_host: row.source_host,
+            target_host: row.target_host,
+            reference_count: row.reference_count.max(0) as usize,
+            is_blacklisted: blacklist_match_domain.is_some(),
+            blacklist_match_domain,
+            intel_leads,
+        });
+    }
+
+    // For fast initial load, we don't compute total_count (would require expensive query)
+    // Instead, we use a sentinel value that tells the frontend "there may be more"
+    // The pagination will show "Next" as long as we get a full page of results
+    let has_full_page = items.len() as i64 == pagination.limit;
+    let estimated_total = if has_full_page {
+        // If we got a full page, estimate there are at least offset + limit + 1 items
+        pagination.offset + pagination.limit + 1
+    } else {
+        // If we got a partial page, we know the exact total
+        pagination.offset + items.len() as i64
+    };
+
+    Ok(PaginatedResult {
+        items,
+        total_count: estimated_total,
+        limit: pagination.limit,
+        offset: pagination.offset,
+    })
+}
+
 pub fn get_site_relationship_graph(
     conn: &mut PgConnection,
     focus_host: Option<&str>,
