@@ -1,4 +1,3 @@
-use anyhow::Context as AnyhowContext;
 use diesel::connection::SimpleConnection;
 use tracing::{error, info, warn};
 use diesel::pg::PgConnection;
@@ -684,16 +683,6 @@ struct LeadStatusRequest {
     status: String,
 }
 
-fn render_cached_context(
-    state: &State<AppState>,
-    key: &'static str,
-    template: &'static str,
-    build: fn(&AppState) -> Result<Value, FrontendError>,
-) -> HtmlResult {
-    let context = state.inner().cache.context(key, || build(state.inner()))?;
-    Ok(Template::render(template, context))
-}
-
 fn render_background_cached_context(
     state: &State<AppState>,
     key: &'static str,
@@ -721,9 +710,12 @@ fn render_pages(
     });
     if list_query_is_default(&list_query) {
         if let Some(cache_key) = cache_key {
-            let context = state.inner().cache.context(cache_key, || {
-                build_pages_context(state.inner(), title, description, list_query.clone())
-            })?;
+            let context = state.inner().background_cached_context(
+                cache_key,
+                "/pages",
+                build_pages_default_context,
+                build_pages_warming_context,
+            )?;
             return Ok(Template::render("pages", context));
         }
     }
@@ -742,6 +734,28 @@ fn build_pages_default_context(state: &AppState) -> Result<Value, FrontendError>
             offset: None,
         },
     )
+}
+
+fn build_pages_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "Scanned Pages",
+        description: "Browse indexed pages with scan time, language, and extracted-entity counts.",
+        pages: Vec::<Value>::new(),
+        has_pages: false,
+        page_count: 0,
+        page_count_label: "Refreshing",
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
+        has_pagination: false,
+        cache_refresh_pending: true,
+    })
 }
 
 fn build_pages_context(
@@ -1074,9 +1088,12 @@ fn list_work(state: &State<AppState>, list_query: Option<ListQuery>) -> HtmlResu
         offset: None,
     });
     if list_query_is_default(&list_query) {
-        let context = state.inner().cache.context(CACHE_WORK, || {
-            build_work_context(state.inner(), list_query.clone())
-        })?;
+        let context = state.inner().background_cached_context(
+            CACHE_WORK,
+            "/work",
+            build_work_default_context,
+            build_work_warming_context,
+        )?;
         return Ok(Template::render("work", context));
     }
 
@@ -1092,6 +1109,27 @@ fn build_work_default_context(state: &AppState) -> Result<Value, FrontendError> 
             offset: None,
         },
     )
+}
+
+fn build_work_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "Queue",
+        description: "Inspect queued, completed, retried, and terminally failed URLs.",
+        workunits: Vec::<Value>::new(),
+        has_workunits: false,
+        workunit_count: 0,
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
+        has_pagination: false,
+        cache_refresh_pending: true,
+    })
 }
 
 fn build_work_context(state: &AppState, list_query: ListQuery) -> Result<Value, FrontendError> {
@@ -1125,7 +1163,14 @@ fn build_work_context(state: &AppState, list_query: ListQuery) -> Result<Value, 
 
 #[get("/blacklist")]
 fn blacklist(state: &State<AppState>) -> HtmlResult {
-    render_cached_context(state, CACHE_BLACKLIST, "blacklist", build_blacklist_context)
+    render_background_cached_context(
+        state,
+        CACHE_BLACKLIST,
+        "/blacklist",
+        "blacklist",
+        build_blacklist_context,
+        build_blacklist_warming_context,
+    )
 }
 
 fn build_blacklist_context(state: &AppState) -> Result<Value, FrontendError> {
@@ -1154,6 +1199,25 @@ fn build_blacklist_context(state: &AppState) -> Result<Value, FrontendError> {
         category_options: auto_blacklist.category_options,
         category_rule_type: AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
         keyword_rule_type: AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
+    })
+}
+
+fn build_blacklist_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "Domain Blacklist",
+        description: "Review domains blocked from discovered-link queueing and see how often they appear in stored links.",
+        entries: Vec::<Value>::new(),
+        has_entries: false,
+        entry_count: 0,
+        auto_rules: Vec::<Value>::new(),
+        has_auto_rules: false,
+        auto_rule_count: 0,
+        auto_events: Vec::<Value>::new(),
+        has_auto_events: false,
+        category_options: Vec::<Value>::new(),
+        category_rule_type: AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
+        keyword_rule_type: AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
+        cache_refresh_pending: true,
     })
 }
 
@@ -1212,7 +1276,14 @@ fn delete_blacklist_auto_rule(
 
 #[get("/top")]
 fn top(state: &State<AppState>) -> HtmlResult {
-    render_cached_context(state, CACHE_TOP, "top", build_top_context)
+    render_background_cached_context(
+        state,
+        CACHE_TOP,
+        "/top",
+        "top",
+        build_top_context,
+        build_top_warming_context,
+    )
 }
 
 fn build_top_context(state: &AppState) -> Result<Value, FrontendError> {
@@ -1264,6 +1335,16 @@ fn build_top_context(state: &AppState) -> Result<Value, FrontendError> {
         description: "Host-level leaderboards for the most active and most referenced sites in the current index.",
         sections: sections,
         has_sections: has_sections,
+    })
+}
+
+fn build_top_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "Top Sites",
+        description: "Host-level leaderboards for the most active and most referenced sites in the current index.",
+        sections: Vec::<Value>::new(),
+        has_sections: false,
+        cache_refresh_pending: true,
     })
 }
 
@@ -1535,9 +1616,12 @@ fn sites(state: &State<AppState>, list_query: Option<ListQuery>) -> HtmlResult {
         offset: None,
     });
     if list_query_is_default(&list_query) {
-        let context = state.inner().cache.context(CACHE_SITES, || {
-            build_sites_context(state.inner(), list_query.clone())
-        })?;
+        let context = state.inner().background_cached_context(
+            CACHE_SITES,
+            "/sites",
+            build_sites_default_context,
+            build_sites_warming_context,
+        )?;
         return Ok(Template::render("sites", context));
     }
 
@@ -1553,6 +1637,27 @@ fn build_sites_default_context(state: &AppState) -> Result<Value, FrontendError>
             offset: None,
         },
     )
+}
+
+fn build_sites_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "Site Profiles",
+        description: "Heuristic host categorization derived from crawled page content and structure.",
+        sites: Vec::<Value>::new(),
+        site_count: 0,
+        has_sites: false,
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
+        has_pagination: false,
+        cache_refresh_pending: true,
+    })
 }
 
 fn build_sites_context(state: &AppState, list_query: ListQuery) -> Result<Value, FrontendError> {
@@ -1576,11 +1681,13 @@ fn build_sites_context(state: &AppState, list_query: ListQuery) -> Result<Value,
 
 #[get("/watchlists")]
 fn watchlists(state: &State<AppState>) -> HtmlResult {
-    render_cached_context(
+    render_background_cached_context(
         state,
         CACHE_WATCHLISTS,
+        "/watchlists",
         "watchlists",
         build_watchlists_context,
+        build_watchlists_warming_context,
     )
 }
 
@@ -1599,6 +1706,19 @@ fn build_watchlists_context(state: &AppState) -> Result<Value, FrontendError> {
         item_count: item_count,
         has_items: has_items,
         type_options: type_options,
+    })
+}
+
+fn build_watchlists_warming_context() -> Result<Value, FrontendError> {
+    let type_options = watchlist_type_options();
+    template_context(context! {
+        title: "Customer Watchlists",
+        description: "Customer-specific indicators that generate watchlist-match leads when crawler or service observations match.",
+        items: Vec::<Value>::new(),
+        item_count: 0,
+        has_items: false,
+        type_options: type_options,
+        cache_refresh_pending: true,
     })
 }
 
@@ -1640,9 +1760,12 @@ fn leads(state: &State<AppState>, query: Option<LeadQuery>) -> HtmlResult {
         offset: None,
     });
     if lead_query_is_default(&query) {
-        let context = state.inner().cache.context(CACHE_LEADS, || {
-            build_leads_context(state.inner(), query.clone())
-        })?;
+        let context = state.inner().background_cached_context(
+            CACHE_LEADS,
+            "/leads",
+            build_leads_default_context,
+            build_leads_warming_context,
+        )?;
         return Ok(Template::render("leads", context));
     }
 
@@ -1664,6 +1787,56 @@ fn build_leads_default_context(state: &AppState) -> Result<Value, FrontendError>
             offset: None,
         },
     )
+}
+
+fn build_leads_warming_context() -> Result<Value, FrontendError> {
+    let rule_filter_options = lead_rule_filter_options(None);
+    let status_filter_options = lead_filter_options(
+        &["new", "triaged", "monitoring", "suppressed"],
+        None,
+    );
+    let severity_filter_options = lead_filter_options(
+        &["low", "medium", "high", "critical"],
+        None,
+    );
+
+    template_context(context! {
+        title: "Intel Leads",
+        description: "Local deterministic leads generated from crawl observations, entity reuse, page diffs, blacklist hits, and service fingerprints.",
+        leads: Vec::<Value>::new(),
+        lead_count: 0,
+        has_leads: false,
+        filters: LeadQuery {
+            status: None,
+            severity: None,
+            rule_id: None,
+            entity: None,
+            sort: None,
+            direction: None,
+            limit: None,
+            offset: None,
+        },
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
+        has_pagination: false,
+        sort_severity_url: "",
+        sort_confidence_url: "",
+        sort_last_seen_url: "",
+        sort_status_url: "",
+        sort_rule_url: "",
+        sort_entity_url: "",
+        rule_filter_options: rule_filter_options,
+        status_filter_options: status_filter_options,
+        severity_filter_options: severity_filter_options,
+        cache_refresh_pending: true,
+    })
 }
 
 fn build_leads_context(state: &AppState, query: LeadQuery) -> Result<Value, FrontendError> {
@@ -1785,9 +1958,12 @@ fn relationships(state: &State<AppState>, query: Option<RelationshipQuery>) -> H
         depth: None,
     });
     if relationship_query_is_default(&query) {
-        let context = state.inner().cache.context(CACHE_RELATIONSHIPS, || {
-            build_relationships_context(state.inner(), query.clone())
-        })?;
+        let context = state.inner().background_cached_context(
+            CACHE_RELATIONSHIPS,
+            "/relationships",
+            build_relationships_default_context,
+            build_relationships_warming_context,
+        )?;
         return Ok(Template::render("relationships", context));
     }
 
@@ -1805,6 +1981,29 @@ fn build_relationships_default_context(state: &AppState) -> Result<Value, Fronte
             depth: None,
         },
     )
+}
+
+fn build_relationships_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "Site Relationships",
+        description: "Host-level references observed while scanning pages.",
+        relationships: Vec::<Value>::new(),
+        relationship_count: 0,
+        has_relationships: false,
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
+        has_pagination: false,
+        relationship_focus: String::new(),
+        relationship_depth: 3,
+        cache_refresh_pending: true,
+    })
 }
 
 fn build_relationships_context(
@@ -1868,9 +2067,12 @@ fn email_entities(state: &State<AppState>, query: Option<EmailQuery>) -> HtmlRes
         offset: None,
     });
     if email_query_is_default(&query) {
-        let context = state.inner().cache.context(CACHE_EMAILS, || {
-            build_email_entities_context(state.inner(), query.clone())
-        })?;
+        let context = state.inner().background_cached_context(
+            CACHE_EMAILS,
+            "/entities/emails",
+            build_email_entities_default_context,
+            build_email_entities_warming_context,
+        )?;
         return Ok(Template::render("emails", context));
     }
 
@@ -1887,6 +2089,30 @@ fn build_email_entities_default_context(state: &AppState) -> Result<Value, Front
             offset: None,
         },
     )
+}
+
+fn build_email_entities_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "Shared Emails",
+        description: "See which email addresses appear across multiple scanned sites.",
+        entities: Vec::<Value>::new(),
+        selected: None::<Value>,
+        has_entities: false,
+        has_selected: false,
+        entity_count: 0,
+        selected_page_count: 0,
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
+        has_pagination: false,
+        cache_refresh_pending: true,
+    })
 }
 
 fn build_email_entities_context(
@@ -1935,9 +2161,12 @@ fn crypto_entities(state: &State<AppState>, query: Option<CryptoQuery>) -> HtmlR
         offset: None,
     });
     if crypto_query_is_default(&query) {
-        let context = state.inner().cache.context(CACHE_CRYPTO, || {
-            build_crypto_entities_context(state.inner(), query.clone())
-        })?;
+        let context = state.inner().background_cached_context(
+            CACHE_CRYPTO,
+            "/entities/crypto",
+            build_crypto_entities_default_context,
+            build_crypto_entities_warming_context,
+        )?;
         return Ok(Template::render("crypto", context));
     }
 
@@ -1955,6 +2184,30 @@ fn build_crypto_entities_default_context(state: &AppState) -> Result<Value, Fron
             offset: None,
         },
     )
+}
+
+fn build_crypto_entities_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "Shared Crypto References",
+        description: "Review wallet or payment references that appear on more than one site.",
+        entities: Vec::<Value>::new(),
+        selected: None::<Value>,
+        has_entities: false,
+        has_selected: false,
+        entity_count: 0,
+        selected_page_count: 0,
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
+        has_pagination: false,
+        cache_refresh_pending: true,
+    })
 }
 
 fn build_crypto_entities_context(
@@ -2007,9 +2260,12 @@ fn ssh_entities(state: &State<AppState>, query: Option<SshQuery>) -> HtmlResult 
         offset: None,
     });
     if ssh_query_is_default(&query) {
-        let context = state.inner().cache.context(CACHE_SSH, || {
-            build_ssh_entities_context(state.inner(), query.clone())
-        })?;
+        let context = state.inner().background_cached_context(
+            CACHE_SSH,
+            "/entities/ssh",
+            build_ssh_entities_default_context,
+            build_ssh_entities_warming_context,
+        )?;
         return Ok(Template::render("ssh", context));
     }
 
@@ -2027,6 +2283,30 @@ fn build_ssh_entities_default_context(state: &AppState) -> Result<Value, Fronten
             offset: None,
         },
     )
+}
+
+fn build_ssh_entities_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "Shared SSH Host Keys",
+        description: "Review SSH host keys that appear on more than one host.",
+        entities: Vec::<Value>::new(),
+        selected: None::<Value>,
+        has_entities: false,
+        has_selected: false,
+        entity_count: 0,
+        selected_host_count: 0,
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
+        has_pagination: false,
+        cache_refresh_pending: true,
+    })
 }
 
 fn build_ssh_entities_context(state: &AppState, query: SshQuery) -> Result<Value, FrontendError> {
@@ -2082,9 +2362,12 @@ fn http_entities(state: &State<AppState>, query: Option<HttpQuery>) -> HtmlResul
         offset: None,
     });
     if http_query_is_default(&query) {
-        let context = state.inner().cache.context(CACHE_HTTP, || {
-            build_http_entities_context(state.inner(), query.clone())
-        })?;
+        let context = state.inner().background_cached_context(
+            CACHE_HTTP,
+            "/entities/http",
+            build_http_entities_default_context,
+            build_http_entities_warming_context,
+        )?;
         return Ok(Template::render("http", context));
     }
 
@@ -2103,6 +2386,29 @@ fn build_http_entities_default_context(state: &AppState) -> Result<Value, Fronte
             offset: None,
         },
     )
+}
+
+fn build_http_entities_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "HTTP Observations",
+        description: "View HTTP service fingerprints discovered during scanning.",
+        entities: Vec::<Value>::new(),
+        selected: None::<Value>,
+        has_entities: false,
+        has_selected: false,
+        entity_count: 0,
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
+        has_pagination: false,
+        cache_refresh_pending: true,
+    })
 }
 
 fn build_http_entities_context(state: &AppState, query: HttpQuery) -> Result<Value, FrontendError> {
@@ -2155,9 +2461,12 @@ fn service_entities(state: &State<AppState>, query: Option<ServiceQuery>) -> Htm
         offset: None,
     });
     if service_query_is_default(&query) {
-        let context = state.inner().cache.context(CACHE_SERVICES, || {
-            build_service_entities_context(state.inner(), query.clone())
-        })?;
+        let context = state.inner().background_cached_context(
+            CACHE_SERVICES,
+            "/entities/services",
+            build_service_entities_default_context,
+            build_service_entities_warming_context,
+        )?;
         return Ok(Template::render("services", context));
     }
 
@@ -2176,6 +2485,29 @@ fn build_service_entities_default_context(state: &AppState) -> Result<Value, Fro
             offset: None,
         },
     )
+}
+
+fn build_service_entities_warming_context() -> Result<Value, FrontendError> {
+    template_context(context! {
+        title: "Service Observations",
+        description: "View service fingerprints discovered during port scanning.",
+        entities: Vec::<Value>::new(),
+        selected: None::<Value>,
+        has_entities: false,
+        has_selected: false,
+        entity_count: 0,
+        pagination: PaginationView {
+            total_count: 0,
+            limit: 50,
+            offset: 0,
+            has_previous_page: false,
+            has_next_page: false,
+            previous_page_url: String::new(),
+            next_page_url: String::new(),
+        },
+        has_pagination: false,
+        cache_refresh_pending: true,
+    })
 }
 
 fn build_service_entities_context(
