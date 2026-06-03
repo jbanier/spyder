@@ -9227,7 +9227,8 @@ mod tests {
               created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE UNIQUE INDEX idx_auto_blacklist_event_unique_page
-              ON auto_blacklist_event(domain, rule_id, COALESCE(source_page_id, 0));
+              ON auto_blacklist_event(domain, rule_id, source_page_id)
+              WHERE source_page_id IS NOT NULL;
             CREATE TABLE forum_keyword_rule(
               id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
               label VARCHAR NOT NULL,
