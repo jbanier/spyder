@@ -45,11 +45,11 @@ Use regex patterns and HTML parsing to extract directory entries:
 
 Support common size formats:
 - Plain numbers: "1234" → 1234 bytes
-- Kilobytes: "1.5K", "1.5KB" → 1536 bytes
-- Megabytes: "2.3M", "2.3MB" → 2411724 bytes
-- Gigabytes: "1.2G", "1.2GB" → 1288490188 bytes
+- Kilobytes: "1.5K", "1.5KB" → 1536 bytes (using 1024-based)
+- Megabytes: "2.3M", "2.3MB" → 2411724 bytes (using 1024-based)
+- Gigabytes: "1.2G", "1.2GB" → 1288490188 bytes (using 1024-based)
 
-Handle both binary (1024-based) and decimal (1000-based) units using standard conventions.
+Use binary (1024-based) units throughout, as this matches common web server directory listing conventions (Apache, nginx use binary units).
 
 ## Recursive Crawling
 
@@ -69,8 +69,9 @@ Handle both binary (1024-based) and decimal (1000-based) units using standard co
 
 - Root "Index of /" page is depth 0
 - First-level subdirectories are depth 1
-- Maximum depth is 3
-- Do not recurse beyond depth 3
+- Second-level subdirectories are depth 2
+- Third-level subdirectories are depth 3
+- Do not recurse beyond depth 3 (i.e., recurse while current_depth < 3)
 
 ### Error Handling
 
