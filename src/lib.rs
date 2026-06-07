@@ -1,5 +1,6 @@
 pub mod config;
 pub mod extraction;
+pub mod file_server;
 pub mod logging;
 pub mod metrics;
 pub mod models;
