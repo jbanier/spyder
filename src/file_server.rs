@@ -1,6 +1,10 @@
 use regex::Regex;
+use reqwest::blocking::Client;
 use scraper::{Html, Selector};
+use std::collections::HashSet;
 use std::sync::OnceLock;
+use std::time::Duration;
+use url::Url;
 
 /// Parse human-readable size string to bytes (1024-based units)
 pub fn parse_size(size_str: &str) -> Option<u64> {
@@ -60,10 +64,10 @@ pub struct FileServerMetrics {
 }
 
 #[derive(Debug, Clone)]
-struct ScanResult {
-    file_count: u32,
-    total_size: u64,
-    errors: Vec<String>,
+pub struct ScanResult {
+    pub file_count: u32,
+    pub total_size: u64,
+    pub errors: Vec<String>,
 }
 
 /// Parse directory listing HTML to extract files and subdirectories
@@ -136,4 +140,113 @@ fn extract_size_from_context(element: &scraper::ElementRef) -> Option<u64> {
     }
 
     None
+}
+
+const MAX_DIRECTORIES: usize = 100;
+const FETCH_TIMEOUT_SECS: u64 = 10;
+
+fn get_max_dirs() -> usize {
+    MAX_DIRECTORIES
+}
+
+fn get_fetch_timeout_secs() -> u64 {
+    FETCH_TIMEOUT_SECS
+}
+
+fn fetch_with_timeout(url: &str, client: &Client) -> anyhow::Result<String> {
+    let timeout_secs = get_fetch_timeout_secs();
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(timeout_secs))
+        .send()?;
+
+    let body = response.text()?;
+    Ok(body)
+}
+
+/// Recursively scan directory listings up to max_depth
+pub fn scan_recursive(
+    url: &str,
+    current_depth: u32,
+    max_depth: u32,
+    visited: &mut HashSet<String>,
+    client: &Client,
+) -> ScanResult {
+    let mut result = ScanResult {
+        file_count: 0,
+        total_size: 0,
+        errors: Vec::new(),
+    };
+
+    // Check depth limit
+    if current_depth > max_depth {
+        return result;
+    }
+
+    // Check visited
+    if visited.contains(url) {
+        return result;
+    }
+
+    // Check directory count limit
+    let max_dirs = get_max_dirs();
+    if visited.len() >= max_dirs {
+        result.errors.push(format!("max directories limit reached"));
+        return result;
+    }
+
+    visited.insert(url.to_string());
+
+    // Fetch directory listing
+    let html = match fetch_with_timeout(url, client) {
+        Ok(body) => body,
+        Err(e) => {
+            result.errors.push(format!("{}: {}", url, e));
+            return result;
+        }
+    };
+
+    // Parse listing
+    let listing = parse_directory_listing(&html);
+
+    // Accumulate files
+    for file in &listing.files {
+        result.file_count += 1;
+        result.total_size += file.size;
+    }
+
+    // Recurse into subdirectories if not at max depth
+    if current_depth < max_depth {
+        let base_url = match Url::parse(url) {
+            Ok(u) => u,
+            Err(e) => {
+                result.errors.push(format!("invalid base URL {}: {}", url, e));
+                return result;
+            }
+        };
+
+        for dir in &listing.directories {
+            let subdir_url = match base_url.join(dir) {
+                Ok(u) => u.to_string(),
+                Err(e) => {
+                    result.errors.push(format!("invalid subdir URL {}: {}", dir, e));
+                    continue;
+                }
+            };
+
+            let sub_result = scan_recursive(
+                &subdir_url,
+                current_depth + 1,
+                max_depth,
+                visited,
+                client,
+            );
+
+            result.file_count += sub_result.file_count;
+            result.total_size += sub_result.total_size;
+            result.errors.extend(sub_result.errors);
+        }
+    }
+
+    result
 }

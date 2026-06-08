@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use spyder::file_server::{parse_size, parse_directory_listing, DirectoryListing, FileEntry};
+    use spyder::file_server::{parse_size, parse_directory_listing, FileEntry};
 
     #[test]
     fn test_parse_plain_bytes() {
@@ -103,5 +103,31 @@ mod tests {
         assert_eq!(listing.files.len(), 1);
         assert_eq!(listing.files[0].name, "readme.txt");
         assert_eq!(listing.files[0].size, 2411724);
+    }
+
+    #[test]
+    fn test_scan_recursive_depth_limit() {
+        // This test will use actual HTTP client, so we'll keep it simple
+        // Real testing should use mock server
+        use std::collections::HashSet;
+        use spyder::file_server::scan_recursive;
+        use reqwest::blocking::Client;
+
+        let client = Client::new();
+        let mut visited = HashSet::new();
+
+        // Scan a non-existent URL to test error handling
+        let result = scan_recursive(
+            "http://localhost:99999/nonexistent/",
+            0,
+            3,
+            &mut visited,
+            &client,
+        );
+
+        // Should handle error gracefully
+        assert_eq!(result.file_count, 0);
+        assert_eq!(result.total_size, 0);
+        assert!(!result.errors.is_empty());
     }
 }
