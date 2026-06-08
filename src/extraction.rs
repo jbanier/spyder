@@ -2,6 +2,7 @@ use crate::models::{
     CategoryHint, ClassificationSignals, CryptoReference, LanguageDetection, LinkObservation,
     PageSnapshot, TopicObservation,
 };
+use crate::file_server;
 use anyhow::{Context, Result};
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
@@ -23,6 +24,13 @@ pub fn extract_page_snapshot(url: &str, body: &str) -> Result<PageSnapshot> {
     let language_detection = detect_page_language(&document, &text);
     let topic_observations =
         extract_topic_observations(&document, &base_url, &title, &text, &links);
+
+    // Check for file server detection
+    let mut all_topic_observations = topic_observations;
+    if let Some(file_server_metrics) = detect_file_server_if_enabled(&normalized_url, body, &title) {
+        all_topic_observations.push(file_server_metrics);
+    }
+
     let keyword_corpus = build_keyword_corpus(&normalized_url, &title, &text, &links);
 
     Ok(PageSnapshot {
@@ -35,7 +43,7 @@ pub fn extract_page_snapshot(url: &str, body: &str) -> Result<PageSnapshot> {
         emails: extract_emails(body),
         crypto_refs: extract_crypto_refs(body),
         classification_signals,
-        topic_observations,
+        topic_observations: all_topic_observations,
     })
 }
 
@@ -1360,6 +1368,49 @@ fn ethereum_address_regex() -> &'static Regex {
     static ETHEREUM: OnceLock<Regex> = OnceLock::new();
     ETHEREUM
         .get_or_init(|| Regex::new(r"\b0x[a-fA-F0-9]{40}\b").expect("valid ethereum address regex"))
+}
+
+fn detect_file_server_if_enabled(url: &str, body: &str, title: &str) -> Option<TopicObservation> {
+    // Create HTTP client (reuse pattern from spyder binary)
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .ok()?;
+
+    let metrics = file_server::detect_file_server(url, body, title, &client)?;
+
+    // Format evidence string
+    let mut evidence_parts = vec![
+        format!("total_size: {} bytes", metrics.total_size),
+        format!("depth: {}", metrics.depth_scanned),
+    ];
+
+    if metrics.skipped_count > 0 {
+        evidence_parts.push(format!("skipped: {}", metrics.skipped_count));
+
+        if !metrics.skipped_paths.is_empty() {
+            // Include first few error paths
+            let sample_paths: Vec<_> = metrics.skipped_paths
+                .iter()
+                .take(3)
+                .map(|p| {
+                    // Extract just the path from error message
+                    p.split(':').next().unwrap_or(p)
+                })
+                .collect();
+
+            if !sample_paths.is_empty() {
+                evidence_parts.push(format!("(errors: {})", sample_paths.join(", ")));
+            }
+        }
+    }
+
+    Some(TopicObservation {
+        topic: "file-server".to_string(),
+        score: metrics.total_files as i32,  // Convert u32 to i32 for database
+        confidence: "high".to_string(),
+        evidence: vec![evidence_parts.join(", ")],
+    })
 }
 
 #[cfg(test)]
