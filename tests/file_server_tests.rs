@@ -40,4 +40,14 @@ mod tests {
         assert_eq!(parse_size("1.2.3M"), None);
         assert_eq!(parse_size("abc123"), None);
     }
+
+    #[test]
+    fn test_parse_overflow() {
+        // Values that would overflow u64
+        assert_eq!(parse_size("99999999999999G"), None);
+        assert_eq!(parse_size("18446744073709.6G"), None);
+        assert_eq!(parse_size("999999999T"), None);
+        // Valid large values should still work
+        assert_eq!(parse_size("16384G"), Some(16384 * 1024 * 1024 * 1024));
+    }
 }

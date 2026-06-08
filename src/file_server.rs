@@ -21,7 +21,6 @@ pub fn parse_size(size_str: &str) -> Option<u64> {
     let unit = captures.get(2)?.as_str();
 
     let multiplier: u64 = match unit {
-        "" => 1,
         "K" | "KB" => 1024,
         "M" | "MB" => 1024 * 1024,
         "G" | "GB" => 1024 * 1024 * 1024,
@@ -29,5 +28,11 @@ pub fn parse_size(size_str: &str) -> Option<u64> {
         _ => return None,
     };
 
-    Some((number * multiplier as f64) as u64)
+    // Check for overflow before casting to u64
+    let result = number * multiplier as f64;
+    if result > u64::MAX as f64 || result < 0.0 {
+        return None;
+    }
+
+    Some(result as u64)
 }
