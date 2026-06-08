@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use spyder::file_server::parse_size;
+    use spyder::file_server::{parse_size, parse_directory_listing, DirectoryListing, FileEntry};
 
     #[test]
     fn test_parse_plain_bytes() {
@@ -49,5 +49,59 @@ mod tests {
         assert_eq!(parse_size("999999999T"), None);
         // Valid large values should still work
         assert_eq!(parse_size("16384G"), Some(16384 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn test_parse_apache_directory_listing() {
+        let html = r#"
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<head><title>Index of /files</title></head>
+<body>
+<h1>Index of /files</h1>
+<pre>
+<a href="../">../</a>
+<a href="subdir/">subdir/</a>                  -
+<a href="file1.txt">file1.txt</a>              1234
+<a href="file2.dat">file2.dat</a>              5.5K
+</pre>
+</body>
+</html>
+"#;
+
+        let listing = parse_directory_listing(html);
+
+        assert_eq!(listing.directories, vec!["subdir/"]);
+        assert_eq!(listing.files.len(), 2);
+        assert_eq!(listing.files[0], FileEntry {
+            name: "file1.txt".to_string(),
+            size: 1234,
+        });
+        assert_eq!(listing.files[1], FileEntry {
+            name: "file2.dat".to_string(),
+            size: 5632,
+        });
+    }
+
+    #[test]
+    fn test_parse_nginx_directory_listing() {
+        let html = r#"
+<html>
+<head><title>Index of /data</title></head>
+<body>
+<h1>Index of /data</h1><hr><pre>
+<a href="../">../</a>
+<a href="docs/">docs/</a>     01-Jan-2026 12:00    -
+<a href="readme.txt">readme.txt</a>  01-Jan-2026 12:00  2.3M
+</pre><hr></body>
+</html>
+"#;
+
+        let listing = parse_directory_listing(html);
+
+        assert_eq!(listing.directories, vec!["docs/"]);
+        assert_eq!(listing.files.len(), 1);
+        assert_eq!(listing.files[0].name, "readme.txt");
+        assert_eq!(listing.files[0].size, 2411724);
     }
 }

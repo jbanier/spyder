@@ -1,4 +1,5 @@
 use regex::Regex;
+use scraper::{Html, Selector};
 use std::sync::OnceLock;
 
 /// Parse human-readable size string to bytes (1024-based units)
@@ -63,4 +64,76 @@ struct ScanResult {
     file_count: u32,
     total_size: u64,
     errors: Vec<String>,
+}
+
+/// Parse directory listing HTML to extract files and subdirectories
+pub fn parse_directory_listing(html: &str) -> DirectoryListing {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("a[href]").expect("valid selector");
+
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+
+    for element in document.select(&selector) {
+        let href = match element.value().attr("href") {
+            Some(h) => h,
+            None => continue,
+        };
+
+        // Skip parent directory links
+        if href == "../" {
+            continue;
+        }
+
+        let name = element.text().collect::<String>().trim().to_string();
+
+        // Directories end with /
+        if href.ends_with('/') {
+            directories.push(href.to_string());
+            continue;
+        }
+
+        // Extract size from surrounding text
+        if let Some(size) = extract_size_from_context(&element) {
+            files.push(FileEntry {
+                name: name.clone(),
+                size,
+            });
+        }
+    }
+
+    DirectoryListing { files, directories }
+}
+
+/// Extract file size from text near the link element
+fn extract_size_from_context(element: &scraper::ElementRef) -> Option<u64> {
+    // Collect text from siblings following the anchor element
+    let mut text = String::new();
+    let mut current = element.next_sibling();
+
+    // Gather text from the next few text nodes after the link
+    while let Some(node) = current {
+        if let Some(t) = node.value().as_text() {
+            text.push_str(t);
+            // Stop when we have enough text or hit a newline after getting some content
+            if text.len() > 100 || (text.len() > 10 && text.contains('\n')) {
+                break;
+            }
+        }
+        current = node.next_sibling();
+    }
+
+    // Look for size patterns in the text immediately following the link
+    static SIZE_IN_CONTEXT: OnceLock<Regex> = OnceLock::new();
+    let regex = SIZE_IN_CONTEXT.get_or_init(|| {
+        Regex::new(r"\s+(\d+(?:\.\d+)?\s*[KMGT]?B?)\s*(?:\s|\n|$)").expect("valid regex")
+    });
+
+    if let Some(captures) = regex.captures(&text) {
+        if let Some(size_str) = captures.get(1) {
+            return parse_size(size_str.as_str().trim());
+        }
+    }
+
+    None
 }
