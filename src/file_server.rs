@@ -145,12 +145,18 @@ fn extract_size_from_context(element: &scraper::ElementRef) -> Option<u64> {
 const MAX_DIRECTORIES: usize = 100;
 const FETCH_TIMEOUT_SECS: u64 = 10;
 
-fn get_max_dirs() -> usize {
-    MAX_DIRECTORIES
+pub fn get_max_dirs() -> usize {
+    std::env::var("SPYDER_FILE_SERVER_MAX_DIRS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(MAX_DIRECTORIES)
 }
 
-fn get_fetch_timeout_secs() -> u64 {
-    FETCH_TIMEOUT_SECS
+pub fn get_fetch_timeout_secs() -> u64 {
+    std::env::var("SPYDER_FILE_SERVER_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(FETCH_TIMEOUT_SECS)
 }
 
 fn fetch_with_timeout(url: &str, client: &Client) -> anyhow::Result<String> {
@@ -250,4 +256,54 @@ pub fn scan_recursive(
     }
 
     result
+}
+
+fn is_file_server_enabled() -> bool {
+    std::env::var("SPYDER_FILE_SERVER_ENABLED")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse()
+        .unwrap_or(true)
+}
+
+fn get_max_depth() -> u32 {
+    std::env::var("SPYDER_FILE_SERVER_MAX_DEPTH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3)
+}
+
+/// Detect and scan file server starting from an "Index of /" page
+///
+/// Returns None if not a file server or if disabled by config
+pub fn detect_file_server(
+    url: &str,
+    _body: &str,
+    title: &str,
+    client: &Client,
+) -> Option<FileServerMetrics> {
+    // Check if file server detection is enabled
+    if !is_file_server_enabled() {
+        return None;
+    }
+
+    // Check if this is an "Index of /" page
+    if title.trim() != "Index of /" {
+        return None;
+    }
+
+    // Perform recursive scan
+    let max_depth = get_max_depth();
+    let mut visited = HashSet::new();
+
+    let scan_result = scan_recursive(url, 0, max_depth, &mut visited, client);
+
+    let depth_scanned = visited.len().min(max_depth as usize + 1) as u32;
+
+    Some(FileServerMetrics {
+        total_files: scan_result.file_count,
+        total_size: scan_result.total_size,
+        depth_scanned,
+        skipped_count: scan_result.errors.len() as u32,
+        skipped_paths: scan_result.errors,
+    })
 }
