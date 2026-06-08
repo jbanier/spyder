@@ -36,3 +36,31 @@ pub fn parse_size(size_str: &str) -> Option<u64> {
 
     Some(result as u64)
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileEntry {
+    pub name: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectoryListing {
+    pub files: Vec<FileEntry>,
+    pub directories: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileServerMetrics {
+    pub total_files: u32,
+    pub total_size: u64,
+    pub depth_scanned: u32,
+    pub skipped_count: u32,
+    pub skipped_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ScanResult {
+    file_count: u32,
+    total_size: u64,
+    errors: Vec<String>,
+}
