@@ -255,6 +255,28 @@ SPYDER_FRONTEND_CACHE_SLOW_ROUTE_MS=1000 cargo run --bin frontend
 SPYDER_FRONTEND_CACHE_SLOW_ROUTE_MS=0 cargo run --bin frontend
 ```
 
+## File Server Detection
+
+Spyder automatically detects and analyzes web servers in directory browsing mode (pages with title "Index of /"). When detected, the scanner recursively crawls subdirectories up to 3 levels deep and records file counts and total sizes.
+
+Configuration:
+
+```bash
+# Enable/disable file server detection (default: true)
+SPYDER_FILE_SERVER_ENABLED=true cargo run --bin spyder -- work
+
+# Maximum recursion depth (default: 3)
+SPYDER_FILE_SERVER_MAX_DEPTH=5 cargo run --bin spyder -- work
+
+# Maximum total directories to scan per file server (default: 100)
+SPYDER_FILE_SERVER_MAX_DIRS=200 cargo run --bin spyder -- work
+
+# Per-directory fetch timeout in seconds (default: 10)
+SPYDER_FILE_SERVER_TIMEOUT=15 cargo run --bin spyder -- work
+```
+
+Results are stored in the `page_topic_tag` table with topic `file-server`. The score field contains the total file count, and the evidence field contains the total size in bytes, depth scanned, and any errors encountered.
+
 For statement-level slow query logging, enable PostgreSQL's `log_min_duration_statement` on the `spyder` database or role. While a long query is still running, inspect it live with:
 
 ```sql
