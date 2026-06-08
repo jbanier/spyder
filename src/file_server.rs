@@ -67,6 +67,7 @@ pub struct FileServerMetrics {
 pub struct ScanResult {
     pub file_count: u32,
     pub total_size: u64,
+    pub max_depth_reached: u32,
     pub errors: Vec<String>,
 }
 
@@ -182,6 +183,7 @@ pub fn scan_recursive(
     let mut result = ScanResult {
         file_count: 0,
         total_size: 0,
+        max_depth_reached: 0,
         errors: Vec::new(),
     };
 
@@ -203,6 +205,7 @@ pub fn scan_recursive(
     }
 
     visited.insert(url.to_string());
+    result.max_depth_reached = current_depth.max(result.max_depth_reached);
 
     // Fetch directory listing
     let html = match fetch_with_timeout(url, client) {
@@ -251,6 +254,7 @@ pub fn scan_recursive(
 
             result.file_count += sub_result.file_count;
             result.total_size += sub_result.total_size;
+            result.max_depth_reached = result.max_depth_reached.max(sub_result.max_depth_reached);
             result.errors.extend(sub_result.errors);
         }
     }
@@ -277,7 +281,7 @@ fn get_max_depth() -> u32 {
 /// Returns None if not a file server or if disabled by config
 pub fn detect_file_server(
     url: &str,
-    _body: &str,
+    body: &str,
     title: &str,
     client: &Client,
 ) -> Option<FileServerMetrics> {
@@ -291,19 +295,73 @@ pub fn detect_file_server(
         return None;
     }
 
-    // Perform recursive scan
-    let max_depth = get_max_depth();
+    // Parse root directory from the provided body to avoid duplicate fetch
+    let root_listing = parse_directory_listing(body);
+
+    let mut result = ScanResult {
+        file_count: 0,
+        total_size: 0,
+        max_depth_reached: 0,
+        errors: Vec::new(),
+    };
+
+    // Count files from root listing
+    for file in &root_listing.files {
+        result.file_count += 1;
+        result.total_size += file.size;
+    }
+
+    // Mark root directory as visited and set max_depth_reached
     let mut visited = HashSet::new();
+    visited.insert(url.to_string());
+    result.max_depth_reached = 0;
 
-    let scan_result = scan_recursive(url, 0, max_depth, &mut visited, client);
+    // Perform recursive scan for subdirectories
+    let max_depth = get_max_depth();
 
-    let depth_scanned = visited.len().min(max_depth as usize + 1) as u32;
+    if max_depth > 0 {
+        let base_url = match Url::parse(url) {
+            Ok(u) => u,
+            Err(_) => {
+                return Some(FileServerMetrics {
+                    total_files: result.file_count,
+                    total_size: result.total_size,
+                    depth_scanned: result.max_depth_reached,
+                    skipped_count: result.errors.len() as u32,
+                    skipped_paths: result.errors,
+                });
+            }
+        };
+
+        for dir in &root_listing.directories {
+            let subdir_url = match base_url.join(dir) {
+                Ok(u) => u.to_string(),
+                Err(e) => {
+                    result.errors.push(format!("invalid subdir URL {}: {}", dir, e));
+                    continue;
+                }
+            };
+
+            let sub_result = scan_recursive(
+                &subdir_url,
+                1,
+                max_depth,
+                &mut visited,
+                client,
+            );
+
+            result.file_count += sub_result.file_count;
+            result.total_size += sub_result.total_size;
+            result.max_depth_reached = result.max_depth_reached.max(sub_result.max_depth_reached);
+            result.errors.extend(sub_result.errors);
+        }
+    }
 
     Some(FileServerMetrics {
-        total_files: scan_result.file_count,
-        total_size: scan_result.total_size,
-        depth_scanned,
-        skipped_count: scan_result.errors.len() as u32,
-        skipped_paths: scan_result.errors,
+        total_files: result.file_count,
+        total_size: result.total_size,
+        depth_scanned: result.max_depth_reached,
+        skipped_count: result.errors.len() as u32,
+        skipped_paths: result.errors,
     })
 }
