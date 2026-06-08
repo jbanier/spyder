@@ -158,7 +158,8 @@ fn fetch_with_timeout(url: &str, client: &Client) -> anyhow::Result<String> {
     let response = client
         .get(url)
         .timeout(Duration::from_secs(timeout_secs))
-        .send()?;
+        .send()?
+        .error_for_status()?;
 
     let body = response.text()?;
     Ok(body)
