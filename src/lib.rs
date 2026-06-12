@@ -1754,16 +1754,6 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
     let mut snapshot = normalize_page_snapshot(snapshot);
     let page_host = host_from_url(&snapshot.url);
 
-    // Check if this URL already exists (to track new vs rescans)
-    let existing_page_id = crate::schema::page::table
-        .filter(crate::schema::page::url.eq(&snapshot.url))
-        .select(crate::schema::page::id)
-        .first::<i32>(conn)
-        .optional()
-        .context("error checking existing page")?;
-
-    let is_new_url = existing_page_id.is_none();
-
     let blacklist_domains = load_blacklist_domains(conn)?;
     if host_matches_blacklist(&page_host, &blacklist_domains) {
         return Ok(PageSaveOutcome::SkippedBlacklisted);
@@ -1789,6 +1779,17 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
     };
 
     conn.transaction::<_, anyhow::Error, _>(|conn| {
+        // Check if this URL already exists (to track new vs rescans)
+        // This check is done inside the transaction to prevent race conditions
+        let existing_page_id = crate::schema::page::table
+            .filter(crate::schema::page::url.eq(&snapshot.url))
+            .select(crate::schema::page::id)
+            .first::<i32>(conn)
+            .optional()
+            .context("error checking existing page")?;
+
+        let is_new_url = existing_page_id.is_none();
+
         diesel::insert_into(crate::schema::page::table)
             .values(&new_page)
             .on_conflict(page_url)
