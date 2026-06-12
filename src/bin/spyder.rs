@@ -3371,6 +3371,13 @@ fn refresh_relationships() -> Result<()> {
     Ok(())
 }
 
+fn backfill_titles() -> Result<()> {
+    let mut conn = establish_connection()?;
+    let updated = spyder::backfill_site_titles(&mut conn)?;
+    println!("Backfilled {} site titles", updated);
+    Ok(())
+}
+
 fn usage(program: &str) {
     info!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     info!("Subcommands:");
@@ -3875,6 +3882,7 @@ fn main() {
             }
         },
         Some("refresh-relationships") => refresh_relationships(),
+        Some("backfill-titles") => backfill_titles(),
         Some(_) | None => {
             usage(&program);
             Err(anyhow::anyhow!("invalid or missing subcommand"))

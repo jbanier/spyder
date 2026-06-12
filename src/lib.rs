@@ -1500,6 +1500,30 @@ pub fn list_site_profiles_grouped(
     Ok(results)
 }
 
+pub fn backfill_site_titles(conn: &mut PgConnection) -> Result<usize> {
+    let query = r#"
+        UPDATE site_profile sp
+        SET title = (
+            SELECT p.title
+            FROM page p
+            WHERE lower(p.url) LIKE '%' || lower(sp.host) || '%'
+            ORDER BY p.created_at ASC
+            LIMIT 1
+        )
+        WHERE sp.title IS NULL
+          AND EXISTS (
+              SELECT 1 FROM page p
+              WHERE lower(p.url) LIKE '%' || lower(sp.host) || '%'
+          )
+    "#;
+
+    let updated = sql_query(query)
+        .execute(conn)
+        .context("error backfilling site titles")?;
+
+    Ok(updated)
+}
+
 pub fn create_work_unit(conn: &mut PgConnection, url: &str) -> Result<()> {
     let normalized_url = normalize_crawl_url(url);
     let work_unit = NewUnit {
