@@ -1433,6 +1433,73 @@ pub fn list_site_profiles(
     })
 }
 
+#[derive(QueryableByName)]
+struct SiteProfileGroupRow {
+    #[diesel(sql_type = Text)]
+    title: String,
+    #[diesel(sql_type = BigInt)]
+    host_count: i64,
+    #[diesel(sql_type = BigInt)]
+    total_pages: i64,
+    #[diesel(sql_type = Text)]
+    most_recent_scan: String,
+    #[diesel(sql_type = Text)]
+    hosts_json: String,
+}
+
+pub fn list_site_profiles_grouped(
+    conn: &mut PgConnection,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<SiteProfileGroupSummary>> {
+    let limit = limit.unwrap_or(50).min(200);
+    let offset = offset.unwrap_or(0);
+
+    let query = format!(
+        r#"
+        SELECT
+            title,
+            COUNT(DISTINCT host)::bigint as host_count,
+            SUM(page_count)::bigint as total_pages,
+            MAX(last_scanned_at) as most_recent_scan,
+            json_agg(json_build_object(
+                'host', host,
+                'category', category,
+                'confidence', confidence,
+                'page_count', page_count,
+                'last_scanned_at', last_scanned_at,
+                'last_classified_at', last_classified_at
+            ) ORDER BY page_count DESC)::text as hosts_json
+        FROM site_profile
+        WHERE title IS NOT NULL
+        GROUP BY title
+        ORDER BY total_pages DESC
+        LIMIT {} OFFSET {}
+        "#,
+        limit, offset
+    );
+
+    let rows = sql_query(&query)
+        .load::<SiteProfileGroupRow>(conn)
+        .context("error loading grouped site profiles")?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        let hosts: Vec<SiteProfileGroupHost> = serde_json::from_str(&row.hosts_json)
+            .context("error parsing hosts JSON")?;
+
+        results.push(SiteProfileGroupSummary {
+            title: row.title,
+            host_count: row.host_count as usize,
+            total_pages: row.total_pages as i32,
+            most_recent_scan: row.most_recent_scan,
+            hosts,
+        });
+    }
+
+    Ok(results)
+}
+
 pub fn create_work_unit(conn: &mut PgConnection, url: &str) -> Result<()> {
     let normalized_url = normalize_crawl_url(url);
     let work_unit = NewUnit {
