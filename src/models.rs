@@ -1,5 +1,5 @@
 use diesel::prelude::*;
-use rocket::serde::Serialize;
+use rocket::serde::{Deserialize, Serialize};
 
 #[derive(Selectable, Queryable, Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
@@ -898,7 +898,7 @@ pub struct SiteProfileSummary {
     pub intel_leads: Vec<IntelLeadBadge>,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "rocket::serde")]
 pub struct SiteProfileGroupHost {
     pub host: String,
@@ -909,7 +909,7 @@ pub struct SiteProfileGroupHost {
     pub last_classified_at: String,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "rocket::serde")]
 pub struct SiteProfileGroupSummary {
     pub title: String,
