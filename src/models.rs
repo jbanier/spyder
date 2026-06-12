@@ -375,12 +375,13 @@ pub struct SiteProfileRecord {
     pub confidence: String,
     pub score: i32,
     pub page_count: i32,
-    pub first_found_at: String,
-    pub last_scanned_at: String,
     pub evidence: String,
     pub source_page_id: Option<i32>,
     pub last_classified_at: String,
     pub created_at: String,
+    pub first_found_at: String,
+    pub last_scanned_at: String,
+    pub title: Option<String>,
 }
 
 #[derive(Insertable)]
@@ -391,10 +392,11 @@ pub struct NewSiteProfile {
     pub confidence: String,
     pub score: i32,
     pub page_count: i32,
-    pub first_found_at: String,
-    pub last_scanned_at: String,
     pub evidence: String,
     pub source_page_id: Option<i32>,
+    pub first_found_at: String,
+    pub last_scanned_at: String,
+    pub title: Option<String>,
 }
 
 #[derive(Selectable, Queryable, Serialize, Clone)]

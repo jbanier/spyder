@@ -551,6 +551,8 @@ struct SiteProfileListRow {
     last_classified_at: String,
     #[diesel(sql_type = Text)]
     created_at: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    title: Option<String>,
 }
 
 #[derive(QueryableByName)]
@@ -2036,6 +2038,7 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                     last_scanned_at: site_profile_record.last_scanned_at.clone(),
                     evidence: site_profile_record.evidence.clone(),
                     source_page_id: site_profile_record.source_page_id,
+                    title: site_profile_record.title.clone(),
                 })
                 .on_conflict(site_profile::host)
                 .do_update()
@@ -7962,6 +7965,7 @@ fn recompute_site_profile_record(
         last_scanned_at: scan_stats.last_scanned_at,
         evidence: serialize_evidence(&evidence),
         source_page_id: source_row.map(|row| row.page_id),
+        title: None,
     })
 }
 
@@ -7998,12 +8002,13 @@ fn site_profile_record_from_row(row: SiteProfileListRow) -> SiteProfileRecord {
         confidence: row.confidence,
         score: row.score,
         page_count: row.page_count,
-        first_found_at: row.first_found_at,
-        last_scanned_at: row.last_scanned_at,
         evidence: row.evidence,
         source_page_id: row.source_page_id,
         last_classified_at: row.last_classified_at,
         created_at: row.created_at,
+        first_found_at: row.first_found_at,
+        last_scanned_at: row.last_scanned_at,
+        title: row.title,
     }
 }
 
