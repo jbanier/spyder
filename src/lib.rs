@@ -2068,6 +2068,16 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                 ))
                 .execute(conn)
                 .context("error saving site profile")?;
+
+            // Update page count if this is a new URL
+            if is_new_url {
+                // Increment page_count for this host
+                diesel::update(site_profile::table.filter(site_profile::host.eq(&classification.host)))
+                    .set(site_profile::page_count.eq(site_profile::page_count + 1))
+                    .execute(conn)
+                    .context("error incrementing page count")?;
+            }
+
             apply_auto_blacklist_rules_for_page(
                 conn,
                 &snapshot,
