@@ -898,6 +898,27 @@ pub struct SiteProfileSummary {
     pub intel_leads: Vec<IntelLeadBadge>,
 }
 
+#[derive(Serialize, Clone, Debug)]
+#[serde(crate = "rocket::serde")]
+pub struct SiteProfileGroupHost {
+    pub host: String,
+    pub category: String,
+    pub confidence: String,
+    pub page_count: i32,
+    pub last_scanned_at: String,
+    pub last_classified_at: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(crate = "rocket::serde")]
+pub struct SiteProfileGroupSummary {
+    pub title: String,
+    pub host_count: usize,
+    pub total_pages: i32,
+    pub most_recent_scan: String,
+    pub hosts: Vec<SiteProfileGroupHost>,
+}
+
 #[derive(Serialize, Clone)]
 #[serde(crate = "rocket::serde")]
 pub struct HostHttpObservationSummary {
