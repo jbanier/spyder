@@ -2039,44 +2039,70 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                 .execute(conn)
                 .context("error saving page classification")?;
 
-            let site_profile_record = recompute_site_profile_record(conn, &classification.host)?;
-            diesel::insert_into(site_profile::table)
-                .values(NewSiteProfile {
-                    host: site_profile_record.host.clone(),
-                    category: site_profile_record.category.clone(),
-                    confidence: site_profile_record.confidence.clone(),
-                    score: site_profile_record.score,
-                    page_count: site_profile_record.page_count,
-                    first_found_at: site_profile_record.first_found_at.clone(),
-                    last_scanned_at: site_profile_record.last_scanned_at.clone(),
-                    evidence: site_profile_record.evidence.clone(),
-                    source_page_id: site_profile_record.source_page_id,
-                    title: site_profile_record.title.clone(),
-                })
-                .on_conflict(site_profile::host)
-                .do_update()
-                .set((
-                    site_profile::category.eq(excluded(site_profile::category)),
-                    site_profile::confidence.eq(excluded(site_profile::confidence)),
-                    site_profile::score.eq(excluded(site_profile::score)),
-                    site_profile::page_count.eq(excluded(site_profile::page_count)),
-                    site_profile::last_scanned_at.eq(excluded(site_profile::last_scanned_at)),
-                    site_profile::evidence.eq(excluded(site_profile::evidence)),
-                    site_profile::source_page_id.eq(excluded(site_profile::source_page_id)),
-                    site_profile::last_classified_at
-                        .eq(sql::<Text>(sql_current_timestamp_expr(conn))),
-                ))
-                .execute(conn)
-                .context("error saving site profile")?;
-
-            // Update page count if this is a new URL
+            // Manage site_profile incrementally (don't recompute from database)
             if is_new_url {
-                // Increment page_count for this host
+                // For new URLs: either insert new site_profile or increment existing page_count
+                let existing_profile = site_profile::table
+                    .filter(site_profile::host.eq(&classification.host))
+                    .first::<SiteProfileRecord>(conn)
+                    .optional()
+                    .context("error loading existing site profile")?;
+
+                if let Some(profile) = existing_profile {
+                    // Update existing profile: increment page_count, update classification
+                    diesel::update(site_profile::table.filter(site_profile::host.eq(&classification.host)))
+                        .set((
+                            site_profile::category.eq(&classification.category),
+                            site_profile::confidence.eq(&classification.confidence.to_string()),
+                            site_profile::score.eq(classification.score),
+                            site_profile::page_count.eq(profile.page_count + 1),
+                            site_profile::last_scanned_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+                            site_profile::evidence.eq(serialize_evidence(&classification.evidence)),
+                            site_profile::source_page_id.eq(Some(stored_page_id)),
+                            site_profile::last_classified_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+                        ))
+                        .execute(conn)
+                        .context("error updating site profile")?;
+                } else {
+                    // Insert new profile with page_count = 1
+                    diesel::insert_into(site_profile::table)
+                        .values(NewSiteProfile {
+                            host: classification.host.clone(),
+                            category: classification.category.clone(),
+                            confidence: classification.confidence.to_string(),
+                            score: classification.score,
+                            page_count: 1,  // First page
+                            first_found_at: current_timestamp_text(conn)?,
+                            last_scanned_at: current_timestamp_text(conn)?,
+                            evidence: serialize_evidence(&classification.evidence),
+                            source_page_id: Some(stored_page_id),
+                            title: None,  // Will be set in Task 6
+                        })
+                        .execute(conn)
+                        .context("error inserting site profile")?;
+                }
+            } else {
+                // For rescans: update classification but don't change page_count
                 diesel::update(site_profile::table.filter(site_profile::host.eq(&classification.host)))
-                    .set(site_profile::page_count.eq(site_profile::page_count + 1))
+                    .set((
+                        site_profile::category.eq(&classification.category),
+                        site_profile::confidence.eq(&classification.confidence.to_string()),
+                        site_profile::score.eq(classification.score),
+                        // page_count stays the same - no increment for rescans
+                        site_profile::last_scanned_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+                        site_profile::evidence.eq(serialize_evidence(&classification.evidence)),
+                        site_profile::source_page_id.eq(Some(stored_page_id)),
+                        site_profile::last_classified_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+                    ))
                     .execute(conn)
-                    .context("error incrementing page count")?;
+                    .context("error updating site profile for rescan")?;
             }
+
+            // Load the site_profile after update for auto_blacklist_rules
+            let site_profile_record = site_profile::table
+                .filter(site_profile::host.eq(&classification.host))
+                .first::<SiteProfileRecord>(conn)
+                .context("error loading site profile after update")?;
 
             apply_auto_blacklist_rules_for_page(
                 conn,
@@ -8602,7 +8628,7 @@ fn apply_auto_blacklist_rules_for_page(
     conn: &mut PgConnection,
     snapshot: &PageSnapshot,
     stored_page_id: i32,
-    site_profile_record: &NewSiteProfile,
+    site_profile_record: &SiteProfileRecord,
 ) -> Result<()> {
     let rules = list_enabled_auto_blacklist_rules(conn)?;
     if rules.is_empty() {
