@@ -303,6 +303,7 @@ diesel::table! {
         created_at -> Text,
         first_found_at -> Text,
         last_scanned_at -> Text,
+        title -> Nullable<Text>,
     }
 }
 
