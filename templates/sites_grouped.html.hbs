@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sites Grouped by Title - Spyder</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        .header { margin-bottom: 20px; }
+        .site-group { border: 1px solid #ddd; margin-bottom: 10px; border-radius: 4px; }
+        .group-header {
+            padding: 12px;
+            background: #f5f5f5;
+            cursor: pointer;
+            user-select: none;
+        }
+        .group-header:hover { background: #e8e8e8; }
+        .group-hosts { padding: 8px; background: #fff; display: none; }
+        .group-hosts.expanded { display: block; }
+        .host-row { padding: 8px; border-top: 1px solid #eee; }
+        .expand-icon {
+            display: inline-block;
+            width: 20px;
+            font-family: monospace;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            background: #007bff;
+            color: white;
+            border-radius: 3px;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+        .category-badge {
+            padding: 2px 6px;
+            background: #6c757d;
+            color: white;
+            border-radius: 3px;
+            font-size: 11px;
+        }
+        .meta { color: #666; font-size: 12px; margin-left: 12px; }
+        .pagination { margin-top: 20px; }
+        .pagination a { margin-right: 10px; padding: 5px 10px; border: 1px solid #ddd; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Sites Grouped by Title</h1>
+        <p>Showing sites grouped by their page titles. <a href="/sites">View ungrouped list</a></p>
+    </div>
+
+    <div class="site-groups">
+        {{#each groups}}
+        <div class="site-group">
+            <div class="group-header" onclick="toggleGroup(this)">
+                <span class="expand-icon">▶</span>
+                <strong>{{title}}</strong>
+                <span class="badge">{{host_count}} hosts</span>
+                <span class="badge">{{total_pages}} pages</span>
+                <span class="meta">Most recent: {{most_recent_scan}}</span>
+            </div>
+            <div class="group-hosts">
+                {{#each hosts}}
+                <div class="host-row">
+                    <span class="host">{{host}}</span>
+                    <span class="category-badge">{{category}}</span>
+                    <span>{{page_count}} pages</span>
+                    <span class="meta">Last scanned: {{last_scanned_at}}</span>
+                </div>
+                {{/each}}
+            </div>
+        </div>
+        {{/each}}
+    </div>
+
+    <div class="pagination">
+        {{#if has_prev}}
+        <a href="/sites/grouped?limit={{limit}}&offset={{prev_offset}}">Previous</a>
+        {{/if}}
+        {{#if has_next}}
+        <a href="/sites/grouped?limit={{limit}}&offset={{next_offset}}">Next</a>
+        {{/if}}
+    </div>
+
+    <script>
+        function toggleGroup(header) {
+            const hostsDiv = header.nextElementSibling;
+            const icon = header.querySelector('.expand-icon');
+
+            if (hostsDiv.classList.contains('expanded')) {
+                hostsDiv.classList.remove('expanded');
+                icon.textContent = '▶';
+            } else {
+                hostsDiv.classList.add('expanded');
+                icon.textContent = '▼';
+            }
+        }
+    </script>
+</body>
+</html>
