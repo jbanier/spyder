@@ -2098,6 +2098,26 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                     .context("error updating site profile for rescan")?;
             }
 
+            // Set title from first page
+            if is_new_url {
+                // Check current page_count (after increment)
+                let current_profile = site_profile::table
+                    .filter(site_profile::host.eq(&classification.host))
+                    .first::<SiteProfileRecord>(conn)
+                    .optional()
+                    .context("error loading site profile")?;
+
+                if let Some(profile) = current_profile {
+                    // If this is the first page (page_count == 1), set title
+                    if profile.page_count == 1 && profile.title.is_none() {
+                        diesel::update(site_profile::table.filter(site_profile::host.eq(&classification.host)))
+                            .set(site_profile::title.eq(&snapshot.title))
+                            .execute(conn)
+                            .context("error setting site title")?;
+                    }
+                }
+            }
+
             // Load the site_profile after update for auto_blacklist_rules
             let site_profile_record = site_profile::table
                 .filter(site_profile::host.eq(&classification.host))
