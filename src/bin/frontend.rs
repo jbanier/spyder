@@ -26,7 +26,7 @@ use spyder::{
     list_page_language_distribution, list_page_scan_summaries, list_page_summaries,
     list_page_topic_distribution, list_page_topic_timeline, list_site_category_distribution,
     list_site_category_timeline, list_site_keyword_distribution, list_site_keyword_timeline,
-    list_site_profiles, list_site_relationships, list_site_relationships_fast, list_ssh_host_keys, list_top_referenced_sites,
+    list_site_profiles, list_site_profiles_grouped, list_site_relationships, list_site_relationships_fast, list_ssh_host_keys, list_top_referenced_sites,
     list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
     list_watchlist_items, list_work_units, remove_auto_blacklist_rule, remove_watchlist_item,
     search_pages, set_auto_blacklist_rule_enabled, update_intel_lead_status,
@@ -49,6 +49,7 @@ const CACHE_DASHBOARD: &str = "/";
 const CACHE_PAGES: &str = "/pages";
 const CACHE_ANALYTICS: &str = "/analytics";
 const CACHE_SITES: &str = "/sites";
+const CACHE_SITES_GROUPED: &str = "/sites/grouped";
 const CACHE_WATCHLISTS: &str = "/watchlists";
 const CACHE_LEADS: &str = "/leads";
 const CACHE_RELATIONSHIPS: &str = "/relationships";
@@ -1677,6 +1678,37 @@ fn build_sites_context(state: &AppState, list_query: ListQuery) -> Result<Value,
         pagination: pagination,
         has_pagination: has_pagination,
     })
+}
+
+#[get("/sites/grouped?<limit>&<offset>")]
+fn sites_grouped(
+    limit: Option<i64>,
+    offset: Option<i64>,
+    state: &State<AppState>,
+) -> HtmlResult {
+    let mut connection = state.inner().connection()?;
+    let groups = list_site_profiles_grouped(&mut connection, limit, offset)
+        .frontend_context("loading grouped site profiles")?;
+    let limit = limit.unwrap_or(50);
+    let offset = offset.unwrap_or(0);
+    let has_groups = !groups.is_empty();
+    let group_count = groups.len() as i64;
+
+    let context = context! {
+        title: "Grouped Sites",
+        description: "Site profiles grouped by title.",
+        groups: groups,
+        group_count: group_count,
+        has_groups: has_groups,
+        limit: limit,
+        offset: offset,
+        next_offset: offset + limit,
+        prev_offset: if offset >= limit { offset - limit } else { 0 },
+        has_next: group_count >= limit,
+        has_prev: offset > 0,
+    };
+
+    Ok(Template::render("sites_grouped", context))
 }
 
 #[get("/watchlists")]
@@ -3518,6 +3550,7 @@ fn build_rocket() -> Rocket<Build> {
                 top,
                 analytics,
                 sites,
+                sites_grouped,
                 watchlists,
                 add_watchlist,
                 delete_watchlist_item,
