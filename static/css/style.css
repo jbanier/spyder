@@ -1483,3 +1483,62 @@ footer {
         height: 430px;
     }
 }
+
+/* Site Group Cards */
+.site-group-card {
+    margin-bottom: 1.5rem;
+    transition: all 0.2s ease;
+}
+
+.site-group-card.expanded {
+    background: linear-gradient(135deg, rgba(0, 255, 136, 0.04), rgba(0, 212, 255, 0.03));
+}
+
+.site-group-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+.site-group-header:hover {
+    background: rgba(0, 255, 136, 0.05);
+}
+
+.site-group-header .section-heading {
+    margin-bottom: 0.5rem;
+}
+
+.site-group-header h2 {
+    align-items: center;
+    display: flex;
+    gap: 0.6rem;
+}
+
+.expand-icon {
+    color: var(--accent-tertiary);
+    display: inline-block;
+    font-family: monospace;
+    font-size: 0.9em;
+    transition: transform 0.2s ease;
+    width: 20px;
+}
+
+.site-group-card.expanded .expand-icon {
+    color: var(--accent);
+}
+
+.site-group-hosts {
+    margin-top: 1.2rem;
+    padding-top: 1.2rem;
+    border-top: 1px solid var(--border);
+}
+
+.count-badge {
+    background: linear-gradient(135deg, rgba(0, 255, 136, 0.12), rgba(0, 212, 255, 0.08));
+    border: 1px solid rgba(0, 255, 136, 0.25);
+    border-radius: 4px;
+    color: var(--accent);
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 0.35rem 0.65rem;
+    text-shadow: 0 0 8px rgba(0, 255, 136, 0.3);
+}

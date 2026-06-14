@@ -1694,6 +1694,10 @@ fn sites_grouped(
     let has_groups = !groups.is_empty();
     let group_count = groups.len() as i64;
 
+    let has_next = group_count >= limit;
+    let has_prev = offset > 0;
+    let has_pagination = has_next || has_prev;
+
     let context = context! {
         title: "Grouped Sites",
         description: "Site profiles grouped by title.",
@@ -1704,8 +1708,9 @@ fn sites_grouped(
         offset: offset,
         next_offset: offset + limit,
         prev_offset: if offset >= limit { offset - limit } else { 0 },
-        has_next: group_count >= limit,
-        has_prev: offset > 0,
+        has_next: has_next,
+        has_prev: has_prev,
+        has_pagination: has_pagination,
     };
 
     Ok(Template::render("sites_grouped", context))
