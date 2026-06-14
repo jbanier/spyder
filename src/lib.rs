@@ -723,6 +723,13 @@ pub fn normalize_crawl_url(raw_url: &str) -> String {
                 normalized.push(':');
                 normalized.push_str(&port.to_string());
             }
+            // Include the path to allow crawling multiple pages per host
+            normalized.push_str(parsed.path());
+            // Include query parameters to allow crawling distinct parameterized URLs
+            if let Some(query) = parsed.query() {
+                normalized.push('?');
+                normalized.push_str(query);
+            }
             normalized
         }
         Err(_) => without_fragment,
