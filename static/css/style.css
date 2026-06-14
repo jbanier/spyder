@@ -174,6 +174,19 @@ code {
     text-shadow: 0 0 10px rgba(0, 255, 136, 0.35);
 }
 
+.nav-links .nav-section {
+    color: var(--accent-secondary);
+    font-family: var(--font-heading);
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    margin-left: 1.2rem;
+    opacity: 0.85;
+    padding: 0.58rem 0.4rem;
+    text-shadow: 0 0 8px rgba(255, 0, 255, 0.25);
+    text-transform: uppercase;
+}
+
 .container {
     margin: 0 auto;
     max-width: var(--layout-width);
@@ -1231,6 +1244,11 @@ code {
 .inline-link {
     font-size: 0.9rem;
     overflow-wrap: anywhere;
+}
+
+.inline-link-sm {
+    font-size: 0.78rem;
+    opacity: 0.85;
 }
 
 .meta-strip {

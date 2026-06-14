@@ -1411,7 +1411,7 @@ pub fn list_site_profiles(
             sp.created_at,
             sp.title
         FROM site_profile sp
-        ORDER BY sp.last_scanned_at DESC, sp.host ASC
+        ORDER BY sp.page_count DESC, sp.last_scanned_at DESC, sp.host ASC
         LIMIT $1 OFFSET $2
         "
     );
