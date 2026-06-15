@@ -18,7 +18,7 @@ pub fn extract_page_snapshot(url: &str, body: &str) -> Result<PageSnapshot> {
         .with_context(|| format!("invalid url: {url}"))?;
     let title = extract_title(&document);
     let text = extract_document_text(&document);
-    let links = extract_links(&document, &base_url);
+    let links = extract_links(&document, &base_url, body);
     let classification_signals =
         extract_classification_signals(&document, &base_url, &title, &text, &links);
     let language_detection = detect_page_language(&document, &text);
@@ -103,10 +103,11 @@ fn build_keyword_corpus(url: &str, title: &str, text: &str, links: &[LinkObserva
     segments.join("\n")
 }
 
-fn extract_links(document: &Html, base_url: &Url) -> Vec<LinkObservation> {
+fn extract_links(document: &Html, base_url: &Url, body: &str) -> Vec<LinkObservation> {
     let selector = Selector::parse("a[href]").expect("valid selector");
     let mut discovered = HashSet::new();
 
+    // Extract links from href attributes (structured)
     for element in document.select(&selector) {
         if let Some(raw_href) = element.value().attr("href") {
             if let Ok(url) = base_url.join(raw_href) {
@@ -121,6 +122,23 @@ fn extract_links(document: &Html, base_url: &Url) -> Vec<LinkObservation> {
                     }
                     _ => {}
                 }
+            }
+        }
+    }
+
+    // Extract plain-text URLs from page content (unstructured)
+    for captures in url_regex().captures_iter(body) {
+        if let Ok(url) = Url::parse(&captures[0]) {
+            match url.scheme() {
+                "http" | "https" => {
+                    let target_url = crate::normalize_crawl_url(url.as_str());
+                    let target_host = url.host_str().unwrap_or_default().to_string();
+                    discovered.insert(LinkObservation {
+                        target_url,
+                        target_host,
+                    });
+                }
+                _ => {}
             }
         }
     }
@@ -1330,6 +1348,16 @@ fn topic_path_rules() -> &'static [(&'static str, &'static str, i32)] {
         ("infrastructure", "/proxy", 3),
         ("infrastructure", "/vpn", 3),
     ]
+}
+
+fn url_regex() -> &'static Regex {
+    static URL: OnceLock<Regex> = OnceLock::new();
+    URL.get_or_init(|| {
+        // Match http:// or https:// URLs including .onion domains
+        // Captures full URL including path, query, but stops at whitespace or common delimiters
+        Regex::new(r#"https?://[a-zA-Z0-9][-a-zA-Z0-9.]*(?::[0-9]+)?(?:/[^\s<>"{}|\\^\[\]`]*)?"#)
+            .expect("valid url regex")
+    })
 }
 
 fn email_regex() -> &'static Regex {
