@@ -2049,28 +2049,21 @@ fn build_relationships_context(
 ) -> Result<Value, FrontendError> {
     let relationship_focus = query.focus.unwrap_or_default();
     let relationship_focus = relationship_focus.trim().to_string();
-    let relationship_depth = query.depth.unwrap_or(3).clamp(1, 4);
+    let relationship_depth = query.depth.unwrap_or(3).clamp(1, 10);
 
-    // For initial page load without pagination params, skip the expensive table query
-    // Users can use the graph visualization to explore relationships
-    let (relationships, has_pagination) = if query.limit.is_none() && query.offset.is_none() {
-        // Fast initial load - no database query
-        (Vec::new(), false)
-    } else {
-        // User requested pagination - load table data
-        let mut connection = state.connection()?;
-        let relationships = list_site_relationships_fast(&mut connection, query.limit, query.offset)
-            .frontend_context("loading site relationships")?;
-        let relationship_depth_param = relationship_depth.to_string();
-        let mut extra_params = Vec::new();
-        if !relationship_focus.is_empty() {
-            extra_params.push(("focus", relationship_focus.as_str()));
-        }
-        extra_params.push(("depth", relationship_depth_param.as_str()));
-        let pagination = pagination_context("/relationships", &relationships, &extra_params);
-        let has_pagination = pagination.has_previous_page || pagination.has_next_page;
-        (relationships.items, has_pagination)
-    };
+    // Always load the first page of relationships for the table
+    let mut connection = state.connection()?;
+    let relationships = list_site_relationships_fast(&mut connection, query.limit, query.offset)
+        .frontend_context("loading site relationships")?;
+    let relationship_depth_param = relationship_depth.to_string();
+    let mut extra_params = Vec::new();
+    if !relationship_focus.is_empty() {
+        extra_params.push(("focus", relationship_focus.as_str()));
+    }
+    extra_params.push(("depth", relationship_depth_param.as_str()));
+    let pagination = pagination_context("/relationships", &relationships, &extra_params);
+    let has_pagination = pagination.has_previous_page || pagination.has_next_page;
+    let relationships = relationships.items;
 
     let has_relationships = !relationships.is_empty();
     let relationship_count = relationships.len() as i64;
@@ -2081,15 +2074,7 @@ fn build_relationships_context(
         relationships: relationships,
         relationship_count: relationship_count,
         has_relationships: has_relationships,
-        pagination: PaginationView {
-            total_count: 0,
-            limit: 50,
-            offset: 0,
-            has_previous_page: false,
-            has_next_page: false,
-            previous_page_url: String::new(),
-            next_page_url: String::new(),
-        },
+        pagination: pagination,
         has_pagination: has_pagination,
         relationship_focus: relationship_focus,
         relationship_depth: relationship_depth,
