@@ -18,7 +18,7 @@
             type="text"
             name="query"
             value="{{query}}"
-            placeholder="Title, URL, language, email, wallet, keyword:cisco"
+            placeholder="language:en topic:marketplace search text"
         >
         <input
             class="search-limit"
@@ -78,7 +78,21 @@
 {{else}}
 <section class="empty-state">
     <h2>Search the dataset</h2>
-    <p>Use the form above to search titles, URLs, languages, email addresses, crypto references, or site tags such as <code>keyword:cisco</code>.</p>
+    <p>Use the form above to search titles, URLs, emails, crypto, languages, topics, and keywords.</p>
+    <h3>Advanced Search Syntax</h3>
+    <p>Combine filters with AND logic:</p>
+    <ul>
+        <li><code>language:en</code> or <code>lang:en</code> - Filter by language</li>
+        <li><code>topic:marketplace</code> - Filter by topic tag</li>
+        <li><code>keyword:cisco</code> or <code>tag:cisco</code> - Filter by keyword tag</li>
+        <li><code>language:en topic:forum search text</code> - Multiple filters with text search</li>
+    </ul>
+    <p>Examples:</p>
+    <ul>
+        <li><code>language:en</code> - All English pages</li>
+        <li><code>topic:marketplace language:en</code> - English marketplace pages</li>
+        <li><code>lang:ru topic:forum bitcoin</code> - Russian forum pages mentioning bitcoin</li>
+    </ul>
 </section>
 {{/if}}
 </div>

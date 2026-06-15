@@ -5758,23 +5758,170 @@ pub fn search_pages(
     }
 
     let pagination = normalize_pagination(requested_limit, requested_offset, 10, 50);
-    if let Some(keyword_query) = parse_keyword_search_query(trimmed) {
-        return search_sites_by_keyword_tag(conn, &keyword_query, pagination);
+
+    // Parse advanced search query
+    let advanced_query = parse_advanced_search_query(trimmed);
+
+    // Check if we have any filters or text
+    let has_filters = !advanced_query.language.is_empty()
+        || !advanced_query.topic.is_empty()
+        || !advanced_query.keyword.is_empty();
+
+    if !has_filters && advanced_query.text.is_none() {
+        return Ok(PaginatedResult {
+            items: Vec::new(),
+            total_count: 0,
+            limit: pagination.limit,
+            offset: pagination.offset,
+        });
     }
 
-    let pattern = format!("%{}%", escape_like(trimmed));
+    // For now, simplify: if only text search, use old logic; otherwise combine with AND
+    // This avoids the dynamic binding complexity with Diesel
     let host_expr = sql_host_expr("p.url", conn);
+
+    // If we have filters, build complex query with AND logic
+    if has_filters {
+        // Build WHERE clauses
+        let mut where_parts = Vec::new();
+
+        // Text search part
+        if let Some(text) = &advanced_query.text {
+            let escaped_text = escape_like(text).replace("'", "''");
+            let title_match = sql_case_insensitive_match_expr("p.title", &format!("'%{}%'", escaped_text), conn);
+            let url_match = sql_case_insensitive_match_expr("p.url", &format!("'%{}%'", escaped_text), conn);
+            let email_match = sql_case_insensitive_match_expr("pe.email", &format!("'%{}%'", escaped_text), conn);
+            let crypto_match = sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", &format!("'%{}%'", escaped_text), conn);
+
+            where_parts.push(format!(
+                "({title_match} OR {url_match} OR EXISTS (SELECT 1 FROM page_email pe WHERE pe.page_id = p.id AND {email_match}) OR EXISTS (SELECT 1 FROM page_crypto pc WHERE pc.page_id = p.id AND {crypto_match}))"
+            ));
+        }
+
+        // Language filter
+        if !advanced_query.language.is_empty() {
+            let lang_patterns: Vec<String> = advanced_query.language
+                .iter()
+                .map(|lang| format!("'{}'", escape_like(lang).replace("'", "''")))
+                .collect();
+            let lang_list = lang_patterns.join(", ");
+
+            let lang_conditions: Vec<String> = advanced_query.language
+                .iter()
+                .map(|lang| {
+                    let escaped = escape_like(lang).replace("'", "''");
+                    let lang_match = sql_case_insensitive_match_expr("p.language", &format!("'%{}%'", escaped), conn);
+                    let detected_name = sql_case_insensitive_match_expr("pld.language_name", &format!("'%{}%'", escaped), conn);
+                    let detected_code = sql_case_insensitive_match_expr("pld.language_code", &format!("'%{}%'", escaped), conn);
+                    format!(
+                        "({lang_match} OR EXISTS (SELECT 1 FROM page_language_detection pld WHERE pld.page_id = p.id AND ({detected_name} OR {detected_code})))"
+                    )
+                })
+                .collect();
+            where_parts.push(format!("({})", lang_conditions.join(" OR ")));
+        }
+
+        // Topic filter
+        if !advanced_query.topic.is_empty() {
+            let topic_conditions: Vec<String> = advanced_query.topic
+                .iter()
+                .map(|topic| {
+                    let escaped = escape_like(topic).replace("'", "''");
+                    let topic_match = sql_case_insensitive_match_expr("pt.topic", &format!("'%{}%'", escaped), conn);
+                    format!(
+                        "EXISTS (SELECT 1 FROM page_topic_tag pt WHERE pt.page_id = p.id AND {topic_match})"
+                    )
+                })
+                .collect();
+            where_parts.push(format!("({})", topic_conditions.join(" OR ")));
+        }
+
+        // Keyword filter
+        if !advanced_query.keyword.is_empty() {
+            let keyword_conditions: Vec<String> = advanced_query.keyword
+                .iter()
+                .map(|keyword| {
+                    let escaped = escape_like(keyword).replace("'", "''");
+                    let keyword_match = sql_case_insensitive_match_expr("pkt.tag", &format!("'%keyword:{}%'", escaped), conn);
+                    format!(
+                        "EXISTS (SELECT 1 FROM page_keyword_tag pkt WHERE pkt.page_id = p.id AND {keyword_match})"
+                    )
+                })
+                .collect();
+            where_parts.push(format!("({})", keyword_conditions.join(" OR ")));
+        }
+
+        let where_clause = where_parts.join(" AND ");
+
+        // Build and execute count query
+        let count_sql = format!(
+            "SELECT COUNT(*) AS count FROM page p WHERE {where_clause}"
+        );
+
+        // All search terms are now embedded as literals, so no binding needed for the where clause
+        let total_count = sql_query(count_sql)
+            .get_result::<CountRow>(conn)
+            .context("error counting search results")?
+            .count;
+
+        // Build and execute data query
+        let data_sql = format!(
+            "
+            SELECT
+                p.id AS page_id,
+                p.title,
+                p.url,
+                {host_expr} AS host,
+                p.language,
+                p.last_scanned_at AS scraped_at
+            FROM page p
+            WHERE {where_clause}
+            ORDER BY p.last_scanned_at DESC, p.id DESC
+            LIMIT $1 OFFSET $2
+            "
+        );
+
+        let rows = sql_query(data_sql)
+            .bind::<BigInt, _>(pagination.limit)
+            .bind::<BigInt, _>(pagination.offset)
+            .load::<SearchResultRow>(conn)
+            .context("error searching pages")?;
+
+        let site_profiles = load_site_profile_badges_by_hosts(
+            conn,
+            &rows.iter().map(|row| row.host.clone()).collect::<Vec<_>>(),
+        )?;
+
+        return Ok(PaginatedResult {
+            items: rows
+                .into_iter()
+                .map(|row| SearchResult {
+                    page_id: row.page_id,
+                    title: row.title,
+                    url: row.url,
+                    host: row.host.clone(),
+                    language: row.language,
+                    scraped_at: row.scraped_at,
+                    site_category: site_profiles.get(&row.host).cloned(),
+                })
+                .collect(),
+            total_count,
+            limit: pagination.limit,
+            offset: pagination.offset,
+        });
+    }
+
+    // Simple text-only search (no filters) - use old OR logic
+    let pattern = format!("%{}%", escape_like(advanced_query.text.as_ref().unwrap()));
     let title_match = sql_case_insensitive_match_expr("p.title", "$1", conn);
     let url_match = sql_case_insensitive_match_expr("p.url", "$2", conn);
     let language_match = sql_case_insensitive_match_expr("p.language", "$3", conn);
     let email_match = sql_case_insensitive_match_expr("pe.email", "$4", conn);
-    let crypto_match =
-        sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", "$5", conn);
-    let detected_language_name_match =
-        sql_case_insensitive_match_expr("pld.language_name", "$6", conn);
-    let detected_language_code_match =
-        sql_case_insensitive_match_expr("pld.language_code", "$7", conn);
+    let crypto_match = sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", "$5", conn);
+    let detected_language_name_match = sql_case_insensitive_match_expr("pld.language_name", "$6", conn);
+    let detected_language_code_match = sql_case_insensitive_match_expr("pld.language_code", "$7", conn);
     let topic_match = sql_case_insensitive_match_expr("pt.topic", "$8", conn);
+
     let count_sql = format!(
         "
         SELECT COUNT(*) AS count
@@ -5810,6 +5957,7 @@ pub fn search_pages(
           )
         "
     );
+
     let total_count = sql_query(count_sql)
         .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
@@ -5822,7 +5970,8 @@ pub fn search_pages(
         .get_result::<CountRow>(conn)
         .context("error counting search results")?
         .count;
-    let sql = format!(
+
+    let data_sql = format!(
         "
         SELECT
             p.id AS page_id,
@@ -5863,9 +6012,10 @@ pub fn search_pages(
           )
         ORDER BY p.last_scanned_at DESC, p.id DESC
         LIMIT $9 OFFSET $10
-    "
+        "
     );
-    let rows = sql_query(sql)
+
+    let rows = sql_query(data_sql)
         .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
         .bind::<Text, _>(&pattern)
@@ -5900,6 +6050,47 @@ pub fn search_pages(
         limit: pagination.limit,
         offset: pagination.offset,
     })
+}
+
+/// Advanced search query with multiple filters
+#[derive(Debug, Clone, Default)]
+struct AdvancedSearchQuery {
+    text: Option<String>,
+    language: Vec<String>,
+    topic: Vec<String>,
+    keyword: Vec<String>,
+}
+
+/// Parse advanced search syntax: language:en topic:marketplace search text
+fn parse_advanced_search_query(query: &str) -> AdvancedSearchQuery {
+    let mut result = AdvancedSearchQuery::default();
+    let mut remaining_text = Vec::new();
+
+    for token in query.split_whitespace() {
+        if let Some((prefix, value)) = token.split_once(':') {
+            let normalized_value = value.trim().to_lowercase();
+            if normalized_value.is_empty() {
+                remaining_text.push(token);
+                continue;
+            }
+
+            match prefix.to_lowercase().as_str() {
+                "language" | "lang" => result.language.push(normalized_value),
+                "topic" => result.topic.push(normalized_value),
+                "keyword" | "tag" => result.keyword.push(normalized_value),
+                _ => remaining_text.push(token),
+            }
+        } else {
+            remaining_text.push(token);
+        }
+    }
+
+    let text = remaining_text.join(" ");
+    if !text.is_empty() {
+        result.text = Some(text);
+    }
+
+    result
 }
 
 fn parse_keyword_search_query(query: &str) -> Option<String> {
