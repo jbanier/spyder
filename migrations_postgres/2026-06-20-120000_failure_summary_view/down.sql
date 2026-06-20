@@ -1,0 +1,1 @@
+DROP MATERIALIZED VIEW IF EXISTS work_unit_failure_summary CASCADE;
