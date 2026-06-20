@@ -1317,3 +1317,65 @@ pub struct PaginatedResult<T> {
     pub limit: i64,
     pub offset: i64,
 }
+
+#[derive(Selectable, Queryable, Serialize, Clone, Debug)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::url_discovery)]
+pub struct UrlDiscovery {
+    pub id: i32,
+    pub url: String,
+    pub discovered_from_page_id: Option<i32>,
+    pub discovery_chain: Vec<i32>,
+    pub discovery_depth: i32,
+    pub import_source_id: Option<i32>,
+    pub discovered_at: String,
+    pub first_queued_at: String,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = crate::schema::url_discovery)]
+pub struct NewUrlDiscovery<'a> {
+    pub url: &'a str,
+    pub discovered_from_page_id: Option<i32>,
+    pub discovery_chain: Vec<i32>,
+    pub discovery_depth: i32,
+    pub import_source_id: Option<i32>,
+}
+
+#[derive(Selectable, Queryable, Serialize, Clone, Debug)]
+#[serde(crate = "rocket::serde")]
+#[diesel(table_name = crate::schema::import_source)]
+pub struct ImportSource {
+    pub id: i32,
+    pub source_type: String,
+    pub source_name: String,
+    pub source_url: Option<String>,
+    pub imported_at: String,
+    pub imported_by: String,
+    pub total_urls: i32,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = crate::schema::import_source)]
+pub struct NewImportSource<'a> {
+    pub source_type: &'a str,
+    pub source_name: &'a str,
+    pub source_url: Option<&'a str>,
+    pub imported_by: &'a str,
+    pub total_urls: i32,
+    pub metadata: Option<&'a serde_json::Value>,
+}
+
+#[derive(QueryableByName, Serialize, Clone, Debug)]
+#[serde(crate = "rocket::serde")]
+pub struct FailureCategorySummary {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub category: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub count: i64,
+    #[diesel(sql_type = diesel::sql_types::Array<diesel::sql_types::Text>)]
+    pub sample_urls: Vec<String>,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    pub last_failure_at: Option<String>,
+}
