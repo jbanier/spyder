@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS url_discovery CASCADE;
+DROP TABLE IF EXISTS import_source CASCADE;
