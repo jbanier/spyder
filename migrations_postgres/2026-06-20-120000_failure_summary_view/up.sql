@@ -6,6 +6,8 @@ SELECT
     SELECT url
     FROM work_unit w2
     WHERE w2.failure_category = w1.failure_category
+      AND w2.status IN ('failed', 'pending')
+      AND w2.failure_category IS NOT NULL
     ORDER BY w2.last_attempt_at DESC
     LIMIT 10
   ) as sample_urls,
@@ -15,5 +17,5 @@ WHERE status IN ('failed', 'pending')
   AND failure_category IS NOT NULL
 GROUP BY failure_category;
 
-CREATE INDEX idx_work_failure_summary_category
+CREATE UNIQUE INDEX idx_work_failure_summary_category
   ON work_unit_failure_summary(failure_category);
