@@ -119,6 +119,19 @@ diesel::table! {
 }
 
 diesel::table! {
+    import_source (id) {
+        id -> Int4,
+        source_type -> Text,
+        source_name -> Text,
+        source_url -> Nullable<Text>,
+        imported_at -> Timestamp,
+        imported_by -> Text,
+        total_urls -> Int4,
+        metadata -> Nullable<Jsonb>,
+    }
+}
+
+diesel::table! {
     intel_lead (id) {
         id -> Int4,
         rule_id -> Text,
@@ -308,6 +321,19 @@ diesel::table! {
 }
 
 diesel::table! {
+    url_discovery (id) {
+        id -> Int4,
+        url -> Text,
+        discovered_from_page_id -> Nullable<Int4>,
+        discovery_chain -> Array<Nullable<Int4>>,
+        discovery_depth -> Int4,
+        import_source_id -> Nullable<Int4>,
+        discovered_at -> Timestamp,
+        first_queued_at -> Timestamp,
+    }
+}
+
+diesel::table! {
     watchlist_item (id) {
         id -> Int4,
         item_type -> Text,
@@ -328,6 +354,8 @@ diesel::table! {
         last_attempt_at -> Nullable<Text>,
         last_error -> Nullable<Text>,
         created_at -> Text,
+        url_discovery_id -> Nullable<Int4>,
+        failure_category -> Nullable<Text>,
     }
 }
 
@@ -346,6 +374,9 @@ diesel::joinable!(page_scan_email -> page_scan (scan_id));
 diesel::joinable!(page_scan_link -> page_scan (scan_id));
 diesel::joinable!(page_topic_tag -> page (page_id));
 diesel::joinable!(site_profile -> page (source_page_id));
+diesel::joinable!(url_discovery -> import_source (import_source_id));
+diesel::joinable!(url_discovery -> page (discovered_from_page_id));
+diesel::joinable!(work_unit -> url_discovery (url_discovery_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     auto_blacklist_event,
@@ -356,6 +387,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     host_service_observation,
     host_ssh_observation,
     host_tls_observation,
+    import_source,
     intel_lead,
     intel_lead_evidence,
     page,
@@ -372,6 +404,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     page_topic_tag,
     query_log,
     site_profile,
+    url_discovery,
     watchlist_item,
     work_unit,
 );
