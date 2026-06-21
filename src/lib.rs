@@ -9308,6 +9308,31 @@ fn endpoint_from_url(value: &str) -> Option<UrlEndpoint> {
     Some(UrlEndpoint { host, scheme, port })
 }
 
+pub fn categorize_failure(error: &str, http_status: Option<u16>) -> String {
+    match http_status {
+        Some(403) => "http_403_forbidden".to_string(),
+        Some(404) => "http_404_not_found".to_string(),
+        Some(500..=599) => "http_5xx_server_error".to_string(),
+        Some(429) => "http_429_rate_limit".to_string(),
+        _ => {
+            let error_lower = error.to_lowercase();
+            if error_lower.contains("blacklist") {
+                "blacklisted".to_string()
+            } else if error_lower.contains("timeout") {
+                "timeout".to_string()
+            } else if error_lower.contains("connection refused") {
+                "connection_refused".to_string()
+            } else if error_lower.contains("dns") {
+                "dns_failure".to_string()
+            } else if error_lower.contains("certificate") || error_lower.contains("tls") {
+                "tls_error".to_string()
+            } else {
+                "other".to_string()
+            }
+        }
+    }
+}
+
 fn format_endpoint_url(scheme: &str, host: &str, port: i32) -> String {
     let mut output = format!("{scheme}://{host}");
     let is_default_port = (scheme == "http" && port == 80) || (scheme == "https" && port == 443);
@@ -11190,6 +11215,26 @@ mod tests {
             "Forum post says ESCROW REQUIRED before delivery",
             "escrow required"
         ));
+    }
+
+    #[test]
+    fn test_categorize_failure_http_status() {
+        assert_eq!(categorize_failure("some error", Some(403)), "http_403_forbidden");
+        assert_eq!(categorize_failure("some error", Some(404)), "http_404_not_found");
+        assert_eq!(categorize_failure("some error", Some(500)), "http_5xx_server_error");
+        assert_eq!(categorize_failure("some error", Some(503)), "http_5xx_server_error");
+        assert_eq!(categorize_failure("some error", Some(429)), "http_429_rate_limit");
+    }
+
+    #[test]
+    fn test_categorize_failure_error_patterns() {
+        assert_eq!(categorize_failure("blacklist check failed", None), "blacklisted");
+        assert_eq!(categorize_failure("connection timeout", None), "timeout");
+        assert_eq!(categorize_failure("connection refused", None), "connection_refused");
+        assert_eq!(categorize_failure("dns lookup failed", None), "dns_failure");
+        assert_eq!(categorize_failure("certificate invalid", None), "tls_error");
+        assert_eq!(categorize_failure("tls handshake error", None), "tls_error");
+        assert_eq!(categorize_failure("unknown error", None), "other");
     }
 
     #[test]
