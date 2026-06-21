@@ -1747,16 +1747,14 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
     let limit = query.limit.unwrap_or(100).min(500);
     let offset = query.offset.unwrap_or(0);
 
-    // Build query with filters
+    // Build query with filters - just get url_discovery records
     let mut db_query = url_discovery::table
-        .left_join(import_source::table)
         .select((
             url_discovery::id,
             url_discovery::url,
             url_discovery::discovery_depth,
             url_discovery::discovered_at,
             url_discovery::import_source_id,
-            import_source::source_name.nullable(),
         ))
         .order_by(url_discovery::id.desc())
         .limit(limit)
@@ -1771,9 +1769,27 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
         db_query = db_query.filter(url_discovery::import_source_id.eq(source_id));
     }
 
-    let discoveries: Vec<(i32, String, i32, String, Option<i32>, Option<String>)> = db_query
+    let discoveries: Vec<(i32, String, i32, String, Option<i32>)> = db_query
         .load(&mut connection)
         .map_err(|e| FrontendError::internal("loading discoveries", e.into()))?;
+
+    // Get source names separately
+    let source_ids: Vec<i32> = discoveries
+        .iter()
+        .filter_map(|(_, _, _, _, source_id)| *source_id)
+        .collect();
+
+    let source_names: std::collections::HashMap<i32, String> = if !source_ids.is_empty() {
+        import_source::table
+            .filter(import_source::id.eq_any(source_ids))
+            .select((import_source::id, import_source::source_name))
+            .load::<(i32, String)>(&mut connection)
+            .map_err(|e| FrontendError::internal("loading source names", e.into()))?
+            .into_iter()
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
 
     // Get import sources for filter dropdown
     let sources: Vec<(i32, String)> = import_source::table
@@ -1790,7 +1806,8 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
         .load(&mut connection)
         .map_err(|e| FrontendError::internal("loading depth stats", e.into()))?;
 
-    let discoveries_json: Vec<_> = discoveries.iter().map(|(id, url, depth, discovered_at, source_id, source_name)| {
+    let discoveries_json: Vec<_> = discoveries.iter().map(|(id, url, depth, discovered_at, source_id)| {
+        let source_name = source_id.and_then(|sid| source_names.get(&sid).cloned());
         serde_json::json!({
             "id": id,
             "url": url,
