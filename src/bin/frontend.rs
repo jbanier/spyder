@@ -2844,6 +2844,60 @@ fn api_lead_status(
     }))
 }
 
+#[get("/api/failures/summary")]
+fn api_failure_summary(
+    state: &State<AppState>,
+) -> Result<Json<ApiResponse<Vec<spyder::models::FailureCategorySummary>>>, Status> {
+    let mut connection = api_connection(state)?;
+    let summary = spyder::get_failure_summary(&mut connection)
+        .map_err(|_| Status::InternalServerError)?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: summary,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(crate = "rocket::serde")]
+struct BulkRetryRequest {
+    category: String,
+    action: String,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+#[derive(Serialize)]
+#[serde(crate = "rocket::serde")]
+struct BulkRetryResponse {
+    updated: i64,
+}
+
+#[post("/api/queue/bulk-retry", data = "<request>")]
+fn api_bulk_retry(
+    state: &State<AppState>,
+    request: Json<BulkRetryRequest>,
+) -> Result<Json<ApiResponse<BulkRetryResponse>>, Status> {
+    let mut connection = api_connection(state)?;
+
+    let updated = match request.action.as_str() {
+        "retry" => {
+            spyder::bulk_retry_by_category(&mut connection, &request.category, request.limit)
+                .map_err(|_| Status::InternalServerError)?
+        }
+        "abandon" => {
+            spyder::bulk_abandon_by_category(&mut connection, &request.category)
+                .map_err(|_| Status::InternalServerError)?
+        }
+        _ => return Err(Status::BadRequest),
+    };
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: BulkRetryResponse { updated },
+    }))
+}
+
 fn api_connection(state: &State<AppState>) -> Result<DbConnection, Status> {
     state
         .inner()
@@ -3565,7 +3619,9 @@ fn build_rocket() -> Rocket<Build> {
                 api_page_scan_detail,
                 api_leads,
                 api_lead_detail,
-                api_lead_status
+                api_lead_status,
+                api_failure_summary,
+                api_bulk_retry
             ],
         )
         .mount("/static", FileServer::from(relative!("static")))
