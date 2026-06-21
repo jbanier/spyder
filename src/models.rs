@@ -603,6 +603,7 @@ pub struct WorkUnit {
 pub struct NewUnit<'a> {
     pub url: &'a str,
     pub status: &'a str,
+    pub url_discovery_id: Option<i32>,
 }
 
 #[derive(Serialize, Clone, Debug, Eq, PartialEq, Hash)]

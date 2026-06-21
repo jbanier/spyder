@@ -1532,10 +1532,22 @@ pub fn backfill_site_titles(conn: &mut PgConnection) -> Result<usize> {
 }
 
 pub fn create_work_unit(conn: &mut PgConnection, url: &str) -> Result<()> {
+    use crate::schema::url_discovery;
+
     let normalized_url = normalize_crawl_url(url);
+
+    // Look up url_discovery_id for this URL
+    let discovery_id = url_discovery::table
+        .filter(url_discovery::url.eq(&normalized_url))
+        .select(url_discovery::id)
+        .first::<i32>(conn)
+        .optional()
+        .context("error looking up url_discovery")?;
+
     let work_unit = NewUnit {
         url: &normalized_url,
         status: STATUS_PENDING,
+        url_discovery_id: discovery_id,
     };
 
     diesel::insert_into(crate::schema::work_unit::table)
@@ -1563,12 +1575,22 @@ pub fn create_work_unit_unless_blacklisted(
 }
 
 pub fn requeue_work_unit(conn: &mut PgConnection, url: &str) -> Result<()> {
-    use crate::schema::work_unit::dsl as work_unit_dsl;
+    use crate::schema::{work_unit::dsl as work_unit_dsl, url_discovery};
 
     let normalized_url = normalize_crawl_url(url);
+
+    // Look up url_discovery_id for this URL
+    let discovery_id = url_discovery::table
+        .filter(url_discovery::url.eq(&normalized_url))
+        .select(url_discovery::id)
+        .first::<i32>(conn)
+        .optional()
+        .context("error looking up url_discovery")?;
+
     let work_unit = NewUnit {
         url: &normalized_url,
         status: STATUS_PENDING,
+        url_discovery_id: discovery_id,
     };
 
     diesel::insert_into(crate::schema::work_unit::table)
