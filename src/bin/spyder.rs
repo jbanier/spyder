@@ -530,6 +530,21 @@ struct ImportedPageKeywordTag {
     created_at: String,
 }
 
+struct ImportOptions {
+    file_path: String,
+    source_type: String,
+    source_name: String,
+    source_url: Option<String>,
+}
+
+struct ImportResult {
+    total_in_file: usize,
+    queued_count: usize,
+    duplicate_count: usize,
+    blacklisted_count: usize,
+    import_source_id: i32,
+}
+
 impl Default for SshScanOptions {
     fn default() -> Self {
         Self {
@@ -575,6 +590,57 @@ impl CrawlFailure {
             kind: FailureKind::Permanent,
         }
     }
+}
+
+fn parse_import_file(path: &Path) -> Result<Vec<String>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read file: {}", path.display()))?;
+
+    // Try JSON first
+    if path.extension().and_then(|s| s.to_str()) == Some("json") {
+        // Try JSON array of strings
+        if let Ok(urls) = serde_json::from_str::<Vec<String>>(&content) {
+            return Ok(urls);
+        }
+
+        // Try JSON array of objects with "url" field
+        if let Ok(objects) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+            let urls = objects
+                .iter()
+                .filter_map(|obj| obj.get("url")?.as_str().map(String::from))
+                .collect();
+            return Ok(urls);
+        }
+
+        anyhow::bail!("JSON file must be array of URLs or objects with 'url' field");
+    }
+
+    // Try CSV
+    if path.extension().and_then(|s| s.to_str()) == Some("csv") {
+        let mut reader = csv::Reader::from_reader(content.as_bytes());
+        let mut urls = Vec::new();
+
+        for result in reader.records() {
+            let record = result.context("error parsing CSV record")?;
+            if let Some(url) = record.get(0) {
+                if !url.is_empty() {
+                    urls.push(url.to_string());
+                }
+            }
+        }
+
+        return Ok(urls);
+    }
+
+    // Default: plain text (one URL per line)
+    let urls: Vec<String> = content
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(String::from)
+        .collect();
+
+    Ok(urls)
 }
 
 fn print_status(message: impl Display) {
