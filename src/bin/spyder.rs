@@ -1004,6 +1004,7 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
                         result.job.work_unit_id,
                         &failure.error.to_string(),
                         failure.kind == FailureKind::Retriable,
+                        None,
                     )?;
                     info!(
                         current,
