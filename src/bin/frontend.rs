@@ -1716,6 +1716,108 @@ fn sites_grouped(
     Ok(Template::render("sites_grouped", context))
 }
 
+#[derive(FromForm)]
+struct DiscoveryQuery {
+    depth: Option<i32>,
+    import_source: Option<i32>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[get("/discovery?<query..>")]
+fn discovery(state: &State<AppState>, query: Option<DiscoveryQuery>) -> HtmlResult {
+    let query = query.unwrap_or(DiscoveryQuery {
+        depth: None,
+        import_source: None,
+        limit: None,
+        offset: None,
+    });
+
+    let context = build_discovery_context(state.inner(), query)?;
+    Ok(Template::render("discovery", context))
+}
+
+fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Value, FrontendError> {
+    use spyder::schema::url_discovery;
+    use spyder::schema::import_source;
+    use diesel::prelude::*;
+
+    let mut connection = state.connection()?;
+
+    let limit = query.limit.unwrap_or(100).min(500);
+    let offset = query.offset.unwrap_or(0);
+
+    // Build query with filters
+    let mut db_query = url_discovery::table
+        .left_join(import_source::table)
+        .select((
+            url_discovery::id,
+            url_discovery::url,
+            url_discovery::discovery_depth,
+            url_discovery::discovered_at,
+            url_discovery::import_source_id,
+            import_source::source_name.nullable(),
+        ))
+        .order_by(url_discovery::id.desc())
+        .limit(limit)
+        .offset(offset)
+        .into_boxed();
+
+    if let Some(depth) = query.depth {
+        db_query = db_query.filter(url_discovery::discovery_depth.eq(depth));
+    }
+
+    if let Some(source_id) = query.import_source {
+        db_query = db_query.filter(url_discovery::import_source_id.eq(source_id));
+    }
+
+    let discoveries: Vec<(i32, String, i32, String, Option<i32>, Option<String>)> = db_query
+        .load(&mut connection)
+        .map_err(|e| FrontendError::internal("loading discoveries", e.into()))?;
+
+    // Get import sources for filter dropdown
+    let sources: Vec<(i32, String)> = import_source::table
+        .select((import_source::id, import_source::source_name))
+        .order_by(import_source::imported_at.desc())
+        .load(&mut connection)
+        .map_err(|e| FrontendError::internal("loading import sources", e.into()))?;
+
+    // Get depth distribution
+    let depth_counts: Vec<(i32, i64)> = url_discovery::table
+        .group_by(url_discovery::discovery_depth)
+        .select((url_discovery::discovery_depth, diesel::dsl::count_star()))
+        .order_by(url_discovery::discovery_depth)
+        .load(&mut connection)
+        .map_err(|e| FrontendError::internal("loading depth stats", e.into()))?;
+
+    let discoveries_json: Vec<_> = discoveries.iter().map(|(id, url, depth, discovered_at, source_id, source_name)| {
+        serde_json::json!({
+            "id": id,
+            "url": url,
+            "depth": depth,
+            "discovered_at": discovered_at,
+            "import_source_id": source_id,
+            "source_name": source_name,
+        })
+    }).collect();
+
+    template_context(context! {
+        title: "Discovery Explorer",
+        description: "Browse URL discovery records and provenance chains",
+        discoveries: discoveries_json,
+        sources: sources,
+        depth_counts: depth_counts,
+        selected_depth: query.depth,
+        selected_source: query.import_source,
+        limit: limit,
+        offset: offset,
+        has_prev: offset > 0,
+        has_next: discoveries.len() as i64 == limit,
+        prev_offset: if offset >= limit { offset - limit } else { 0 },
+        next_offset: offset + limit,
+    })
+}
+
 #[get("/watchlists")]
 fn watchlists(state: &State<AppState>) -> HtmlResult {
     render_background_cached_context(
@@ -3595,6 +3697,7 @@ fn build_rocket() -> Rocket<Build> {
                 analytics,
                 sites,
                 sites_grouped,
+                discovery,
                 watchlists,
                 add_watchlist,
                 delete_watchlist_item,

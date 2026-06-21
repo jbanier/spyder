@@ -1,0 +1,114 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Provenance Tracking</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Discovery Depth Distribution</h2>
+        <span class="muted">Depth 0 = imported seeds</span>
+    </div>
+    <div class="stats-grid">
+        {{#each depth_counts}}
+        <div class="stat-card">
+            <div class="stat-label">Depth {{this.[0]}}</div>
+            <div class="stat-value">{{this.[1]}}</div>
+        </div>
+        {{/each}}
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Filter Discoveries</h2>
+    </div>
+    <form class="filter-form" method="get" action="/discovery">
+        <select name="depth">
+            <option value="">All Depths</option>
+            {{#each depth_counts}}
+            <option value="{{this.[0]}}" {{#if (eq ../selected_depth this.[0])}}selected{{/if}}>
+                Depth {{this.[0]}}
+            </option>
+            {{/each}}
+        </select>
+
+        <select name="import_source">
+            <option value="">All Sources</option>
+            {{#each sources}}
+            <option value="{{this.[0]}}" {{#if (eq ../selected_source this.[0])}}selected{{/if}}>
+                {{this.[1]}}
+            </option>
+            {{/each}}
+        </select>
+
+        <button class="btn" type="submit">Filter</button>
+        <a href="/discovery" class="btn btn-secondary">Clear</a>
+    </form>
+</section>
+
+{{#if discoveries}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Discovered URLs</h2>
+        <span class="muted">{{discoveries.length}} results</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>URL</th>
+                    <th>Depth</th>
+                    <th>Source</th>
+                    <th>Discovered</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each discoveries}}
+                <tr>
+                    <td>
+                        <a href="{{url}}" target="_blank" class="row-link">{{url}}</a>
+                    </td>
+                    <td>
+                        <span class="tag">{{depth}}</span>
+                    </td>
+                    <td>
+                        {{#if source_name}}
+                        <span class="muted">{{source_name}}</span>
+                        {{else}}
+                        <span class="muted">-</span>
+                        {{/if}}
+                    </td>
+                    <td>{{discovered_at}}</td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+
+    {{#if (or has_prev has_next)}}
+    <div class="pagination">
+        {{#if has_prev}}
+        <a href="?offset={{prev_offset}}&limit={{limit}}{{#if selected_depth}}&depth={{selected_depth}}{{/if}}{{#if selected_source}}&import_source={{selected_source}}{{/if}}" class="btn btn-secondary">
+            ← Previous
+        </a>
+        {{/if}}
+
+        {{#if has_next}}
+        <a href="?offset={{next_offset}}&limit={{limit}}{{#if selected_depth}}&depth={{selected_depth}}{{/if}}{{#if selected_source}}&import_source={{selected_source}}{{/if}}" class="btn btn-secondary">
+            Next →
+        </a>
+        {{/if}}
+    </div>
+    {{/if}}
+</section>
+{{else}}
+<section class="empty-state">
+    <h2>No discoveries found</h2>
+    <p>Try importing URLs with the CLI: <code>cargo run --bin spyder -- import &lt;file&gt; --source-type custom --source-name "Seeds"</code></p>
+</section>
+{{/if}}
+{{/inline}}
+
+{{> base}}
