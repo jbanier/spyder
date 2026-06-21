@@ -9666,6 +9666,110 @@ pub fn create_url_discovery_for_link(
     Ok(Some(discovery_id))
 }
 
+pub fn get_failure_summary(conn: &mut PgConnection) -> Result<Vec<FailureCategorySummary>> {
+    diesel::sql_query("SELECT * FROM work_unit_failure_summary ORDER BY count DESC")
+        .load::<FailureCategorySummary>(conn)
+        .context("error loading failure summary")
+}
+
+pub fn bulk_retry_by_category(
+    conn: &mut PgConnection,
+    category: &str,
+    limit: Option<i64>,
+) -> Result<i64> {
+    use crate::schema::work_unit;
+
+    if let Some(lim) = limit {
+        // PostgreSQL doesn't support LIMIT in UPDATE directly
+        // Use subquery with LIMIT
+        let limited_ids: Vec<i32> = work_unit::table
+            .filter(work_unit::failure_category.eq(category))
+            .filter(work_unit::status.eq("failed"))
+            .select(work_unit::id)
+            .limit(lim)
+            .load(conn)
+            .context("error fetching limited work_unit ids")?;
+
+        let updated = diesel::update(work_unit::table)
+            .filter(work_unit::id.eq_any(limited_ids))
+            .set((
+                work_unit::status.eq("pending"),
+                work_unit::retry_count.eq(0),
+                work_unit::next_attempt_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+            ))
+            .execute(conn)
+            .context("error bulk retrying work_units")?;
+
+        return Ok(updated as i64);
+    }
+
+    let updated = diesel::update(work_unit::table)
+        .filter(work_unit::failure_category.eq(category))
+        .filter(work_unit::status.eq("failed"))
+        .set((
+            work_unit::status.eq("pending"),
+            work_unit::retry_count.eq(0),
+            work_unit::next_attempt_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+        ))
+        .execute(conn)
+        .context("error bulk retrying work_units")?;
+
+    Ok(updated as i64)
+}
+
+pub fn bulk_whitelist_and_retry(
+    conn: &mut PgConnection,
+    urls: Vec<String>,
+) -> Result<(i64, i64)> {
+    use crate::schema::{domain_blacklist, work_unit};
+
+    // Extract unique domains from URLs
+    let mut domains = HashSet::new();
+    for url_str in &urls {
+        if let Ok(url) = url::Url::parse(url_str) {
+            if let Some(host) = url.host_str() {
+                domains.insert(host.to_string());
+            }
+        }
+    }
+
+    // Remove from blacklist
+    let blacklist_removed = diesel::delete(domain_blacklist::table)
+        .filter(domain_blacklist::domain.eq_any(domains))
+        .execute(conn)
+        .context("error removing domains from blacklist")?;
+
+    // Retry work_units for these URLs
+    let work_units_retried = diesel::update(work_unit::table)
+        .filter(work_unit::url.eq_any(&urls))
+        .filter(work_unit::status.eq("failed"))
+        .set((
+            work_unit::status.eq("pending"),
+            work_unit::retry_count.eq(0),
+            work_unit::next_attempt_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+        ))
+        .execute(conn)
+        .context("error retrying whitelisted work_units")?;
+
+    Ok((blacklist_removed as i64, work_units_retried as i64))
+}
+
+pub fn bulk_abandon_by_category(
+    conn: &mut PgConnection,
+    category: &str,
+) -> Result<i64> {
+    use crate::schema::work_unit;
+
+    let updated = diesel::update(work_unit::table)
+        .filter(work_unit::failure_category.eq(category))
+        .filter(work_unit::status.eq("failed"))
+        .set(work_unit::status.eq("abandoned"))
+        .execute(conn)
+        .context("error abandoning work_units")?;
+
+    Ok(updated as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
