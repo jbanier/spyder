@@ -3465,6 +3465,8 @@ fn usage(program: &str) {
     info!("    watchlist list");
     info!("    watchlist add <type> <value> [label]");
     info!("    watchlist remove <id>");
+    info!("    import <file> --source-type <type> --source-name <name> [--source-url <url>]");
+    info!("                               import URLs from file (txt/json/csv) with provenance tracking.");
     info!("    import-sqlite <sqlite_path> import an existing SQLite database into PostgreSQL.");
     info!("    ssh-scan [--recent-hours N] [--stale-hours N] [--limit N] [--concurrency N] scan recent hosts for SSH, auxiliary HTTP, IRC, and FTP services.");
     info!("    work [--onion-only] [--concurrency N] process pending work units and store page metadata.");
