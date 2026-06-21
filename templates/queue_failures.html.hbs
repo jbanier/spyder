@@ -1,0 +1,147 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Queue Management</p>
+    <h1>{{title}}</h1>
+    <p class="lead">{{description}}</p>
+</section>
+
+{{#if has_failures}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Failure Summary</h2>
+        <span class="muted">{{total_failures}} failed, {{category_count}} categories</span>
+    </div>
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-label">Total Failures</div>
+            <div class="stat-value">{{total_failures}}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Categories</div>
+            <div class="stat-value">{{category_count}}</div>
+        </div>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Failures by Category</h2>
+        <p class="muted">Use bulk operations to retry or abandon failed work units</p>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th>Count</th>
+                    <th>Example Error</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each summary}}
+                <tr>
+                    <td>
+                        <span class="tag">{{category}}</span>
+                    </td>
+                    <td>
+                        <strong>{{count}}</strong>
+                    </td>
+                    <td>
+                        <span class="muted">{{example_error}}</span>
+                    </td>
+                    <td>
+                        <div class="btn-group">
+                            <button
+                                class="btn btn-compact"
+                                onclick="bulkRetry('{{category}}', 'retry')"
+                            >
+                                Retry All
+                            </button>
+                            <button
+                                class="btn btn-secondary btn-compact"
+                                onclick="bulkRetry('{{category}}', 'abandon')"
+                            >
+                                Abandon
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>About Failure Categories</h2>
+    </div>
+    <div class="help-text">
+        <p><strong>HTTP Errors:</strong></p>
+        <ul>
+            <li><code>http_403_forbidden</code> - Access denied (may be temporary)</li>
+            <li><code>http_404_not_found</code> - URL no longer exists</li>
+            <li><code>http_429_rate_limit</code> - Too many requests (retry after cooldown)</li>
+            <li><code>http_5xx_server_error</code> - Server errors (often temporary)</li>
+        </ul>
+
+        <p><strong>Network Errors:</strong></p>
+        <ul>
+            <li><code>timeout</code> - Request timed out</li>
+            <li><code>connection_refused</code> - Server not responding</li>
+            <li><code>dns_failure</code> - Domain doesn't resolve</li>
+            <li><code>tls_error</code> - TLS/SSL handshake failed</li>
+        </ul>
+
+        <p><strong>Policy:</strong></p>
+        <ul>
+            <li><code>blacklisted</code> - Domain is on blacklist</li>
+        </ul>
+
+        <p><strong>Operations:</strong></p>
+        <ul>
+            <li><strong>Retry All:</strong> Reset status to pending and clear retry count</li>
+            <li><strong>Abandon:</strong> Mark as abandoned (won't be retried automatically)</li>
+        </ul>
+    </div>
+</section>
+
+{{else}}
+<section class="empty-state">
+    <h2>No failures</h2>
+    <p>All work units are either pending or completed successfully.</p>
+</section>
+{{/if}}
+
+<script>
+async function bulkRetry(category, action) {
+    const actionText = action === 'retry' ? 'retry' : 'abandon';
+    if (!confirm(`${actionText.toUpperCase()} all failed work units in category "${category}"?`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/queue/bulk-retry', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ category, action }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const result = await response.json();
+        alert(`${actionText.charAt(0).toUpperCase() + actionText.slice(1)} ${result.data.updated} work units`);
+        location.reload();
+    } catch (error) {
+        alert(`Failed to ${actionText}: ${error.message}`);
+    }
+}
+</script>
+{{/inline}}
+
+{{> base}}

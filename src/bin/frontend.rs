@@ -1818,6 +1818,31 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
     })
 }
 
+#[get("/queue/failures")]
+fn queue_failures(state: &State<AppState>) -> HtmlResult {
+    let context = build_failures_context(state.inner())?;
+    Ok(Template::render("queue_failures", context))
+}
+
+fn build_failures_context(state: &AppState) -> Result<Value, FrontendError> {
+    let mut connection = state.connection()?;
+
+    let summary = spyder::get_failure_summary(&mut connection)
+        .map_err(|e| FrontendError::internal("loading failure summary", e))?;
+
+    let total_failures: i64 = summary.iter().map(|s| s.count).sum();
+    let category_count = summary.len();
+
+    template_context(context! {
+        title: "Queue Failures",
+        description: "Manage failed work units by category with bulk operations",
+        summary: summary,
+        total_failures: total_failures,
+        category_count: category_count,
+        has_failures: total_failures > 0,
+    })
+}
+
 #[get("/watchlists")]
 fn watchlists(state: &State<AppState>) -> HtmlResult {
     render_background_cached_context(
@@ -3698,6 +3723,7 @@ fn build_rocket() -> Rocket<Build> {
                 sites,
                 sites_grouped,
                 discovery,
+                queue_failures,
                 watchlists,
                 add_watchlist,
                 delete_watchlist_item,
