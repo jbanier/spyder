@@ -2296,6 +2296,7 @@ pub fn record_work_unit_failure(
     work_unit_id: i32,
     error_message: &str,
     retriable: bool,
+    http_status: Option<u16>,
 ) -> Result<()> {
     use crate::schema::work_unit::dsl::*;
 
@@ -2307,6 +2308,7 @@ pub fn record_work_unit_failure(
     let next_retry_count = existing_work_unit.retry_count + 1;
     let bounded_error = truncate(error_message, 500);
     let should_retry = retriable && next_retry_count < MAX_RETRY_ATTEMPTS;
+    let category_value = categorize_failure(&bounded_error, http_status);
 
     if should_retry {
         let backoff_minutes = retry_backoff_minutes(next_retry_count);
@@ -2320,6 +2322,7 @@ pub fn record_work_unit_failure(
                     conn,
                     backoff_minutes,
                 ))),
+                failure_category.eq(Some(category_value.clone())),
             ))
             .execute(conn)
             .context("error scheduling work unit retry")?;
@@ -2330,6 +2333,7 @@ pub fn record_work_unit_failure(
                 retry_count.eq(next_retry_count),
                 last_error.eq(Some(bounded_error)),
                 last_attempt_at.eq(sql::<Nullable<Text>>(sql_current_timestamp_expr(conn))),
+                failure_category.eq(Some(category_value)),
             ))
             .execute(conn)
             .context("error marking work unit as failed")?;
@@ -9890,7 +9894,7 @@ mod tests {
             .expect("load work units")
             .items
             .remove(0);
-        record_work_unit_failure(&mut conn, work_unit.id, "network timeout", true)
+        record_work_unit_failure(&mut conn, work_unit.id, "network timeout", true, None)
             .expect("retryable failure");
 
         let updated = list_work_units(&mut conn, None, None)
@@ -9905,7 +9909,7 @@ mod tests {
             .is_empty());
 
         for _ in 0..(MAX_RETRY_ATTEMPTS - 1) {
-            record_work_unit_failure(&mut conn, work_unit.id, "network timeout", true)
+            record_work_unit_failure(&mut conn, work_unit.id, "network timeout", true, None)
                 .expect("subsequent retryable failure");
         }
 
@@ -9926,7 +9930,7 @@ mod tests {
             .expect("load work units")
             .items
             .remove(0);
-        record_work_unit_failure(&mut conn, work_unit.id, "invalid url", false)
+        record_work_unit_failure(&mut conn, work_unit.id, "invalid url", false, None)
             .expect("terminal failure");
 
         let updated = list_work_units(&mut conn, None, None)
