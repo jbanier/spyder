@@ -4,7 +4,7 @@ CREATE TABLE import_source (
   source_type TEXT NOT NULL,
   source_name TEXT NOT NULL,
   source_url TEXT,
-  imported_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  imported_at TEXT NOT NULL DEFAULT NOW(),
   imported_by TEXT NOT NULL,
   total_urls INTEGER NOT NULL DEFAULT 0,
   metadata JSONB
@@ -18,8 +18,8 @@ CREATE TABLE url_discovery (
   discovery_chain INTEGER[] NOT NULL DEFAULT '{}',
   discovery_depth INTEGER NOT NULL DEFAULT 0,
   import_source_id INTEGER REFERENCES import_source(id),
-  discovered_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  first_queued_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  discovered_at TEXT NOT NULL DEFAULT NOW(),
+  first_queued_at TEXT NOT NULL DEFAULT NOW(),
 
   CONSTRAINT url_discovery_url_unique UNIQUE (url)
 );

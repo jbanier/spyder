@@ -124,7 +124,7 @@ diesel::table! {
         source_type -> Text,
         source_name -> Text,
         source_url -> Nullable<Text>,
-        imported_at -> Timestamp,
+        imported_at -> Text,
         imported_by -> Text,
         total_urls -> Int4,
         metadata -> Nullable<Jsonb>,
@@ -328,8 +328,8 @@ diesel::table! {
         discovery_chain -> Array<Nullable<Int4>>,
         discovery_depth -> Int4,
         import_source_id -> Nullable<Int4>,
-        discovered_at -> Timestamp,
-        first_queued_at -> Timestamp,
+        discovered_at -> Text,
+        first_queued_at -> Text,
     }
 }
 
