@@ -9565,6 +9565,41 @@ fn truncate(input: &str, max_len: usize) -> String {
     input.chars().take(max_len).collect()
 }
 
+pub fn create_url_discovery_for_import(
+    conn: &mut PgConnection,
+    url: &str,
+    import_source_id: i32,
+) -> Result<i32> {
+    use crate::schema::url_discovery;
+
+    let discovery_id = diesel::insert_into(url_discovery::table)
+        .values(NewUrlDiscovery {
+            url,
+            discovered_from_page_id: None,
+            discovery_chain: vec![],
+            discovery_depth: 0,
+            import_source_id: Some(import_source_id),
+        })
+        .on_conflict(url_discovery::url)
+        .do_nothing()
+        .returning(url_discovery::id)
+        .get_result::<i32>(conn)
+        .optional()
+        .context("error creating url_discovery for import")?;
+
+    match discovery_id {
+        Some(id) => Ok(id),
+        None => {
+            // URL already exists, get existing ID
+            url_discovery::table
+                .filter(url_discovery::url.eq(url))
+                .select(url_discovery::id)
+                .first::<i32>(conn)
+                .context("error fetching existing url_discovery")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
