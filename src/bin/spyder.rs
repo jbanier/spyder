@@ -3730,6 +3730,93 @@ fn is_retriable_status(status: StatusCode) -> bool {
         || status.is_server_error()
 }
 
+fn run_import(
+    connection: &mut PgConnection,
+    options: &ImportOptions,
+) -> Result<ImportResult> {
+    use spyder::{create_url_discovery_for_import, create_work_unit, normalize_crawl_url};
+
+    let path = Path::new(&options.file_path);
+    let urls = parse_import_file(path)?;
+    let total_in_file = urls.len();
+
+    // Calculate file hash
+    let file_content = std::fs::read(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&file_content);
+    let file_hash = format!("sha256:{:x}", hasher.finalize());
+
+    // Create import_source record
+    let metadata = serde_json::json!({
+        "filename": path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown"),
+        "file_hash": file_hash,
+        "format": path.extension().and_then(|s| s.to_str()).unwrap_or("txt"),
+    });
+
+    use spyder::models::NewImportSource;
+    use spyder::schema::import_source;
+
+    let import_source_id = diesel::insert_into(import_source::table)
+        .values(NewImportSource {
+            source_type: &options.source_type,
+            source_name: &options.source_name,
+            source_url: options.source_url.as_deref(),
+            imported_by: "cli",
+            total_urls: 0, // Will update after processing
+            metadata: Some(&metadata),
+        })
+        .returning(import_source::id)
+        .get_result::<i32>(connection)
+        .context("error creating import_source record")?;
+
+    // Load blacklist
+    let blacklist_domains: Vec<String> = list_domain_blacklist_rules(connection)?
+        .into_iter()
+        .map(|rule| rule.domain)
+        .collect();
+
+    let mut queued_count = 0;
+    let mut duplicate_count = 0;
+    let mut blacklisted_count = 0;
+
+    // Process URLs in batches
+    for url in urls {
+        let normalized = normalize_crawl_url(&url);
+
+        // Check blacklist
+        if url_matches_blacklist(&normalized, &blacklist_domains) {
+            blacklisted_count += 1;
+            continue;
+        }
+
+        // Create discovery record
+        match create_url_discovery_for_import(connection, &normalized, import_source_id) {
+            Ok(_discovery_id) => {
+                // Create work_unit
+                match create_work_unit(connection, &normalized) {
+                    Ok(_) => queued_count += 1,
+                    Err(_) => duplicate_count += 1,
+                }
+            }
+            Err(_) => duplicate_count += 1,
+        }
+    }
+
+    // Update import_source with final count
+    diesel::update(import_source::table.find(import_source_id))
+        .set(import_source::total_urls.eq(queued_count as i32))
+        .execute(connection)
+        .context("error updating import_source total_urls")?;
+
+    Ok(ImportResult {
+        total_in_file,
+        queued_count,
+        duplicate_count,
+        blacklisted_count,
+        import_source_id,
+    })
+}
+
 fn main() {
     // Initialize structured logging
     spyder::logging::init_tracing();
@@ -3890,6 +3977,58 @@ fn main() {
                 Err(anyhow::anyhow!("invalid or missing watchlist subcommand"))
             }
         },
+        Some("import") => {
+            let file_path = args.next();
+            let mut source_type = None;
+            let mut source_name = None;
+            let mut source_url = None;
+            let mut parse_error = None;
+
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--source-type" => source_type = args.next(),
+                    "--source-name" => source_name = args.next(),
+                    "--source-url" => source_url = args.next(),
+                    _ => {
+                        parse_error = Some(format!("unknown argument: {}", arg));
+                        break;
+                    }
+                }
+            }
+
+            if let Some(err_msg) = parse_error {
+                usage(&program);
+                Err(anyhow::anyhow!("{}", err_msg))
+            } else {
+                match (file_path, source_type, source_name) {
+                    (Some(file), Some(src_type), Some(src_name)) => {
+                        let options = ImportOptions {
+                            file_path: file,
+                            source_type: src_type,
+                            source_name: src_name,
+                            source_url,
+                        };
+
+                        establish_connection().and_then(|mut connection| {
+                            run_import(&mut connection, &options).map(|result| {
+                                info!("Import complete: {}", options.file_path);
+                                info!("- Total URLs in file: {}", result.total_in_file);
+                                info!("- New URLs queued: {}", result.queued_count);
+                                info!("- Already known (skipped): {}", result.duplicate_count);
+                                info!("- Blacklisted (skipped): {}", result.blacklisted_count);
+                                info!("- Import source ID: {}", result.import_source_id);
+                            })
+                        })
+                    }
+                    _ => {
+                        usage(&program);
+                        Err(anyhow::anyhow!(
+                            "import requires <file> --source-type <type> --source-name <name> [--source-url <url>]"
+                        ))
+                    }
+                }
+            }
+        }
         Some("import-sqlite") => match args.next() {
             Some(sqlite_path) => import_sqlite(&sqlite_path),
             None => {
