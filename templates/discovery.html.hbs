@@ -28,7 +28,7 @@
         <select name="depth">
             <option value="">All Depths</option>
             {{#each depth_counts}}
-            <option value="{{this.[0]}}" {{#if (eq ../selected_depth this.[0])}}selected{{/if}}>
+            <option value="{{this.[0]}}">
                 Depth {{this.[0]}}
             </option>
             {{/each}}
@@ -37,7 +37,7 @@
         <select name="import_source">
             <option value="">All Sources</option>
             {{#each sources}}
-            <option value="{{this.[0]}}" {{#if (eq ../selected_source this.[0])}}selected{{/if}}>
+            <option value="{{this.[0]}}">
                 {{this.[1]}}
             </option>
             {{/each}}
@@ -87,21 +87,19 @@
         </table>
     </div>
 
-    {{#if (or has_prev has_next)}}
     <div class="pagination">
         {{#if has_prev}}
-        <a href="?offset={{prev_offset}}&limit={{limit}}{{#if selected_depth}}&depth={{selected_depth}}{{/if}}{{#if selected_source}}&import_source={{selected_source}}{{/if}}" class="btn btn-secondary">
+        <a href="?offset={{prev_offset}}&limit={{limit}}" class="btn btn-secondary">
             ← Previous
         </a>
         {{/if}}
 
         {{#if has_next}}
-        <a href="?offset={{next_offset}}&limit={{limit}}{{#if selected_depth}}&depth={{selected_depth}}{{/if}}{{#if selected_source}}&import_source={{selected_source}}{{/if}}" class="btn btn-secondary">
+        <a href="?offset={{next_offset}}&limit={{limit}}" class="btn btn-secondary">
             Next →
         </a>
         {{/if}}
     </div>
-    {{/if}}
 </section>
 {{else}}
 <section class="empty-state">
