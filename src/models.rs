@@ -1325,7 +1325,7 @@ pub struct UrlDiscovery {
     pub id: i32,
     pub url: String,
     pub discovered_from_page_id: Option<i32>,
-    pub discovery_chain: Vec<i32>,
+    pub discovery_chain: Vec<Option<i32>>,
     pub discovery_depth: i32,
     pub import_source_id: Option<i32>,
     pub discovered_at: String,
@@ -1337,7 +1337,7 @@ pub struct UrlDiscovery {
 pub struct NewUrlDiscovery<'a> {
     pub url: &'a str,
     pub discovered_from_page_id: Option<i32>,
-    pub discovery_chain: Vec<i32>,
+    pub discovery_chain: Vec<Option<i32>>,
     pub discovery_depth: i32,
     pub import_source_id: Option<i32>,
 }

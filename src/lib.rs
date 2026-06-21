@@ -9600,6 +9600,72 @@ pub fn create_url_discovery_for_import(
     }
 }
 
+pub fn create_url_discovery_for_link(
+    conn: &mut PgConnection,
+    url: &str,
+    discovering_page_id: i32,
+) -> Result<Option<i32>> {
+    use crate::schema::{url_discovery, page};
+
+    // Check if URL already discovered (first discovery wins)
+    let existing = url_discovery::table
+        .filter(url_discovery::url.eq(url))
+        .select(url_discovery::id)
+        .first::<i32>(conn)
+        .optional()
+        .context("error checking for existing url_discovery")?;
+
+    if existing.is_some() {
+        return Ok(None); // Already discovered, skip
+    }
+
+    // Get discovering page's URL to find its discovery record
+    let page_url = page::table
+        .find(discovering_page_id)
+        .select(page::url)
+        .first::<String>(conn)
+        .optional()
+        .context("error loading discovering page")?;
+
+    // Get discovering page's discovery record to build chain
+    let page_discovery = match page_url {
+        Some(ref url_str) => url_discovery::table
+            .filter(url_discovery::url.eq(url_str))
+            .first::<UrlDiscovery>(conn)
+            .optional()
+            .context("error loading discovering page's url_discovery")?,
+        None => None,
+    };
+
+    let (new_chain, new_depth) = match page_discovery {
+        Some(parent) => {
+            let mut chain = parent.discovery_chain.clone();
+            chain.push(Some(discovering_page_id));
+            let depth = chain.len() as i32;
+            (chain, depth)
+        }
+        None => {
+            // Discovering page has no discovery record (legacy data)
+            // Create minimal chain
+            (vec![Some(discovering_page_id)], 1)
+        }
+    };
+
+    let discovery_id = diesel::insert_into(url_discovery::table)
+        .values(NewUrlDiscovery {
+            url,
+            discovered_from_page_id: Some(discovering_page_id),
+            discovery_chain: new_chain,
+            discovery_depth: new_depth,
+            import_source_id: None,
+        })
+        .returning(url_discovery::id)
+        .get_result::<i32>(conn)
+        .context("error creating url_discovery for link")?;
+
+    Ok(Some(discovery_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
