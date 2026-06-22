@@ -9979,6 +9979,65 @@ pub fn get_site_active_leads(
     Ok(leads)
 }
 
+pub fn get_site_pages(
+    conn: &mut PgConnection,
+    host: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<PageSummary>> {
+    use crate::schema::{page, page_crypto, page_email, page_link};
+
+    let pages = page::table
+        .filter(page::url.like(format!("%{}%", host)))
+        .order_by(page::last_scanned_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .select((page::id, page::title, page::url, page::language, page::last_scanned_at))
+        .load::<(i32, String, String, String, String)>(conn)
+        .context("error loading site pages")?;
+
+    let site_profiles = load_site_profile_badges_by_hosts(
+        conn,
+        &vec![host.to_string()],
+    )?;
+
+    let mut summaries = Vec::new();
+    for (id, title, url, language, last_scanned_at) in pages {
+        let email_count = page_email::table
+            .filter(page_email::page_id.eq(id))
+            .count()
+            .get_result::<i64>(conn)
+            .unwrap_or(0);
+
+        let crypto_count = page_crypto::table
+            .filter(page_crypto::page_id.eq(id))
+            .count()
+            .get_result::<i64>(conn)
+            .unwrap_or(0);
+
+        let link_count = page_link::table
+            .filter(page_link::source_page_id.eq(id))
+            .count()
+            .get_result::<i64>(conn)
+            .unwrap_or(0);
+
+        summaries.push(PageSummary {
+            id,
+            title,
+            url: url.clone(),
+            host: host.to_string(),
+            language,
+            last_scanned_at,
+            outbound_link_count: link_count.max(0) as usize,
+            email_count: email_count.max(0) as usize,
+            crypto_count: crypto_count.max(0) as usize,
+            site_category: site_profiles.get(host).cloned(),
+        });
+    }
+
+    Ok(summaries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11757,5 +11816,20 @@ mod tests {
         assert!(result.is_ok());
         let leads = result.unwrap();
         assert!(leads.len() <= 10);
+    }
+
+    #[test]
+    #[ignore] // Requires PgConnection and test data
+    fn test_get_site_pages() {
+        // This test requires a PostgreSQL connection with test data
+        // Run with: cargo test test_get_site_pages -- --ignored --nocapture
+        let mut conn = establish_connection().expect("test connection");
+
+        let result = get_site_pages(&mut conn, "test.onion", 50, 0);
+        assert!(result.is_ok());
+        let pages = result.unwrap();
+        for page in &pages {
+            assert!(page.url.contains("test.onion"));
+        }
     }
 }
