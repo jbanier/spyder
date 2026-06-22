@@ -9882,6 +9882,51 @@ pub struct WorkQueueHistory {
     pub next_attempt_at: Option<String>,
 }
 
+pub fn get_site_intel_summary(
+    conn: &mut PgConnection,
+    host: &str,
+) -> Result<IntelSummary> {
+    use crate::schema::{intel_lead, intel_lead_evidence, page};
+
+    let results = intel_lead::table
+        .inner_join(
+            intel_lead_evidence::table.on(intel_lead_evidence::lead_id.eq(intel_lead::id))
+        )
+        .inner_join(
+            page::table.on(
+                page::id.eq(intel_lead_evidence::source_id)
+                    .and(intel_lead_evidence::source_type.eq("page"))
+            )
+        )
+        .filter(page::url.like(format!("%{}%", host)))
+        .select((intel_lead::id, intel_lead::severity))
+        .distinct()
+        .load::<(i32, String)>(conn)
+        .context("error loading intel leads for summary")?;
+
+    let mut critical_count = 0i64;
+    let mut high_count = 0i64;
+    let mut medium_count = 0i64;
+    let mut low_count = 0i64;
+
+    for (_id, severity) in results {
+        match severity.as_str() {
+            "critical" => critical_count += 1,
+            "high" => high_count += 1,
+            "medium" => medium_count += 1,
+            "low" => low_count += 1,
+            _ => {}
+        }
+    }
+
+    Ok(IntelSummary {
+        critical_count,
+        high_count,
+        medium_count,
+        low_count,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11631,5 +11676,21 @@ mod tests {
         };
         assert_eq!(summary.critical_count, 5);
         assert_eq!(summary.high_count, 10);
+    }
+
+    #[test]
+    #[ignore] // Requires PgConnection and test data
+    fn test_get_site_intel_summary() {
+        // This test requires a PostgreSQL connection with test data
+        // Run with: cargo test test_get_site_intel_summary -- --ignored --nocapture
+        let mut conn = establish_connection().expect("test connection");
+
+        let result = get_site_intel_summary(&mut conn, "test.onion");
+        assert!(result.is_ok());
+        let summary = result.unwrap();
+        assert!(summary.critical_count >= 0);
+        assert!(summary.high_count >= 0);
+        assert!(summary.medium_count >= 0);
+        assert!(summary.low_count >= 0);
     }
 }
