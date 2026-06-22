@@ -19,6 +19,7 @@ use diesel::sqlite::SqliteConnection;
 use diesel::upsert::excluded;
 use dotenvy::dotenv;
 use models::*;
+use rocket::serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::env;
 use url::form_urlencoded;
@@ -83,7 +84,7 @@ const HIGH_DEGREE_SOURCE_HOST_THRESHOLD: i64 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PageSaveOutcome {
-    Stored,
+    Stored(i32), // Contains the page_id of the stored page
     SkippedBlacklisted,
     PurgedAfterAutoBlacklist,
 }
@@ -2256,7 +2257,7 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
             }
         }
 
-        Ok(PageSaveOutcome::Stored)
+        Ok(PageSaveOutcome::Stored(stored_page_id))
     })
 }
 
@@ -9792,6 +9793,95 @@ pub fn bulk_abandon_by_category(
     Ok(updated as i64)
 }
 
+// Data structures for site and page detail views
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntelSummary {
+    pub critical_count: i64,
+    pub high_count: i64,
+    pub medium_count: i64,
+    pub low_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceFingerprints {
+    pub http: Option<HostHttpObservationRecord>,
+    pub tls: Option<HostTlsObservationRecord>,
+    pub ssh: Option<HostSshObservationRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelationshipData {
+    pub inbound_count: i64,
+    pub outbound_count: i64,
+    pub inbound_domains: Vec<String>,
+    pub outbound_domains: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryStats {
+    pub urls_discovered_from_this_site: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueStats {
+    pub total_work_units: i64,
+    pub success_count: i64,
+    pub failure_count: i64,
+    pub success_rate: f64,
+    pub failure_breakdown: Vec<(String, i64)>,
+    pub avg_retry_count: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageDetailSummary {
+    pub id: i32,
+    pub title: String,
+    pub url: String,
+    pub last_scanned_at: String,
+    pub email_count: i64,
+    pub crypto_count: i64,
+    pub link_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiteDetailData {
+    pub profile: SiteProfileRecord,
+    pub intel_summary: IntelSummary,
+    pub active_leads: Vec<IntelLeadSummary>,
+    pub pages: Vec<PageDetailSummary>,
+    pub service_fingerprints: ServiceFingerprints,
+    pub relationships: RelationshipData,
+    pub discovery_stats: DiscoveryStats,
+    pub queue_stats: QueueStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryChain {
+    pub depth: i32,
+    pub import_source_id: Option<i32>,
+    pub import_source_name: Option<String>,
+    pub chain: Vec<ChainItem>,
+    pub discovered_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainItem {
+    pub page_id: i32,
+    pub page_title: String,
+    pub page_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkQueueHistory {
+    pub status: String,
+    pub retry_count: i32,
+    pub failure_category: Option<String>,
+    pub last_error: Option<String>,
+    pub last_attempt_at: Option<String>,
+    pub next_attempt_at: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11529,5 +11619,17 @@ mod tests {
                 && event.rule_type == AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY
                 && event.matched_value == CATEGORY_SEO_SPAM
         }));
+    }
+
+    #[test]
+    fn test_intel_summary_creation() {
+        let summary = IntelSummary {
+            critical_count: 5,
+            high_count: 10,
+            medium_count: 3,
+            low_count: 2,
+        };
+        assert_eq!(summary.critical_count, 5);
+        assert_eq!(summary.high_count, 10);
     }
 }

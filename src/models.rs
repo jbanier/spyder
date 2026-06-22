@@ -191,7 +191,7 @@ pub struct NewIntelLeadEvidence {
     pub observed_at: String,
 }
 
-#[derive(Selectable, Queryable, Serialize, Clone)]
+#[derive(Selectable, Queryable, Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::host_ssh_observation)]
 pub struct HostSshObservationRecord {
@@ -224,7 +224,7 @@ pub struct NewHostSshObservation {
     pub last_success_at: Option<String>,
 }
 
-#[derive(Selectable, Queryable, Serialize, Clone)]
+#[derive(Selectable, Queryable, Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::host_http_observation)]
 pub struct HostHttpObservationRecord {
@@ -314,7 +314,7 @@ pub struct NewHostHttpObservation {
     pub last_success_at: Option<String>,
 }
 
-#[derive(Selectable, Queryable, Serialize, Clone)]
+#[derive(Selectable, Queryable, Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::host_tls_observation)]
 pub struct HostTlsObservationRecord {
@@ -365,7 +365,7 @@ pub struct NewPageClassification {
     pub evidence: String,
 }
 
-#[derive(Selectable, Queryable, Serialize, Clone)]
+#[derive(Selectable, Queryable, Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "rocket::serde")]
 #[diesel(table_name = crate::schema::site_profile)]
 pub struct SiteProfileRecord {
@@ -1190,7 +1190,7 @@ pub struct IntelLeadBadge {
     pub detail_url: String,
 }
 
-#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 #[serde(crate = "rocket::serde")]
 pub struct IntelLeadSummary {
     pub id: i32,
