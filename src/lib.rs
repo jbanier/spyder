@@ -9927,6 +9927,58 @@ pub fn get_site_intel_summary(
     })
 }
 
+pub fn get_site_active_leads(
+    conn: &mut PgConnection,
+    host: &str,
+    limit: i64,
+) -> Result<Vec<IntelLeadSummary>> {
+    use crate::schema::{intel_lead, intel_lead_evidence, page};
+
+    let records = intel_lead::table
+        .inner_join(
+            intel_lead_evidence::table.on(intel_lead_evidence::lead_id.eq(intel_lead::id))
+        )
+        .inner_join(
+            page::table.on(
+                page::id.eq(intel_lead_evidence::source_id)
+                    .and(intel_lead_evidence::source_type.eq("page"))
+            )
+        )
+        .filter(page::url.like(format!("%{}%", host)))
+        .filter(intel_lead::status.ne("resolved"))
+        .order_by((
+            diesel::dsl::sql::<diesel::sql_types::Integer>(
+                "CASE severity
+                 WHEN 'critical' THEN 1
+                 WHEN 'high' THEN 2
+                 WHEN 'medium' THEN 3
+                 WHEN 'low' THEN 4
+                 ELSE 5 END"
+            ),
+            intel_lead::created_at.desc(),
+        ))
+        .select(IntelLeadRecord::as_select())
+        .distinct()
+        .limit(limit)
+        .load::<IntelLeadRecord>(conn)
+        .context("error loading active intel leads")?;
+
+    let evidence_counts = load_lead_evidence_counts(
+        conn,
+        &records.iter().map(|record| record.id).collect::<Vec<_>>(),
+    )?;
+
+    let leads = records
+        .into_iter()
+        .map(|record| {
+            let lead_id = record.id;
+            intel_lead_summary_from_record(record, *evidence_counts.get(&lead_id).unwrap_or(&0))
+        })
+        .collect();
+
+    Ok(leads)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11692,5 +11744,18 @@ mod tests {
         assert!(summary.high_count >= 0);
         assert!(summary.medium_count >= 0);
         assert!(summary.low_count >= 0);
+    }
+
+    #[test]
+    #[ignore] // Requires PgConnection and test data
+    fn test_get_site_active_leads() {
+        // This test requires a PostgreSQL connection with test data
+        // Run with: cargo test test_get_site_active_leads -- --ignored --nocapture
+        let mut conn = establish_connection().expect("test connection");
+
+        let result = get_site_active_leads(&mut conn, "test.onion", 10);
+        assert!(result.is_ok());
+        let leads = result.unwrap();
+        assert!(leads.len() <= 10);
     }
 }
