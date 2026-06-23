@@ -10301,6 +10301,55 @@ pub fn get_site_queue_stats(
     })
 }
 
+pub fn get_site_detail(
+    conn: &mut PgConnection,
+    host: &str,
+    page_limit: i64,
+    page_offset: i64,
+) -> Result<SiteDetailData> {
+    use crate::schema::site_profile;
+
+    conn.transaction(|conn| {
+        let profile = site_profile::table
+            .filter(site_profile::host.eq(host))
+            .first::<SiteProfileRecord>(conn)
+            .context("site not found")?;
+
+        let intel_summary = get_site_intel_summary(conn, host)?;
+        let active_leads = get_site_active_leads(conn, host, 100)?;
+        let page_summaries = get_site_pages(conn, host, page_limit, page_offset)?;
+        let service_fingerprints = get_host_service_fingerprints(conn, host)?;
+        let relationships = get_site_relationships(conn, host)?;
+        let discovery_stats = get_site_discovery_stats(conn, host)?;
+        let queue_stats = get_site_queue_stats(conn, host)?;
+
+        // Convert PageSummary to PageDetailSummary
+        let pages = page_summaries
+            .into_iter()
+            .map(|p| PageDetailSummary {
+                id: p.id,
+                title: p.title,
+                url: p.url,
+                last_scanned_at: p.last_scanned_at,
+                email_count: p.email_count as i64,
+                crypto_count: p.crypto_count as i64,
+                link_count: p.outbound_link_count as i64,
+            })
+            .collect();
+
+        Ok(SiteDetailData {
+            profile,
+            intel_summary,
+            active_leads,
+            pages,
+            service_fingerprints,
+            relationships,
+            discovery_stats,
+            queue_stats,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12145,5 +12194,18 @@ mod tests {
         assert!(result.is_ok());
         let stats = result.unwrap();
         assert!(stats.success_rate >= 0.0 && stats.success_rate <= 100.0);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_get_site_detail() {
+        // This test requires a PostgreSQL connection with test data
+        // Run with: cargo test test_get_site_detail -- --ignored --nocapture
+        let mut conn = establish_connection().expect("test connection");
+
+        let result = get_site_detail(&mut conn, "test.onion", 50, 0);
+        assert!(result.is_ok());
+        let detail = result.unwrap();
+        assert_eq!(detail.profile.host, "test.onion");
     }
 }
