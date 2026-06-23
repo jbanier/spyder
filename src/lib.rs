@@ -10167,6 +10167,90 @@ pub fn get_site_relationships(
     })
 }
 
+pub fn get_site_queue_stats(
+    conn: &mut PgConnection,
+    host: &str,
+) -> Result<QueueStats> {
+    use crate::schema::work_unit;
+
+    // Get total count for this host
+    let total_work_units: i64 = work_unit::table
+        .filter(work_unit::url.like(format!("%{}%", host)))
+        .select(count_star())
+        .first(conn)
+        .context("error counting work units")?;
+
+    // Get success count
+    let success_count: i64 = work_unit::table
+        .filter(work_unit::url.like(format!("%{}%", host)))
+        .filter(work_unit::status.eq("done"))
+        .select(count_star())
+        .first(conn)
+        .context("error counting successful work units")?;
+
+    // Get failure count
+    let failure_count: i64 = work_unit::table
+        .filter(work_unit::url.like(format!("%{}%", host)))
+        .filter(work_unit::status.eq("failed"))
+        .select(count_star())
+        .first(conn)
+        .context("error counting failed work units")?;
+
+    let success_rate = if total_work_units > 0 {
+        (success_count as f64 / total_work_units as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    // Get failure breakdown by category
+    let failure_breakdown: Vec<(String, i64)> = {
+        use std::collections::HashMap;
+
+        let failed_units = work_unit::table
+            .filter(work_unit::url.like(format!("%{}%", host)))
+            .filter(work_unit::status.eq("failed"))
+            .select((work_unit::failure_category))
+            .load::<Option<String>>(conn)
+            .context("error loading failed work units")?;
+
+        let mut breakdown: HashMap<String, i64> = HashMap::new();
+        for cat in failed_units {
+            if let Some(category) = cat {
+                *breakdown.entry(category).or_insert(0) += 1;
+            }
+        }
+
+        breakdown
+            .into_iter()
+            .collect()
+    };
+
+    // Calculate average retry count from all work units for this host
+    let avg_retry_count: f64 = {
+        let retry_rows = work_unit::table
+            .filter(work_unit::url.like(format!("%{}%", host)))
+            .select(work_unit::retry_count)
+            .load::<i32>(conn)
+            .context("error loading retry counts")?;
+
+        if retry_rows.is_empty() {
+            0.0
+        } else {
+            let sum: i32 = retry_rows.iter().sum();
+            sum as f64 / retry_rows.len() as f64
+        }
+    };
+
+    Ok(QueueStats {
+        total_work_units,
+        success_count,
+        failure_count,
+        success_rate,
+        failure_breakdown,
+        avg_retry_count,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11985,5 +12069,18 @@ mod tests {
         let rel = result.unwrap();
         assert!(rel.inbound_count >= 0);
         assert!(rel.outbound_count >= 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_get_site_queue_stats() {
+        // This test requires a PostgreSQL connection with test data
+        // Run with: cargo test test_get_site_queue_stats -- --ignored --nocapture
+        let mut conn = establish_connection().expect("test connection");
+
+        let result = get_site_queue_stats(&mut conn, "test.onion");
+        assert!(result.is_ok());
+        let stats = result.unwrap();
+        assert!(stats.success_rate >= 0.0 && stats.success_rate <= 100.0);
     }
 }
