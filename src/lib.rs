@@ -10167,6 +10167,56 @@ pub fn get_site_relationships(
     })
 }
 
+pub fn get_site_discovery_stats(
+    conn: &mut PgConnection,
+    host: &str,
+) -> Result<DiscoveryStats> {
+    use crate::schema::{page, url_discovery};
+
+    // Normalize the input host for comparison
+    let normalized_host = host.trim().to_ascii_lowercase();
+
+    // Use URL patterns to find pages for this host
+    let url_patterns = vec![
+        format!("://{}/%", normalized_host),
+        format!("://{}", normalized_host),
+    ];
+
+    // Load pages with URL matching
+    let pages_with_urls: Vec<(i32, String)> = page::table
+        .filter(
+            page::url.like(format!("%{}%", url_patterns[0]))
+                .or(page::url.like(format!("%{}", url_patterns[1])))
+        )
+        .select((page::id, page::url))
+        .load::<(i32, String)>(conn)
+        .context("error loading site pages")?;
+
+    // Additional filtering: extract host from URL and verify exact match
+    let page_ids: Vec<i32> = pages_with_urls
+        .into_iter()
+        .filter(|(_, url)| {
+            let page_host = host_from_url(url);
+            page_host.eq_ignore_ascii_case(&normalized_host)
+        })
+        .map(|(id, _)| id)
+        .collect();
+
+    let count = if !page_ids.is_empty() {
+        url_discovery::table
+            .filter(url_discovery::discovered_from_page_id.eq_any(page_ids))
+            .count()
+            .get_result::<i64>(conn)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    Ok(DiscoveryStats {
+        urls_discovered_from_this_site: count,
+    })
+}
+
 pub fn get_site_queue_stats(
     conn: &mut PgConnection,
     host: &str,
@@ -12069,6 +12119,19 @@ mod tests {
         let rel = result.unwrap();
         assert!(rel.inbound_count >= 0);
         assert!(rel.outbound_count >= 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_get_site_discovery_stats() {
+        // This test requires a PostgreSQL connection with test data
+        // Run with: cargo test test_get_site_discovery_stats -- --ignored --nocapture
+        let mut conn = establish_connection().expect("test connection");
+
+        let result = get_site_discovery_stats(&mut conn, "test.onion");
+        assert!(result.is_ok());
+        let stats = result.unwrap();
+        assert!(stats.urls_discovered_from_this_site >= 0);
     }
 
     #[test]
