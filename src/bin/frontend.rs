@@ -1775,6 +1775,7 @@ fn discovery(state: &State<AppState>, query: Option<DiscoveryQuery>) -> HtmlResu
 
 fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Value, FrontendError> {
     use spyder::schema::url_discovery;
+    use spyder::schema::page;
     use spyder::schema::import_source;
     use diesel::prelude::*;
 
@@ -1783,14 +1784,16 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
     let limit = query.limit.unwrap_or(100).min(500);
     let offset = query.offset.unwrap_or(0);
 
-    // Build query with filters - just get url_discovery records
+    // Build query with filters - LEFT JOIN with page table to get page_id if crawled
     let mut db_query = url_discovery::table
+        .left_join(page::table.on(page::url.eq(url_discovery::url)))
         .select((
             url_discovery::id,
             url_discovery::url,
             url_discovery::discovery_depth,
             url_discovery::discovered_at,
             url_discovery::import_source_id,
+            page::id.nullable(),  // page_id
         ))
         .order_by(url_discovery::id.desc())
         .limit(limit)
@@ -1805,7 +1808,7 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
         db_query = db_query.filter(url_discovery::import_source_id.eq(source_id));
     }
 
-    let discoveries: Vec<(i32, String, i32, String, Option<i32>)> = db_query
+    let discoveries: Vec<(i32, String, i32, String, Option<i32>, Option<i32>)> = db_query
         .load(&mut connection)
         .map_err(|e| FrontendError::internal("loading discoveries", e.into()))?;
 
@@ -1842,7 +1845,7 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
         .load(&mut connection)
         .map_err(|e| FrontendError::internal("loading depth stats", e.into()))?;
 
-    let discoveries_json: Vec<_> = discoveries.iter().map(|(id, url, depth, discovered_at, source_id)| {
+    let discoveries_json: Vec<_> = discoveries.iter().map(|(id, url, depth, discovered_at, source_id, page_id)| {
         let source_name = source_id.and_then(|sid| source_names.get(&sid).cloned());
         serde_json::json!({
             "id": id,
@@ -1851,6 +1854,7 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
             "discovered_at": discovered_at,
             "import_source_id": source_id,
             "source_name": source_name,
+            "page_id": page_id,
         })
     }).collect();
 

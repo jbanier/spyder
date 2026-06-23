@@ -67,7 +67,11 @@
                 {{#each discoveries}}
                 <tr>
                     <td>
-                        <a href="{{url}}" target="_blank" class="row-link">{{url}}</a>
+                        {{#if page_id}}
+                        <a class="row-link" href="/pages/{{page_id}}">{{url}}</a>
+                        {{else}}
+                        <a href="{{url}}" target="_blank" class="row-link external-link">{{url}}</a>
+                        {{/if}}
                     </td>
                     <td>
                         <span class="tag">{{depth}}</span>
