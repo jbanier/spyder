@@ -29,6 +29,49 @@
     </div>
 </section>
 
+{{#if discovery}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Discovery Provenance</h2>
+        <span class="depth-badge depth-{{discovery.depth}}">Depth {{discovery.depth}}</span>
+    </div>
+
+    <div class="discovery-breadcrumb">
+        {{#if discovery.import_source_name}}
+        <span class="breadcrumb-item">
+            <span class="breadcrumb-label">Import Source:</span>
+            <span>{{discovery.import_source_name}}</span>
+        </span>
+        <span class="breadcrumb-separator">→</span>
+        {{/if}}
+
+        {{#each discovery.chain}}
+        <span class="breadcrumb-item">
+            <a class="breadcrumb-link" href="/pages/{{page_id}}">{{page_title}}</a>
+        </span>
+        <span class="breadcrumb-separator">→</span>
+        {{/each}}
+
+        <span class="breadcrumb-item breadcrumb-current">This Page</span>
+    </div>
+
+    <div class="meta-strip">
+        <span><strong>Discovered:</strong> {{discovery.discovered_at}}</span>
+        <span><strong>Depth:</strong> {{discovery.depth}} hops from seed</span>
+    </div>
+</section>
+{{/if}}
+
+{{#if service_fingerprints}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Service Fingerprints</h2>
+        <span class="muted">Host-level observations</span>
+    </div>
+    {{> service-fingerprints fingerprints=service_fingerprints}}
+</section>
+{{/if}}
+
 {{#if page.site_profile}}
 <section class="card site-profile-card">
     <div class="section-heading">
@@ -180,6 +223,38 @@
         {{/if}}
     </div>
     {{/if}}
+</section>
+{{/if}}
+
+{{#if work_queue}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Work Queue History</h2>
+        <span class="status-badge status-{{work_queue.status}}">{{work_queue.status}}</span>
+    </div>
+
+    <div class="meta-strip">
+        <span><strong>Status:</strong> {{work_queue.status}}</span>
+        <span><strong>Retry Count:</strong> {{work_queue.retry_count}}</span>
+        {{#if work_queue.failure_category}}
+        <span><strong>Failure Category:</strong> {{work_queue.failure_category}}</span>
+        {{/if}}
+    </div>
+
+    {{#if work_queue.last_error}}
+    <div class="error-message">
+        <strong>Last Error:</strong> {{work_queue.last_error}}
+    </div>
+    {{/if}}
+
+    <div class="meta-strip">
+        {{#if work_queue.last_attempt_at}}
+        <span><strong>Last Attempt:</strong> {{work_queue.last_attempt_at}}</span>
+        {{/if}}
+        {{#if work_queue.next_attempt_at}}
+        <span><strong>Next Attempt:</strong> {{work_queue.next_attempt_at}}</span>
+        {{/if}}
+    </div>
 </section>
 {{/if}}
 
