@@ -9987,53 +9987,113 @@ pub fn get_site_pages(
 ) -> Result<Vec<PageSummary>> {
     use crate::schema::{page, page_crypto, page_email, page_link};
 
-    let pages = page::table
-        .filter(page::url.like(format!("%{}%", host)))
+    // Normalize the input host for comparison
+    let normalized_host = host.trim().to_ascii_lowercase();
+
+    // Use a more precise URL filter: protocol://host or protocol://host/
+    // This reduces false positives compared to just matching host anywhere in URL
+    let url_patterns = vec![
+        format!("://{}/%", normalized_host),
+        format!("://{}", normalized_host),
+    ];
+
+    // Load pages with improved filtering
+    // We use LIKE with protocol prefix to be more precise than just matching host anywhere
+    let pages_with_urls = page::table
+        .filter(
+            page::url.like(format!("%{}%", url_patterns[0]))
+                .or(page::url.like(format!("%{}", url_patterns[1])))
+        )
         .order_by(page::last_scanned_at.desc())
-        .limit(limit)
-        .offset(offset)
         .select((page::id, page::title, page::url, page::language, page::last_scanned_at))
         .load::<(i32, String, String, String, String)>(conn)
         .context("error loading site pages")?;
 
-    let site_profiles = load_site_profile_badges_by_hosts(
-        conn,
-        &vec![host.to_string()],
-    )?;
+    // Additional filtering: extract host from URL and verify exact match
+    // This handles edge cases where the LIKE filter is too broad
+    let mut pages = Vec::new();
+    for (id, title, url, language, last_scanned_at) in pages_with_urls {
+        let page_host = host_from_url(&url);
+        if page_host == normalized_host {
+            pages.push((id, title, url, page_host, language, last_scanned_at));
+        }
+    }
 
-    let mut summaries = Vec::new();
-    for (id, title, url, language, last_scanned_at) in pages {
-        let email_count = page_email::table
-            .filter(page_email::page_id.eq(id))
-            .count()
-            .get_result::<i64>(conn)
-            .unwrap_or(0);
+    // Apply offset and limit
+    let pages: Vec<_> = pages
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .collect();
 
-        let crypto_count = page_crypto::table
-            .filter(page_crypto::page_id.eq(id))
-            .count()
-            .get_result::<i64>(conn)
-            .unwrap_or(0);
+    if pages.is_empty() {
+        return Ok(Vec::new());
+    }
 
-        let link_count = page_link::table
-            .filter(page_link::source_page_id.eq(id))
-            .count()
-            .get_result::<i64>(conn)
-            .unwrap_or(0);
+    // Batch load counts to avoid N+1 queries
+    let page_ids: Vec<i32> = pages.iter().map(|(id, _, _, _, _, _)| *id).collect();
 
-        summaries.push(PageSummary {
+    // Batch load email counts
+    let email_counts: HashMap<i32, i64> = page_email::table
+        .filter(page_email::page_id.eq_any(&page_ids))
+        .group_by(page_email::page_id)
+        .select((page_email::page_id, diesel::dsl::count(page_email::page_id)))
+        .load::<(i32, i64)>(conn)
+        .context("error loading email counts")?
+        .into_iter()
+        .collect();
+
+    // Batch load crypto counts
+    let crypto_counts: HashMap<i32, i64> = page_crypto::table
+        .filter(page_crypto::page_id.eq_any(&page_ids))
+        .group_by(page_crypto::page_id)
+        .select((page_crypto::page_id, diesel::dsl::count(page_crypto::page_id)))
+        .load::<(i32, i64)>(conn)
+        .context("error loading crypto counts")?
+        .into_iter()
+        .collect();
+
+    // Batch load link counts
+    let link_counts: HashMap<i32, i64> = page_link::table
+        .filter(page_link::source_page_id.eq_any(&page_ids))
+        .group_by(page_link::source_page_id)
+        .select((page_link::source_page_id, diesel::dsl::count(page_link::source_page_id)))
+        .load::<(i32, i64)>(conn)
+        .context("error loading link counts")?
+        .into_iter()
+        .collect();
+
+    // Extract unique hosts for site profile loading
+    let unique_hosts: Vec<String> = pages
+        .iter()
+        .map(|(_, _, _, page_host, _, _)| page_host.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let site_profiles = load_site_profile_badges_by_hosts(conn, &unique_hosts)?;
+
+    // Build summaries using batch-loaded data
+    let summaries = pages
+        .into_iter()
+        .map(|(id, title, url, page_host, language, last_scanned_at)| PageSummary {
             id,
             title,
-            url: url.clone(),
-            host: host.to_string(),
-            language,
+            url,
+            host: page_host.clone(),
+            // Handle potential empty language values defensively
+            language: if language.is_empty() {
+                "unknown".to_string()
+            } else {
+                language
+            },
             last_scanned_at,
-            outbound_link_count: link_count.max(0) as usize,
-            email_count: email_count.max(0) as usize,
-            crypto_count: crypto_count.max(0) as usize,
-            site_category: site_profiles.get(host).cloned(),
-        });
-    }
+            outbound_link_count: *link_counts.get(&id).unwrap_or(&0).max(&0) as usize,
+            email_count: *email_counts.get(&id).unwrap_or(&0).max(&0) as usize,
+            crypto_count: *crypto_counts.get(&id).unwrap_or(&0).max(&0) as usize,
+            site_category: site_profiles.get(&page_host).cloned(),
+        })
+        .collect();
 
     Ok(summaries)
 }
