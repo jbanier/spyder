@@ -10404,6 +10404,29 @@ pub fn get_page_discovery_chain(
     }))
 }
 
+pub fn get_page_work_queue_history(
+    conn: &mut PgConnection,
+    page_url: &str,
+) -> Result<Option<WorkQueueHistory>> {
+    use crate::schema::work_unit;
+
+    let work = work_unit::table
+        .filter(work_unit::url.eq(page_url))
+        .order_by(work_unit::last_attempt_at.desc())
+        .first::<WorkUnit>(conn)
+        .optional()
+        .context("error loading work queue history")?;
+
+    Ok(work.map(|w| WorkQueueHistory {
+        status: w.status,
+        retry_count: w.retry_count,
+        failure_category: w.failure_category,
+        last_error: w.last_error,
+        last_attempt_at: w.last_attempt_at,
+        next_attempt_at: Some(w.next_attempt_at),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
