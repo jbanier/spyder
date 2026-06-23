@@ -40,7 +40,7 @@
                 <tbody>
                     {{#each hosts}}
                     <tr>
-                        <td>{{host}}</td>
+                        <td><a class="row-link" href="/sites/{{host}}">{{host}}</a></td>
                         <td>
                             <span class="site-category-badge site-confidence-{{confidence}}">{{category}} · {{confidence}}</span>
                         </td>
