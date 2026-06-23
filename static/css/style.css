@@ -1542,3 +1542,192 @@ footer {
     padding: 0.35rem 0.65rem;
     text-shadow: 0 0 8px rgba(0, 255, 136, 0.3);
 }
+
+/* Site Detail Page - Intel Summary */
+.intel-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+    margin: 1rem 0;
+}
+
+.intel-severity-card {
+    padding: 1.5rem;
+    border-radius: 8px;
+    text-align: center;
+}
+
+.intel-severity-card.severity-critical {
+    background: #fef2f2;
+    border: 2px solid #dc2626;
+}
+
+.intel-severity-card.severity-high {
+    background: #fff7ed;
+    border: 2px solid #ea580c;
+}
+
+.intel-severity-card.severity-medium {
+    background: #fefce8;
+    border: 2px solid #ca8a04;
+}
+
+.intel-severity-card.severity-low {
+    background: #eff6ff;
+    border: 2px solid #2563eb;
+}
+
+.severity-count {
+    font-size: 2rem;
+    font-weight: bold;
+    margin-bottom: 0.5rem;
+}
+
+.severity-label {
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+/* Service Fingerprints */
+.service-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1rem;
+}
+
+.service-card {
+    padding: 1rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #f9fafb;
+}
+
+.service-card h3 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    font-size: 1rem;
+    color: #374151;
+}
+
+.service-details p {
+    margin: 0.5rem 0;
+    font-size: 0.875rem;
+}
+
+/* Discovery Breadcrumb */
+.discovery-breadcrumb {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 1rem;
+    background: #f9fafb;
+    border-radius: 8px;
+    font-size: 0.875rem;
+}
+
+.breadcrumb-item {
+    display: inline-flex;
+    align-items: center;
+}
+
+.breadcrumb-link {
+    color: #2563eb;
+    text-decoration: none;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    background: #eff6ff;
+}
+
+.breadcrumb-link:hover {
+    background: #dbeafe;
+}
+
+.breadcrumb-current {
+    font-weight: 600;
+    color: #374151;
+}
+
+.breadcrumb-separator {
+    color: #9ca3af;
+    margin: 0 0.25rem;
+}
+
+.breadcrumb-label {
+    font-weight: 600;
+    color: #6b7280;
+    margin-right: 0.5rem;
+}
+
+.depth-badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.depth-badge.depth-0 {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.depth-badge.depth-1 {
+    background: #ddd6fe;
+    color: #5b21b6;
+}
+
+.depth-badge.depth-2 {
+    background: #fce7f3;
+    color: #9f1239;
+}
+
+/* Work Queue Status */
+.status-badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.status-badge.status-done {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.status-badge.status-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.status-badge.status-failed {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.error-message {
+    padding: 1rem;
+    background: #fef2f2;
+    border-left: 4px solid #dc2626;
+    border-radius: 4px;
+    margin: 1rem 0;
+    font-family: monospace;
+    font-size: 0.875rem;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .intel-summary-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .service-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .discovery-breadcrumb {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
