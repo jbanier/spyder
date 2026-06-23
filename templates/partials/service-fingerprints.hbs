@@ -1,0 +1,40 @@
+<div class="service-grid">
+    {{#if fingerprints.http}}
+    <div class="service-card">
+        <h3>HTTP</h3>
+        <div class="service-details">
+            <p><strong>Status:</strong> {{fingerprints.http.status_code}}</p>
+            <p><strong>Server:</strong> {{fingerprints.http.server}}</p>
+            {{#if fingerprints.http.content_type}}
+            <p><strong>Content-Type:</strong> {{fingerprints.http.content_type}}</p>
+            {{/if}}
+            <p class="muted">Observed: {{fingerprints.http.observed_at}}</p>
+        </div>
+    </div>
+    {{/if}}
+
+    {{#if fingerprints.tls}}
+    <div class="service-card">
+        <h3>TLS</h3>
+        <div class="service-details">
+            <p><strong>Valid:</strong> {{fingerprints.tls.is_valid}}</p>
+            <p><strong>Issuer:</strong> {{fingerprints.tls.issuer}}</p>
+            <p><strong>Subject:</strong> {{fingerprints.tls.subject}}</p>
+            <p><strong>Expires:</strong> {{fingerprints.tls.not_after}}</p>
+            <p class="muted">Fingerprint: {{fingerprints.tls.cert_fingerprint}}</p>
+        </div>
+    </div>
+    {{/if}}
+
+    {{#if fingerprints.ssh}}
+    <div class="service-card">
+        <h3>SSH</h3>
+        <div class="service-details">
+            <p><strong>Banner:</strong> {{fingerprints.ssh.banner}}</p>
+            <p><strong>Key Type:</strong> {{fingerprints.ssh.key_type}}</p>
+            <p class="muted">Fingerprint: {{fingerprints.ssh.key_fingerprint}}</p>
+            <p class="muted">Observed: {{fingerprints.ssh.observed_at}}</p>
+        </div>
+    </div>
+    {{/if}}
+</div>
