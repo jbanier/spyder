@@ -1815,7 +1815,7 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
     // Get source names separately
     let source_ids: Vec<i32> = discoveries
         .iter()
-        .filter_map(|(_, _, _, _, source_id)| *source_id)
+        .filter_map(|(_, _, _, _, source_id, _)| *source_id)
         .collect();
 
     let source_names: std::collections::HashMap<i32, String> = if !source_ids.is_empty() {
