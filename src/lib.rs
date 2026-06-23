@@ -10259,7 +10259,7 @@ pub fn get_site_queue_stats(
         let failed_units = work_unit::table
             .filter(work_unit::url.like(format!("%{}%", host)))
             .filter(work_unit::status.eq("failed"))
-            .select((work_unit::failure_category))
+            .select(work_unit::failure_category)
             .load::<Option<String>>(conn)
             .context("error loading failed work units")?;
 
