@@ -1382,3 +1382,21 @@ pub struct FailureCategorySummary {
     #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
     pub last_failure_at: Option<String>,
 }
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(crate = "rocket::serde")]
+pub struct ChainItem {
+    pub page_id: i32,
+    pub page_title: String,
+    pub page_url: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(crate = "rocket::serde")]
+pub struct DiscoveryChain {
+    pub depth: i32,
+    pub import_source_id: Option<i32>,
+    pub import_source_name: Option<String>,
+    pub chain: Vec<ChainItem>,
+    pub discovered_at: String,
+}
