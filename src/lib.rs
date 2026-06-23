@@ -10131,6 +10131,42 @@ pub fn get_host_service_fingerprints(
     Ok(ServiceFingerprints { http, tls, ssh })
 }
 
+pub fn get_site_relationships(
+    conn: &mut PgConnection,
+    host: &str,
+) -> Result<RelationshipData> {
+    use crate::schema::page_link;
+
+    // Inbound: other domains linking to this host
+    let inbound_domains: Vec<String> = page_link::table
+        .filter(page_link::target_host.eq(host))
+        .filter(page_link::source_host.ne(host))
+        .select(page_link::source_host)
+        .distinct()
+        .load::<String>(conn)
+        .context("error loading inbound relationships")?;
+
+    let inbound_count = inbound_domains.len() as i64;
+
+    // Outbound: this host linking to other domains
+    let outbound_domains: Vec<String> = page_link::table
+        .filter(page_link::source_host.eq(host))
+        .filter(page_link::target_host.ne(host))
+        .select(page_link::target_host)
+        .distinct()
+        .load::<String>(conn)
+        .context("error loading outbound relationships")?;
+
+    let outbound_count = outbound_domains.len() as i64;
+
+    Ok(RelationshipData {
+        inbound_count,
+        outbound_count,
+        inbound_domains,
+        outbound_domains,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11935,5 +11971,19 @@ mod tests {
 
         let result = get_host_service_fingerprints(&mut conn, "test.onion");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_get_site_relationships() {
+        // This test requires a PostgreSQL connection with test data
+        // Run with: cargo test test_get_site_relationships -- --ignored --nocapture
+        let mut conn = establish_connection().expect("test connection");
+
+        let result = get_site_relationships(&mut conn, "test.onion");
+        assert!(result.is_ok());
+        let rel = result.unwrap();
+        assert!(rel.inbound_count >= 0);
+        assert!(rel.outbound_count >= 0);
     }
 }
