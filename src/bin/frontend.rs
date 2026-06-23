@@ -19,20 +19,22 @@ use spyder::models::{
 use spyder::{
     add_auto_blacklist_rule, add_watchlist_item, collect_stats, count_discovered_service_endpoints,
     find_matching_blacklist_domain, get_auto_blacklist_config, get_crypto_entity_detail,
-    get_email_entity_detail, get_host_http_observation_detail, get_host_service_observation_detail,
-    get_intel_lead_detail, get_page_detail, get_page_scan_detail, get_site_relationship_graph,
-    get_ssh_host_key_detail, intel_lead_rule_ids, list_crypto_entities,
-    list_domain_blacklist_rules, list_domain_blacklist_summaries, list_email_entities,
-    list_host_http_observations, list_host_service_observations, list_intel_leads,
-    list_page_language_distribution, list_page_scan_summaries, list_page_summaries,
-    list_page_topic_distribution, list_page_topic_timeline, list_site_category_distribution,
-    list_site_category_timeline, list_site_keyword_distribution, list_site_keyword_timeline,
-    list_site_profiles, list_site_profiles_grouped, list_site_relationships, list_site_relationships_fast, list_ssh_host_keys, list_top_referenced_sites,
-    list_top_sites_by_crypto_refs, list_top_sites_by_email_refs, list_top_sites_by_outgoing_links,
-    list_watchlist_items, list_work_units, remove_auto_blacklist_rule, remove_watchlist_item,
-    search_pages, set_auto_blacklist_rule_enabled, update_intel_lead_status,
-    valid_watchlist_item_types, AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
-    AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
+    get_email_entity_detail, get_host_http_observation_detail, get_host_service_fingerprints,
+    get_host_service_observation_detail, get_intel_lead_detail, get_page_detail,
+    get_page_discovery_chain, get_page_scan_detail, get_page_work_queue_history,
+    get_site_detail, get_site_relationship_graph, get_ssh_host_key_detail, intel_lead_rule_ids,
+    list_crypto_entities, list_domain_blacklist_rules, list_domain_blacklist_summaries,
+    list_email_entities, list_host_http_observations, list_host_service_observations,
+    list_intel_leads, list_page_language_distribution, list_page_scan_summaries,
+    list_page_summaries, list_page_topic_distribution, list_page_topic_timeline,
+    list_site_category_distribution, list_site_category_timeline, list_site_keyword_distribution,
+    list_site_keyword_timeline, list_site_profiles, list_site_profiles_grouped,
+    list_site_relationships, list_site_relationships_fast, list_ssh_host_keys,
+    list_top_referenced_sites, list_top_sites_by_crypto_refs, list_top_sites_by_email_refs,
+    list_top_sites_by_outgoing_links, list_watchlist_items, list_work_units,
+    remove_auto_blacklist_rule, remove_watchlist_item, search_pages,
+    set_auto_blacklist_rule_enabled, update_intel_lead_status, valid_watchlist_item_types,
+    AUTO_BLACKLIST_RULE_TYPE_KEYWORD, AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -993,6 +995,20 @@ fn page_detail(state: &State<AppState>, page_id: i32) -> HtmlResult {
     let history_url = format!("/pages/{page_id}/history");
     let has_more_scans = scan_count > recent_scans.len();
 
+    // NEW: Get discovery chain
+    let discovery_chain = get_page_discovery_chain(&mut connection, &page.url)
+        .ok()
+        .flatten();
+
+    // NEW: Get service fingerprints
+    let service_fingerprints = get_host_service_fingerprints(&mut connection, &page.host)
+        .ok();
+
+    // NEW: Get work queue history
+    let work_queue = get_page_work_queue_history(&mut connection, &page.url)
+        .ok()
+        .flatten();
+
     Ok(Template::render(
         "page_detail",
         context! {
@@ -1016,6 +1032,9 @@ fn page_detail(state: &State<AppState>, page_id: i32) -> HtmlResult {
             email_count: email_count,
             crypto_ref_count: crypto_ref_count,
             topic_tag_count: topic_tag_count,
+            discovery: discovery_chain,
+            service_fingerprints: service_fingerprints,
+            work_queue: work_queue,
         },
     ))
 }
@@ -3059,6 +3078,31 @@ fn api_bulk_retry(
     }))
 }
 
+#[get("/api/sites/<host>")]
+fn api_site_detail(
+    host: String,
+    state: &State<AppState>,
+) -> Result<Json<ApiResponse<spyder::SiteDetailData>>, Status> {
+    let decoded_host = urlencoding::decode(&host)
+        .map_err(|_| Status::BadRequest)?;
+
+    let mut connection = api_connection(state)?;
+
+    let site_data = get_site_detail(&mut connection, &decoded_host, 50, 0)
+        .map_err(|e| {
+            if e.to_string().contains("not found") {
+                Status::NotFound
+            } else {
+                Status::InternalServerError
+            }
+        })?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: site_data,
+    }))
+}
+
 fn api_connection(state: &State<AppState>) -> Result<DbConnection, Status> {
     state
         .inner()
@@ -3827,6 +3871,7 @@ fn build_rocket() -> Rocket<Build> {
                 api_blacklist,
                 api_auto_blacklist,
                 api_sites,
+                api_site_detail,
                 api_page_history,
                 api_page_scan_detail,
                 api_leads,
@@ -4449,6 +4494,41 @@ mod tests {
         let client = Client::tracked(build_rocket()).expect("rocket client");
         let response = client.get("/sites/alpha.onion").dispatch();
         assert_eq!(response.status(), Status::Ok);
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn test_api_site_detail() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client.get("/api/sites/alpha.onion").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn test_enhanced_page_detail() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client.get("/pages/1").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+        let body = response.into_string().unwrap();
+        // Just verify it doesn't crash - discovery/services may be missing
+        assert!(body.contains("Page Detail") || body.contains("page"));
 
         fs::remove_file(&database_url).expect("remove test database");
     }
