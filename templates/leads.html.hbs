@@ -71,7 +71,13 @@
                         </div>
                     </td>
                     <td>{{last_seen_at}}</td>
-                    <td><span class="count-pill">{{evidence_count}}</span></td>
+                    <td>
+                        {{#if source_page_id}}
+                        <a class="row-link" href="/pages/{{source_page_id}}">{{source_page_title}}</a>
+                        {{else}}
+                        {{source_page_title}}
+                        {{/if}}
+                    </td>
                 </tr>
                 {{/each}}
             </tbody>
