@@ -1,0 +1,134 @@
+{{#*inline "body"}}
+<section class="hero hero-compact">
+    <p class="eyebrow">Site Detail</p>
+    <h1>{{host}}</h1>
+    <div class="meta-strip">
+        <span><strong>Category:</strong> {{profile.category}}</span>
+        <span><strong>Pages:</strong> {{profile.page_count}}</span>
+        <span><strong>Last Scanned:</strong> {{profile.last_scanned_at}}</span>
+    </div>
+    <div class="meta-badges">
+        <span class="site-category-badge site-confidence-{{profile.confidence}}">
+            {{profile.category}} · {{profile.confidence}}
+        </span>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Intelligence Summary</h2>
+        <span class="muted">Lead severity breakdown</span>
+    </div>
+    {{> intel-summary summary=intel_summary}}
+</section>
+
+{{#if has_leads}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Active Leads</h2>
+        <span class="muted">{{active_leads.length}} unresolved</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Severity</th>
+                    <th>Lead</th>
+                    <th>Confidence</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each active_leads}}
+                <tr>
+                    <td><span class="lead-badge severity-{{severity}}">{{severity}}</span></td>
+                    <td><a class="row-link" href="/leads/{{id}}">{{entity}}</a></td>
+                    <td>{{confidence}}</td>
+                    <td>{{status}}</td>
+                    <td>{{created_at}}</td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+</section>
+{{else}}
+<section class="card empty-state">
+    <p>No active intelligence leads for this site.</p>
+</section>
+{{/if}}
+
+{{#if has_services}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Service Fingerprints</h2>
+        <span class="muted">Latest observations</span>
+    </div>
+    {{> service-fingerprints fingerprints=service_fingerprints}}
+</section>
+{{/if}}
+
+{{#if has_pages}}
+<section class="card">
+    <div class="section-heading">
+        <h2>Pages from this Site</h2>
+        <span class="muted">{{pages.length}} pages</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Last Scan</th>
+                    <th>Entities</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{#each pages}}
+                <tr>
+                    <td>
+                        <a class="row-link" href="/pages/{{id}}">{{title}}</a>
+                        <div class="cell-subtitle">{{url}}</div>
+                    </td>
+                    <td>{{last_scanned_at}}</td>
+                    <td>
+                        <span class="count-pill">{{email_count}} emails</span>
+                        <span class="count-pill">{{crypto_count}} crypto</span>
+                        <span class="count-pill">{{link_count}} links</span>
+                    </td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+    </div>
+</section>
+{{/if}}
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Relationships</h2>
+    </div>
+    <div class="meta-strip">
+        <span><strong>Inbound:</strong> {{relationships.inbound_count}} domains link here</span>
+        <span><strong>Outbound:</strong> Links to {{relationships.outbound_count}} domains</span>
+    </div>
+    <div class="actions">
+        <a href="/relationships?focus={{host}}" class="btn btn-secondary">View Relationship Graph</a>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-heading">
+        <h2>Discovery & Queue Stats</h2>
+    </div>
+    <div class="meta-strip">
+        <span><strong>URLs Discovered:</strong> {{discovery_stats.urls_discovered_from_this_site}}</span>
+        <span><strong>Total Work Units:</strong> {{queue_stats.total_work_units}}</span>
+        <span><strong>Success Rate:</strong> {{queue_stats.success_rate}}%</span>
+    </div>
+</section>
+
+{{/inline}}
+
+{{> base}}
