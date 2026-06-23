@@ -10098,6 +10098,39 @@ pub fn get_site_pages(
     Ok(summaries)
 }
 
+pub fn get_host_service_fingerprints(
+    conn: &mut PgConnection,
+    host: &str,
+) -> Result<ServiceFingerprints> {
+    use crate::schema::{host_http_observation, host_tls_observation, host_ssh_observation};
+
+    let http = host_http_observation::table
+        .filter(host_http_observation::host.eq(host))
+        .order_by(host_http_observation::created_at.desc())
+        .select(HostHttpObservationRecord::as_select())
+        .first::<HostHttpObservationRecord>(conn)
+        .optional()
+        .context("error loading HTTP observation")?;
+
+    let tls = host_tls_observation::table
+        .filter(host_tls_observation::host.eq(host))
+        .order_by(host_tls_observation::created_at.desc())
+        .select(HostTlsObservationRecord::as_select())
+        .first::<HostTlsObservationRecord>(conn)
+        .optional()
+        .context("error loading TLS observation")?;
+
+    let ssh = host_ssh_observation::table
+        .filter(host_ssh_observation::host.eq(host))
+        .order_by(host_ssh_observation::created_at.desc())
+        .select(HostSshObservationRecord::as_select())
+        .first::<HostSshObservationRecord>(conn)
+        .optional()
+        .context("error loading SSH observation")?;
+
+    Ok(ServiceFingerprints { http, tls, ssh })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11891,5 +11924,16 @@ mod tests {
         for page in &pages {
             assert!(page.url.contains("test.onion"));
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_get_host_service_fingerprints() {
+        // This test requires a PostgreSQL connection with test data
+        // Run with: cargo test test_get_host_service_fingerprints -- --ignored --nocapture
+        let mut conn = establish_connection().expect("test connection");
+
+        let result = get_host_service_fingerprints(&mut conn, "test.onion");
+        assert!(result.is_ok());
     }
 }
