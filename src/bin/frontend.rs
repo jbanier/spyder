@@ -12,6 +12,7 @@ use rocket::serde::json::serde_json::{to_value, Value};
 use rocket::serde::{json::Json, Deserialize, Serialize};
 use rocket::{get, launch, post, routes, Build, Data, Request, Response, Rocket, State};
 use rocket_dyn_templates::{context, Template};
+use urlencoding;
 use spyder::models::{
     CategoryDistributionEntry, CategoryTimelinePoint, PaginatedResult, Stats, TopSiteSection,
 };
@@ -77,6 +78,22 @@ impl FrontendError {
             status: Status::InternalServerError,
             title: "Internal Server Error",
             detail,
+        }
+    }
+
+    fn bad_request(detail: &str) -> Self {
+        Self {
+            status: Status::BadRequest,
+            title: "Bad Request",
+            detail: detail.to_string(),
+        }
+    }
+
+    fn not_found(detail: &str) -> Self {
+        Self {
+            status: Status::NotFound,
+            title: "Not Found",
+            detail: detail.to_string(),
         }
     }
 }
@@ -3703,6 +3720,54 @@ fn short_day_label(value: &str) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
+#[get("/sites/<host>")]
+fn site_detail(host: String, state: &State<AppState>) -> HtmlResult {
+    let decoded_host = urlencoding::decode(&host)
+        .map_err(|_| FrontendError::bad_request("Invalid host encoding"))?;
+
+    if decoded_host.is_empty() || decoded_host.len() > 253 {
+        return Err(FrontendError::bad_request("Invalid host"));
+    }
+
+    let mut connection = state
+        .inner()
+        .connection()?;
+
+    let site_data = spyder::get_site_detail(&mut connection, &decoded_host, 50, 0).map_err(
+        |e| {
+            if e.to_string().contains("not found") {
+                FrontendError::not_found("Site not found")
+            } else {
+                FrontendError::internal("loading site detail", e)
+            }
+        },
+    )?;
+
+    let has_leads = !site_data.active_leads.is_empty();
+    let has_pages = !site_data.pages.is_empty();
+    let has_services = site_data.service_fingerprints.http.is_some()
+        || site_data.service_fingerprints.tls.is_some()
+        || site_data.service_fingerprints.ssh.is_some();
+
+    let context = context! {
+        title: format!("Site: {}", decoded_host),
+        host: decoded_host.as_ref(),
+        profile: site_data.profile,
+        intel_summary: site_data.intel_summary,
+        active_leads: site_data.active_leads,
+        has_leads: has_leads,
+        pages: site_data.pages,
+        has_pages: has_pages,
+        service_fingerprints: site_data.service_fingerprints,
+        has_services: has_services,
+        relationships: site_data.relationships,
+        discovery_stats: site_data.discovery_stats,
+        queue_stats: site_data.queue_stats,
+    };
+
+    Ok(Template::render("site_detail", context))
+}
+
 #[launch]
 fn rocket() -> _ {
     build_rocket()
@@ -3738,6 +3803,7 @@ fn build_rocket() -> Rocket<Build> {
                 top,
                 analytics,
                 sites,
+                site_detail,
                 sites_grouped,
                 discovery,
                 queue_failures,
@@ -4367,6 +4433,22 @@ mod tests {
         let scan_body = scan_response.into_string().expect("scan detail body");
         assert!(scan_body.contains("Site Classification"));
         assert!(scan_body.contains("keyword:acme corp"));
+
+        fs::remove_file(&database_url).expect("remove test database");
+    }
+
+    #[test]
+    fn test_site_detail_route() {
+        let _guard = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test lock");
+        let database_url = setup_test_database();
+        env::set_var("DATABASE_URL", &database_url);
+
+        let client = Client::tracked(build_rocket()).expect("rocket client");
+        let response = client.get("/sites/alpha.onion").dispatch();
+        assert_eq!(response.status(), Status::Ok);
 
         fs::remove_file(&database_url).expect("remove test database");
     }
