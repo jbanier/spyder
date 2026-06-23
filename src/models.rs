@@ -596,6 +596,8 @@ pub struct WorkUnit {
     pub last_attempt_at: Option<String>,
     pub last_error: Option<String>,
     pub created_at: String,
+    pub url_discovery_id: Option<i32>,
+    pub failure_category: Option<String>,
 }
 
 #[derive(Insertable)]

@@ -10350,6 +10350,60 @@ pub fn get_site_detail(
     })
 }
 
+pub fn get_page_discovery_chain(
+    conn: &mut PgConnection,
+    page_url: &str,
+) -> Result<Option<DiscoveryChain>> {
+    use crate::schema::{import_source, page, url_discovery};
+
+    let discovery = url_discovery::table
+        .filter(url_discovery::url.eq(page_url))
+        .first::<UrlDiscovery>(conn)
+        .optional()
+        .context("error loading url_discovery")?;
+
+    let discovery = match discovery {
+        Some(d) => d,
+        None => return Ok(None),
+    };
+
+    let import_source_name = if let Some(source_id) = discovery.import_source_id {
+        import_source::table
+            .find(source_id)
+            .select(import_source::source_name)
+            .first::<String>(conn)
+            .optional()
+            .context("error loading import source")?
+    } else {
+        None
+    };
+
+    let mut chain_items = Vec::new();
+    for page_id_opt in &discovery.discovery_chain {
+        if let Some(page_id) = page_id_opt {
+            let (title, url) = page::table
+                .find(page_id)
+                .select((page::title, page::url))
+                .first::<(String, String)>(conn)
+                .context("error loading chain page")?;
+
+            chain_items.push(ChainItem {
+                page_id: *page_id,
+                page_title: title,
+                page_url: url,
+            });
+        }
+    }
+
+    Ok(Some(DiscoveryChain {
+        depth: discovery.discovery_depth,
+        import_source_id: discovery.import_source_id,
+        import_source_name,
+        chain: chain_items,
+        discovered_at: discovery.discovered_at,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12207,5 +12261,27 @@ mod tests {
         assert!(result.is_ok());
         let detail = result.unwrap();
         assert_eq!(detail.profile.host, "test.onion");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_get_page_discovery_chain() {
+        // This test requires a PostgreSQL connection with test data
+        // Run with: cargo test test_get_page_discovery_chain -- --ignored --nocapture
+        let mut conn = establish_connection().expect("test connection");
+
+        let result = get_page_discovery_chain(&mut conn, "http://test.onion/page");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore] // Requires PgConnection and test data
+    fn test_get_page_work_queue_history() {
+        // This test requires a PostgreSQL connection with test data
+        // Run with: cargo test test_get_page_work_queue_history -- --ignored --nocapture
+        let mut conn = establish_connection().expect("test connection");
+
+        let result = get_page_work_queue_history(&mut conn, "http://test.onion");
+        assert!(result.is_ok());
     }
 }
