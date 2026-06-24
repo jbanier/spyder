@@ -697,7 +697,7 @@ fn failure_kind_label(kind: FailureKind) -> &'static str {
 
 fn page_save_outcome_label(outcome: PageSaveOutcome) -> &'static str {
     match outcome {
-        PageSaveOutcome::Stored => "Stored",
+        PageSaveOutcome::Stored(_) => "Stored",
         PageSaveOutcome::SkippedBlacklisted => "Skipped blacklisted",
         PageSaveOutcome::PurgedAfterAutoBlacklist => "Purged newly blacklisted",
     }
@@ -1018,7 +1018,7 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
                     );
                     let save_outcome = save_page_info(&mut connection, &capture.snapshot)?;
                     let discovery_outcome = match save_outcome {
-                        PageSaveOutcome::Stored => {
+                        PageSaveOutcome::Stored(_) => {
                             save_host_http_observation(&mut connection, &capture.http_observation)?;
                             if let Some(tls_observation) = capture.tls_observation.as_ref() {
                                 save_host_tls_observation(&mut connection, tls_observation)?;
