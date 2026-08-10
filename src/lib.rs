@@ -2027,23 +2027,36 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
                 .context("error saving page scan crypto references")?;
         }
 
-        diesel::delete(page_link::table.filter(page_link::source_page_id.eq(stored_page_id)))
-            .execute(conn)
-            .context("error clearing saved page links")?;
-        diesel::delete(page_email::table.filter(page_email::page_id.eq(stored_page_id)))
-            .execute(conn)
-            .context("error clearing saved page emails")?;
-        diesel::delete(page_crypto::table.filter(page_crypto::page_id.eq(stored_page_id)))
-            .execute(conn)
-            .context("error clearing saved page crypto refs")?;
-        diesel::delete(
-            page_keyword_tag::table.filter(page_keyword_tag::page_id.eq(stored_page_id)),
-        )
-        .execute(conn)
-        .context("error clearing saved page keyword tags")?;
-        diesel::delete(page_topic_tag::table.filter(page_topic_tag::page_id.eq(stored_page_id)))
-            .execute(conn)
-            .context("error clearing saved page topic tags")?;
+        // ═══════════════════════════════════════════════════════════════════════════════
+        // CRITICAL: Use ON CONFLICT DO NOTHING to prevent database bloat
+        // ═══════════════════════════════════════════════════════════════════════════════
+        //
+        // PREVIOUS BEHAVIOR (caused 285 GB of bloat!):
+        //   DELETE FROM page_link WHERE source_page_id = ?;
+        //   INSERT INTO page_link VALUES (...);
+        //
+        // This delete+insert pattern on every page rescan created massive bloat:
+        //   - page_link: 183 GB for 200k rows (should be ~500 MB)
+        //   - page_scan_link: 100 GB for 159k rows
+        //   - Total bloat across database: ~285 GB
+        //
+        // NEW BEHAVIOR (eliminates bloat):
+        //   INSERT INTO page_link VALUES (...) ON CONFLICT DO NOTHING;
+        //
+        // This only inserts NEW links/emails/crypto refs. Existing entries are left
+        // unchanged, eliminating the churn that causes bloat.
+        //
+        // TRADE-OFF: Removed links won't be deleted from the database. This is acceptable
+        // because:
+        //   1. Historical link observations are still valuable for analysis
+        //   2. The page_scan_link table still tracks scan-specific snapshots
+        //   3. Avoiding 99% bloat is worth keeping stale entries
+        //
+        // If exact current-state accuracy is needed, add a periodic cleanup job or
+        // use page_scan_link for point-in-time snapshots.
+        //
+        // See: PAGE_LINK_BLOAT_ANALYSIS.md for full details on the bloat investigation.
+        // ═══════════════════════════════════════════════════════════════════════════════
 
         let link_rows = snapshot
             .links
@@ -2058,6 +2071,8 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
         if !link_rows.is_empty() {
             diesel::insert_into(page_link::table)
                 .values(&link_rows)
+                .on_conflict((page_link::source_page_id, page_link::target_url))
+                .do_nothing()
                 .execute(conn)
                 .context("error saving page links")?;
         }
@@ -2073,6 +2088,8 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
         if !email_rows.is_empty() {
             diesel::insert_into(page_email::table)
                 .values(&email_rows)
+                .on_conflict((page_email::page_id, page_email::email))
+                .do_nothing()
                 .execute(conn)
                 .context("error saving page emails")?;
         }
@@ -2089,6 +2106,8 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
         if !crypto_rows.is_empty() {
             diesel::insert_into(page_crypto::table)
                 .values(&crypto_rows)
+                .on_conflict((page_crypto::page_id, page_crypto::asset_type, page_crypto::reference))
+                .do_nothing()
                 .execute(conn)
                 .context("error saving page crypto references")?;
         }
@@ -2107,6 +2126,8 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
         if !keyword_tag_rows.is_empty() {
             diesel::insert_into(page_keyword_tag::table)
                 .values(&keyword_tag_rows)
+                .on_conflict((page_keyword_tag::page_id, page_keyword_tag::tag))
+                .do_nothing()
                 .execute(conn)
                 .context("error saving page keyword tags")?;
         }
@@ -2125,6 +2146,8 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
         if !topic_tag_rows.is_empty() {
             diesel::insert_into(page_topic_tag::table)
                 .values(&topic_tag_rows)
+                .on_conflict((page_topic_tag::page_id, page_topic_tag::topic))
+                .do_nothing()
                 .execute(conn)
                 .context("error saving page topic tags")?;
         }
@@ -3775,6 +3798,9 @@ fn upsert_intel_lead_candidate(
         })
         .collect::<Vec<_>>();
     if !evidence_rows.is_empty() {
+        // Use DO NOTHING to prevent bloat from unnecessary updates.
+        // Evidence is immutable - if it exists, we don't need to update observed_at.
+        // This eliminates 888k+ unnecessary updates that cause table bloat.
         diesel::insert_into(evidence_dsl::intel_lead_evidence)
             .values(&evidence_rows)
             .on_conflict((
@@ -3784,8 +3810,7 @@ fn upsert_intel_lead_candidate(
                 evidence_dsl::source_key,
                 evidence_dsl::evidence_text,
             ))
-            .do_update()
-            .set(evidence_dsl::observed_at.eq(excluded(evidence_dsl::observed_at)))
+            .do_nothing()
             .execute(conn)
             .context("error upserting intel lead evidence")?;
     }

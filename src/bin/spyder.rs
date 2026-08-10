@@ -863,14 +863,30 @@ fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
         "Extracted {}",
         summarize_page_snapshot(&capture.snapshot)
     ));
+
+    // Save the page to get page_id for discovery tracking
+    let save_outcome = save_page_info(&mut connection, &capture.snapshot)
+        .context("saving seed page")?;
+
     save_host_http_observation(&mut connection, &capture.http_observation)
         .context("saving seed http fingerprint")?;
     if let Some(tls_observation) = capture.tls_observation.as_ref() {
         save_host_tls_observation(&mut connection, tls_observation)
             .context("saving seed tls fingerprint")?;
     }
+
     print_status("Queueing discovered links from the seed page");
-    let outcome = enqueue_discovered_links(&mut connection, &capture.snapshot)?;
+    let outcome = match save_outcome {
+        PageSaveOutcome::Stored(page_id) => {
+            enqueue_discovered_links(&mut connection, &capture.snapshot, page_id)?
+        }
+        PageSaveOutcome::SkippedBlacklisted | PageSaveOutcome::PurgedAfterAutoBlacklist => {
+            DiscoveryEnqueueOutcome {
+                queued_count: 0,
+                skipped_blacklisted_count: 0,
+            }
+        }
+    };
     info!(
         queued_count = outcome.queued_count,
         "Queued discovered URLs from the seed page"
@@ -1018,12 +1034,12 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
                     );
                     let save_outcome = save_page_info(&mut connection, &capture.snapshot)?;
                     let discovery_outcome = match save_outcome {
-                        PageSaveOutcome::Stored(_) => {
+                        PageSaveOutcome::Stored(page_id) => {
                             save_host_http_observation(&mut connection, &capture.http_observation)?;
                             if let Some(tls_observation) = capture.tls_observation.as_ref() {
                                 save_host_tls_observation(&mut connection, tls_observation)?;
                             }
-                            enqueue_discovered_links(&mut connection, &capture.snapshot)?
+                            enqueue_discovered_links(&mut connection, &capture.snapshot, page_id)?
                         }
                         PageSaveOutcome::SkippedBlacklisted
                         | PageSaveOutcome::PurgedAfterAutoBlacklist => DiscoveryEnqueueOutcome {
@@ -2456,13 +2472,23 @@ fn url_targets_onion(url: &str) -> bool {
 fn enqueue_discovered_links(
     connection: &mut PgConnection,
     snapshot: &spyder::models::PageSnapshot,
+    discovering_page_id: i32,
 ) -> Result<DiscoveryEnqueueOutcome> {
     let blacklist_domains = list_domain_blacklist_rules(connection)?
         .into_iter()
         .map(|rule| rule.domain)
         .collect::<Vec<_>>();
     enqueue_discovered_links_with(snapshot, &blacklist_domains, |url, blacklist_domains| {
-        create_work_unit_unless_blacklisted(connection, url, blacklist_domains)
+        // Create discovery record linking this URL to the discovering page
+        let discovery_id = spyder::create_url_discovery_for_link(connection, url, discovering_page_id)?;
+
+        // Only create work unit if discovery was actually created (not duplicate)
+        if discovery_id.is_some() {
+            create_work_unit_unless_blacklisted(connection, url, blacklist_domains)
+        } else {
+            // URL already discovered, don't re-queue
+            Ok(WorkQueueOutcome::SkippedBlacklisted)
+        }
     })
 }
 
