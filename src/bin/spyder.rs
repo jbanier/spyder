@@ -1138,7 +1138,7 @@ fn work_queue(options: WorkOptions) -> Result<()> {
     Ok(())
 }
 
-fn rescan_known_pages(client: &Client, options: RescanKnownOptions) -> Result<()> {
+fn rescan_known_pages(options: RescanKnownOptions) -> Result<()> {
     let mut connection = establish_connection()?;
     print_status("Queueing known pages for rescan");
     let queued_count =
@@ -4212,7 +4212,7 @@ fn main() {
         },
         Some("rescan-known") => match parse_rescan_known_options(args) {
             Ok(options) => {
-                build_http_client().and_then(|client| rescan_known_pages(&client, options))
+                rescan_known_pages(options)
             }
             Err(error) => {
                 usage(&program);
