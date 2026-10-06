@@ -155,6 +155,7 @@ struct WorkFetchJob {
 struct WorkFetchResult {
     job: WorkFetchJob,
     capture: std::result::Result<HttpEndpointCapture, CrawlFailure>,
+    network: spyder::NetworkType,
 }
 
 struct HttpEndpointCapture {
@@ -916,7 +917,7 @@ fn enqueue_seed_and_links(url: &str) -> Result<usize> {
     Ok(1 + outcome.queued_count)
 }
 
-fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
+fn work_queue(options: WorkOptions) -> Result<()> {
     let mut connection = establish_connection()?;
     let tls_proxy = load_best_effort_tls_proxy_config();
     print_status("Loading pending work units");
@@ -1014,7 +1015,6 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
 
     thread::scope(|scope| {
         for _ in 0..worker_count {
-            let client = client.clone();
             let job_queue = Arc::clone(&job_queue);
             let result_tx = result_tx.clone();
             let tls_proxy = tls_proxy.clone();
@@ -1029,8 +1029,17 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
                     break;
                 };
 
-                let capture = fetch_page_capture(&client, &job.crawl_url, tls_proxy.as_ref());
-                if result_tx.send(WorkFetchResult { job, capture }).is_err() {
+                let network = spyder::detect_network_type(&job.crawl_url);
+                let client_result = build_http_client_for_network(network);
+                let capture = match client_result {
+                    Ok(client) => fetch_page_capture(&client, &job.crawl_url, tls_proxy.as_ref()),
+                    Err(e) => Err(CrawlFailure {
+                        error: e,
+                        kind: FailureKind::Permanent,
+                    }),
+                };
+
+                if result_tx.send(WorkFetchResult { job, capture, network }).is_err() {
                     break;
                 }
             });
@@ -1040,14 +1049,20 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
 
         for (completed, result) in result_rx.into_iter().enumerate() {
             let current = completed + 1;
+            let network_str = spyder::network_type_to_string(result.network);
+
             match result.capture {
                 Ok(capture) => {
+                    if result.network == spyder::NetworkType::I2p {
+                        record_i2p_outcome(true);
+                    }
+
                     print_progress(
                         current,
                         attempted,
                         format!("Extracted {}", summarize_page_snapshot(&capture.snapshot)),
                     );
-                    let save_outcome = save_page_info(&mut connection, &capture.snapshot)?;
+                    let save_outcome = save_page_info(&mut connection, &capture.snapshot, network_str)?;
                     let discovery_outcome = match save_outcome {
                         PageSaveOutcome::Stored(page_id) => {
                             save_host_http_observation(&mut connection, &capture.http_observation)?;
@@ -1085,6 +1100,10 @@ fn work_queue(client: &Client, options: WorkOptions) -> Result<()> {
                     }
                 }
                 Err(failure) => {
+                    if result.network == spyder::NetworkType::I2p {
+                        record_i2p_outcome(false);
+                    }
+
                     error!(
                         current,
                         attempted,
@@ -1137,7 +1156,6 @@ fn rescan_known_pages(client: &Client, options: RescanKnownOptions) -> Result<()
     }
 
     work_queue(
-        client,
         WorkOptions {
             onion_only: options.onion_only,
             concurrency: options.concurrency,
@@ -4186,7 +4204,7 @@ fn main() {
             }
         },
         Some("work") => match parse_work_options(args) {
-            Ok(options) => build_http_client().and_then(|client| work_queue(&client, options)),
+            Ok(options) => work_queue(options),
             Err(error) => {
                 usage(&program);
                 Err(error)
