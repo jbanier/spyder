@@ -214,6 +214,87 @@ all_proxy=socks5h://localhost:9050 cargo run --bin spyder -- work --onion-only
 
 The `socks5h` form is important because hostname resolution must happen through Tor for `.onion` hosts.
 
+
+## I2P Network Usage
+
+Spyder supports crawling .i2p eepsites through an I2P HTTP proxy (i2pd or Java I2P router).
+
+### Setup
+
+Ensure i2pd is running with HTTP proxy enabled:
+
+```ini
+# i2pd.conf
+[http]
+enabled = true
+address = 127.0.0.1
+port = 4444
+```
+
+Or install and start i2pd:
+
+```bash
+# Ubuntu/Debian
+sudo apt install i2pd
+sudo systemctl start i2pd
+sudo systemctl enable i2pd
+```
+
+### Crawling I2P Sites
+
+The I2P proxy is configured via the `I2P_PROXY` environment variable (default: `http://127.0.0.1:4444`).
+
+Seed an I2P eepsite:
+
+```bash
+I2P_PROXY=http://127.0.0.1:4444 cargo run --bin spyder -- add http://stats.i2p
+```
+
+Process I2P work queue:
+
+```bash
+I2P_PROXY=http://127.0.0.1:4444 cargo run --bin spyder -- work
+```
+
+### Mixed Network Crawling
+
+Spyder automatically detects network type by TLD and routes requests appropriately:
+
+- `.i2p` URLs → I2P HTTP proxy
+- `.onion` URLs → Tor SOCKS proxy
+- Other URLs → Direct connection (clearnet)
+
+Run mixed network crawl:
+
+```bash
+ALL_PROXY=socks5h://127.0.0.1:9050 I2P_PROXY=http://127.0.0.1:4444 \
+  cargo run --bin spyder -- work
+```
+
+### I2P Performance Notes
+
+- Initial I2P requests may take 30-60 seconds while tunnels establish
+- After i2pd integrates into the network, requests typically complete in 15-30 seconds
+- Spyder uses adaptive timeouts: starts at 45s, reduces to 30s after successful crawls
+- Allow 10-15 minutes after i2pd startup for optimal performance
+
+### Cross-Network Intelligence
+
+All pages are tagged with their source network (`clearnet`, `tor`, `i2p`). Cross-network queries work automatically:
+
+```sql
+-- Find emails appearing on both Tor and I2P
+SELECT eo.email_address, 
+       COUNT(DISTINCT CASE WHEN p.network = 'tor' THEN p.host END) as tor_hosts,
+       COUNT(DISTINCT CASE WHEN p.network = 'i2p' THEN p.host END) as i2p_hosts
+FROM email_observation eo
+JOIN page p ON eo.page_id = p.id
+GROUP BY eo.email_address
+HAVING COUNT(DISTINCT p.network) > 1;
+```
+
+Frontend views (`/entities/emails`, `/entities/crypto`, `/relationships`) automatically include I2P data.
+
 ## Start The Web Interface
 
 Run the frontend against the same `DATABASE_URL`:
