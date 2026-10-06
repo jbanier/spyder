@@ -1886,7 +1886,7 @@ fn compute_page_keyword_tags(snapshot: &PageSnapshot, rules: &[ForumKeywordRule]
     tags
 }
 
-pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Result<PageSaveOutcome> {
+pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot, network: &str) -> Result<PageSaveOutcome> {
     use crate::schema::page::dsl::{
         coins as page_coins, emails as page_emails, language as page_language,
         last_scanned_at as page_last_scanned_at, links as page_links, title as page_title,
@@ -1922,6 +1922,7 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot) -> Resul
             .collect::<Vec<_>>()
             .join(","),
         language: snapshot.language.clone(),
+        network: network.to_string(),
     };
 
     conn.transaction::<_, anyhow::Error, _>(|conn| {
