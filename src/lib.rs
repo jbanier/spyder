@@ -90,6 +90,31 @@ pub enum PageSaveOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkType {
+    Clearnet,
+    Tor,
+    I2p,
+}
+
+pub fn detect_network_type(url: &str) -> NetworkType {
+    if url.contains(".onion/") || url.contains(".onion:") || url.ends_with(".onion") {
+        NetworkType::Tor
+    } else if url.contains(".i2p/") || url.contains(".i2p:") || url.ends_with(".i2p") {
+        NetworkType::I2p
+    } else {
+        NetworkType::Clearnet
+    }
+}
+
+pub fn network_type_to_string(network: NetworkType) -> &'static str {
+    match network {
+        NetworkType::Clearnet => "clearnet",
+        NetworkType::Tor => "tor",
+        NetworkType::I2p => "i2p",
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkQueueOutcome {
     Queued,
     SkippedBlacklisted,
@@ -12331,5 +12356,39 @@ mod tests {
 
         let result = get_page_work_queue_history(&mut conn, "http://test.onion");
         assert!(result.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod network_type_tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_i2p_urls() {
+        assert_eq!(detect_network_type("http://example.i2p"), NetworkType::I2p);
+        assert_eq!(detect_network_type("http://example.i2p/path"), NetworkType::I2p);
+        assert_eq!(detect_network_type("http://example.i2p:8080"), NetworkType::I2p);
+        assert_eq!(detect_network_type("https://example.i2p"), NetworkType::I2p);
+    }
+
+    #[test]
+    fn test_detect_tor_urls() {
+        assert_eq!(detect_network_type("http://example.onion"), NetworkType::Tor);
+        assert_eq!(detect_network_type("http://example.onion/path"), NetworkType::Tor);
+        assert_eq!(detect_network_type("http://example.onion:8080"), NetworkType::Tor);
+    }
+
+    #[test]
+    fn test_detect_clearnet_urls() {
+        assert_eq!(detect_network_type("http://example.com"), NetworkType::Clearnet);
+        assert_eq!(detect_network_type("https://example.com/path"), NetworkType::Clearnet);
+        assert_eq!(detect_network_type("http://192.168.1.1"), NetworkType::Clearnet);
+    }
+
+    #[test]
+    fn test_network_type_to_string() {
+        assert_eq!(network_type_to_string(NetworkType::I2p), "i2p");
+        assert_eq!(network_type_to_string(NetworkType::Tor), "tor");
+        assert_eq!(network_type_to_string(NetworkType::Clearnet), "clearnet");
     }
 }
