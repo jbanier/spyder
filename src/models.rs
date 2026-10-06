@@ -14,6 +14,7 @@ pub struct Page {
     pub language: String,
     pub last_scanned_at: String,
     pub created_at: String,
+    pub network: String,
 }
 
 #[derive(Insertable)]
@@ -25,6 +26,7 @@ pub struct NewPage {
     pub emails: String,
     pub coins: String,
     pub language: String,
+    pub network: String,
 }
 
 #[derive(Selectable, Queryable, Serialize, Clone)]
