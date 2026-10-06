@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use diesel::connection::SimpleConnection;
+use lazy_static::lazy_static;
 use tracing::{error, info, warn};
 use diesel::deserialize::QueryableByName;
 use diesel::pg::PgConnection;
@@ -3845,6 +3846,71 @@ fn run_import(
     })
 }
 
+struct TimeoutTracker {
+    outcomes: VecDeque<bool>,
+    max_size: usize,
+}
+
+impl TimeoutTracker {
+    fn new(max_size: usize) -> Self {
+        Self {
+            outcomes: VecDeque::with_capacity(max_size),
+            max_size,
+        }
+    }
+
+    fn record(&mut self, success: bool) {
+        if self.outcomes.len() >= self.max_size {
+            self.outcomes.pop_front();
+        }
+        self.outcomes.push_back(success);
+    }
+
+    fn count(&self) -> usize {
+        self.outcomes.len()
+    }
+
+    fn success_rate(&self) -> f64 {
+        if self.outcomes.is_empty() {
+            return 0.0;
+        }
+        let successes = self.outcomes.iter().filter(|&&s| s).count();
+        successes as f64 / self.outcomes.len() as f64
+    }
+
+    fn get_timeout(&self) -> Duration {
+        if self.count() >= 50 && self.success_rate() > 0.8 {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_secs(45)
+        }
+    }
+}
+
+lazy_static! {
+    static ref I2P_TIMEOUT_TRACKER: Mutex<TimeoutTracker> = Mutex::new(TimeoutTracker::new(100));
+}
+
+fn get_timeout_for_network(network: spyder::NetworkType) -> Duration {
+    match network {
+        spyder::NetworkType::I2p => {
+            I2P_TIMEOUT_TRACKER
+                .lock()
+                .unwrap()
+                .get_timeout()
+        }
+        spyder::NetworkType::Tor => Duration::from_secs(15),
+        spyder::NetworkType::Clearnet => Duration::from_secs(15),
+    }
+}
+
+fn record_i2p_outcome(success: bool) {
+    I2P_TIMEOUT_TRACKER
+        .lock()
+        .unwrap()
+        .record(success);
+}
+
 fn main() {
     // Initialize structured logging
     spyder::logging::init_tracing();
@@ -4143,6 +4209,8 @@ mod tests {
             last_attempt_at: None,
             last_error: None,
             created_at: "2026-05-26T00:00:00Z".to_string(),
+            url_discovery_id: None,
+            failure_category: None,
         }
     }
 
@@ -4425,5 +4493,57 @@ mod tests {
 
         assert_eq!(queued.len(), 1);
         assert!(queued.contains("http://allowed.onion/docs"));
+    }
+}
+
+#[cfg(test)]
+mod timeout_tracker_tests {
+    use super::*;
+
+    #[test]
+    fn test_initial_i2p_timeout() {
+        let tracker = TimeoutTracker::new(100);
+        assert_eq!(tracker.get_timeout(), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn test_timeout_reduces_after_successes() {
+        let mut tracker = TimeoutTracker::new(100);
+
+        // Add 60 successes
+        for _ in 0..60 {
+            tracker.record(true);
+        }
+
+        // Should reduce to 30s with >80% success over 50+ requests
+        assert_eq!(tracker.get_timeout(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_timeout_stays_high_with_failures() {
+        let mut tracker = TimeoutTracker::new(100);
+
+        // Add 30 successes, 20 failures (60% success)
+        for _ in 0..30 {
+            tracker.record(true);
+        }
+        for _ in 0..20 {
+            tracker.record(false);
+        }
+
+        // Should stay at 45s with <80% success
+        assert_eq!(tracker.get_timeout(), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn test_timeout_window_limit() {
+        let mut tracker = TimeoutTracker::new(10);
+
+        // Add 15 outcomes (should only keep last 10)
+        for _ in 0..15 {
+            tracker.record(true);
+        }
+
+        assert_eq!(tracker.count(), 10);
     }
 }
