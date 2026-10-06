@@ -3514,19 +3514,51 @@ fn print_error(error: &anyhow::Error) {
     }
 }
 
-fn build_http_client() -> Result<Client> {
-    // Crawl targets may present self-signed, expired, or otherwise invalid certificates.
+fn get_proxy_for_network(network: spyder::NetworkType) -> Option<String> {
+    match network {
+        spyder::NetworkType::I2p => {
+            env::var("I2P_PROXY")
+                .ok()
+                .or_else(|| Some("http://127.0.0.1:4444".to_string()))
+        }
+        spyder::NetworkType::Tor => {
+            env::var("TOR_PROXY")
+                .ok()
+                .or_else(|| env::var("ALL_PROXY").ok())
+                .or_else(|| Some("socks5h://127.0.0.1:9050".to_string()))
+        }
+        spyder::NetworkType::Clearnet => None,
+    }
+}
+
+fn build_http_client_for_network(network: spyder::NetworkType) -> Result<Client> {
     let mut builder = Client::builder()
-        .timeout(Duration::from_secs(15))
-        .danger_accept_invalid_certs(true)
-        .no_proxy();
-    if let Some(proxy_url) = configured_proxy_url() {
+        .timeout(get_timeout_for_network(network))
+        .danger_accept_invalid_certs(true);
+
+    if let Some(proxy_url) = get_proxy_for_network(network) {
         builder = builder.proxy(
-            Proxy::all(&proxy_url).with_context(|| format!("invalid proxy url: {proxy_url}"))?,
+            Proxy::all(&proxy_url)
+                .with_context(|| format!("invalid proxy url: {proxy_url}"))?,
         );
+    } else {
+        builder = builder.no_proxy();
     }
 
-    builder.build().context("http client should build")
+    builder
+        .build()
+        .context("http client should build")
+}
+
+// Keep the old function as a compatibility wrapper for now
+fn build_http_client() -> Result<Client> {
+    // Detect network type from ALL_PROXY if set, otherwise default to clearnet
+    let network = if env::var("ALL_PROXY").is_ok() {
+        spyder::NetworkType::Tor
+    } else {
+        spyder::NetworkType::Clearnet
+    };
+    build_http_client_for_network(network)
 }
 
 fn configured_proxy_url() -> Option<String> {
@@ -4545,5 +4577,55 @@ mod timeout_tracker_tests {
         }
 
         assert_eq!(tracker.count(), 10);
+    }
+}
+
+#[cfg(test)]
+mod proxy_selection_tests {
+    use super::*;
+    use std::env;
+
+    #[test]
+    fn test_i2p_proxy_custom() {
+        env::set_var("I2P_PROXY", "http://custom:4444");
+        let proxy = get_proxy_for_network(spyder::NetworkType::I2p);
+        env::remove_var("I2P_PROXY");
+
+        assert_eq!(proxy, Some("http://custom:4444".to_string()));
+    }
+
+    #[test]
+    fn test_i2p_proxy_default() {
+        env::remove_var("I2P_PROXY");
+        let proxy = get_proxy_for_network(spyder::NetworkType::I2p);
+
+        assert_eq!(proxy, Some("http://127.0.0.1:4444".to_string()));
+    }
+
+    #[test]
+    fn test_tor_proxy_precedence() {
+        env::set_var("TOR_PROXY", "socks5h://tor:9050");
+        env::set_var("ALL_PROXY", "socks5h://all:9050");
+        let proxy = get_proxy_for_network(spyder::NetworkType::Tor);
+        env::remove_var("TOR_PROXY");
+        env::remove_var("ALL_PROXY");
+
+        assert_eq!(proxy, Some("socks5h://tor:9050".to_string()));
+    }
+
+    #[test]
+    fn test_tor_proxy_all_proxy_fallback() {
+        env::remove_var("TOR_PROXY");
+        env::set_var("ALL_PROXY", "socks5h://all:9050");
+        let proxy = get_proxy_for_network(spyder::NetworkType::Tor);
+        env::remove_var("ALL_PROXY");
+
+        assert_eq!(proxy, Some("socks5h://all:9050".to_string()));
+    }
+
+    #[test]
+    fn test_clearnet_no_proxy() {
+        let proxy = get_proxy_for_network(spyder::NetworkType::Clearnet);
+        assert_eq!(proxy, None);
     }
 }
