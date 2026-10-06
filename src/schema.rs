@@ -177,6 +177,8 @@ diesel::table! {
         language -> Text,
         last_scanned_at -> Text,
         created_at -> Text,
+        #[max_length = 16]
+        network -> Varchar,
     }
 }
 
