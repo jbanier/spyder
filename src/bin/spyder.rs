@@ -838,7 +838,11 @@ fn probe_irc_endpoint(
     })
 }
 
-fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
+fn enqueue_seed_and_links(url: &str) -> Result<usize> {
+    let network = spyder::detect_network_type(url);
+    let network_str = spyder::network_type_to_string(network);
+    let client = build_http_client_for_network(network)?;
+
     let normalized_url = normalize_crawl_url(url);
     let tls_proxy = load_best_effort_tls_proxy_config();
     let mut connection = establish_connection()?;
@@ -857,16 +861,26 @@ fn enqueue_seed_and_links(client: &Client, url: &str) -> Result<usize> {
 
     Url::parse(&normalized_url).with_context(|| format!("invalid url: {normalized_url}"))?;
     print_status(format!("Fetching seed page {normalized_url}"));
-    let capture = fetch_page_capture(client, &normalized_url, tls_proxy.as_ref())
-        .map_err(|failure| failure.error)
+    let capture = fetch_page_capture(&client, &normalized_url, tls_proxy.as_ref())
+        .map_err(|failure| {
+            if network == spyder::NetworkType::I2p {
+                record_i2p_outcome(false);
+            }
+            failure.error
+        })
         .with_context(|| format!("unable to discover links for seed {normalized_url}"))?;
+
+    if network == spyder::NetworkType::I2p {
+        record_i2p_outcome(true);
+    }
+
     print_status(format!(
         "Extracted {}",
         summarize_page_snapshot(&capture.snapshot)
     ));
 
     // Save the page to get page_id for discovery tracking
-    let save_outcome = save_page_info(&mut connection, &capture.snapshot)
+    let save_outcome = save_page_info(&mut connection, &capture.snapshot, network_str)
         .context("saving seed page")?;
 
     save_host_http_observation(&mut connection, &capture.http_observation)
@@ -3951,11 +3965,11 @@ fn main() {
     let program = args.next().unwrap_or_else(|| "spyder".to_string());
     let result = match args.next().as_deref() {
         Some("add") => match args.next() {
-            Some(url) => build_http_client().and_then(|client| {
-                enqueue_seed_and_links(&client, &url).map(|count| {
+            Some(url) => {
+                enqueue_seed_and_links(&url).map(|count| {
                     info!("Enqueued {count} URLs");
                 })
-            }),
+            }
             None => {
                 usage(&program);
                 Err(anyhow::anyhow!("no url is provided"))
