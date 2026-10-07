@@ -4,6 +4,19 @@ use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// Headers containing credentials that should be redacted from logs
+const REDACTED_HEADERS: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "x-api-key",
+    "x-auth-token",
+    "x-csrf-token",
+    "x-session-token",
+    "api-key",
+    "apikey",
+];
+
 /// Extended HTTP capture with full metadata
 pub struct EnhancedHttpCapture {
     pub status_code: i32,
@@ -56,12 +69,19 @@ pub fn capture_http_metadata(
 }
 
 /// Convert HeaderMap to HashMap<String, String> for JSON serialization
+/// Redacts sensitive headers containing credentials
 fn headers_to_hashmap(headers: &HeaderMap) -> HashMap<String, String> {
     let mut map = HashMap::new();
 
     for (name, value) in headers.iter() {
         let key = name.as_str().to_lowercase();
-        let val = value.to_str().unwrap_or("<binary>").to_string();
+
+        // Security: Redact sensitive headers to prevent credential leakage
+        let val = if REDACTED_HEADERS.contains(&key.as_str()) {
+            "[REDACTED]".to_string()
+        } else {
+            value.to_str().unwrap_or("<binary>").to_string()
+        };
 
         // Combine multiple values with comma (HTTP standard)
         map.entry(key)
@@ -88,6 +108,7 @@ fn extract_cookies(headers: &HeaderMap) -> Value {
 }
 
 /// Parse a Set-Cookie header value
+/// Security: Masks cookie values to prevent credential leakage
 fn parse_cookie(cookie_str: &str) -> Value {
     let parts: Vec<&str> = cookie_str.split(';').map(|s| s.trim()).collect();
 
@@ -100,12 +121,23 @@ fn parse_cookie(cookie_str: &str) -> Value {
         .split_once('=')
         .unwrap_or((parts[0], ""));
 
+    // Security: Mask cookie value to prevent session token leakage
+    // Keep only structure for analysis (name + attributes), not sensitive data
+    let masked_value = if value.is_empty() {
+        "".to_string()
+    } else if value.len() <= 4 {
+        "***".to_string()
+    } else {
+        format!("{}***", &value[..4])
+    };
+
     let mut cookie = json!({
         "name": name,
-        "value": value,
+        "value": masked_value,
+        "value_length": value.len(),
     });
 
-    // Parse attributes
+    // Parse attributes (Path, Domain, Secure, HttpOnly, SameSite, etc.)
     for part in &parts[1..] {
         let (key, val) = part.split_once('=').unwrap_or((part, "true"));
         cookie[key.to_lowercase()] = json!(val);
@@ -148,10 +180,41 @@ mod tests {
         let cookie = parse_cookie(cookie_str);
 
         assert_eq!(cookie["name"], "session_id");
-        assert_eq!(cookie["value"], "abc123");
+        // Value is masked for security
+        assert_eq!(cookie["value"], "abc1***");
+        assert_eq!(cookie["value_length"], 6);
         assert_eq!(cookie["path"], "/");
         assert_eq!(cookie["secure"], "true");
         assert_eq!(cookie["httponly"], "true");
+    }
+
+    #[test]
+    fn test_parse_cookie_short_value() {
+        let cookie_str = "x=1";
+        let cookie = parse_cookie(cookie_str);
+
+        assert_eq!(cookie["name"], "x");
+        assert_eq!(cookie["value"], "***");
+        assert_eq!(cookie["value_length"], 1);
+    }
+
+    #[test]
+    fn test_headers_redaction() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("text/html"));
+        headers.insert("authorization", HeaderValue::from_static("Bearer secret-token-12345"));
+        headers.insert("cookie", HeaderValue::from_static("session=abc123"));
+        headers.insert("x-api-key", HeaderValue::from_static("key-12345"));
+
+        let map = headers_to_hashmap(&headers);
+
+        // Non-sensitive headers preserved
+        assert_eq!(map.get("content-type"), Some(&"text/html".to_string()));
+
+        // Sensitive headers redacted
+        assert_eq!(map.get("authorization"), Some(&"[REDACTED]".to_string()));
+        assert_eq!(map.get("cookie"), Some(&"[REDACTED]".to_string()));
+        assert_eq!(map.get("x-api-key"), Some(&"[REDACTED]".to_string()));
     }
 
     #[test]
