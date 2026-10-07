@@ -15,6 +15,22 @@ pub struct Page {
     pub last_scanned_at: String,
     pub created_at: String,
     pub network: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_time_ms: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_headers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_headers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cookies: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect_chain: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_software: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_technologies: Option<serde_json::Value>,
 }
 
 #[derive(Insertable)]
