@@ -13,20 +13,27 @@
         data-api-search
         data-results-target="#search-results"
     >
+        <label for="search-query" class="sr-only">Search query</label>
         <input
+            id="search-query"
             class="search-field"
             type="text"
             name="query"
             value="{{query}}"
-            placeholder="language:en topic:marketplace search text"
+            placeholder="language:en topic:marketplace search text…"
+            autocomplete="off"
+            spellcheck="false"
         >
+        <label for="search-limit" class="sr-only">Results limit</label>
         <input
+            id="search-limit"
             class="search-limit"
             type="number"
             name="limit"
             min="1"
             max="50"
             value="{{limit}}"
+            inputmode="numeric"
         >
         <button type="submit" class="btn">Search</button>
     </form>
