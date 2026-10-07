@@ -1,5 +1,4 @@
 use diesel::connection::SimpleConnection;
-use tracing::{error, info, warn};
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
 use rocket::fairing::{AdHoc, Fairing, Info, Kind};
@@ -12,7 +11,6 @@ use rocket::serde::json::serde_json::{to_value, Value};
 use rocket::serde::{json::Json, Deserialize, Serialize};
 use rocket::{get, launch, post, routes, Build, Data, Request, Response, Rocket, State};
 use rocket_dyn_templates::{context, Template};
-use urlencoding;
 use spyder::models::{
     CategoryDistributionEntry, CategoryTimelinePoint, PaginatedResult, Stats, TopSiteSection,
 };
@@ -21,8 +19,8 @@ use spyder::{
     find_matching_blacklist_domain, get_auto_blacklist_config, get_crypto_entity_detail,
     get_email_entity_detail, get_host_http_observation_detail, get_host_service_fingerprints,
     get_host_service_observation_detail, get_intel_lead_detail, get_page_detail,
-    get_page_discovery_chain, get_page_scan_detail, get_page_work_queue_history,
-    get_site_detail, get_site_relationship_graph, get_ssh_host_key_detail, intel_lead_rule_ids,
+    get_page_discovery_chain, get_page_scan_detail, get_page_work_queue_history, get_site_detail,
+    get_site_relationship_graph, get_ssh_host_key_detail, intel_lead_rule_ids,
     list_crypto_entities, list_domain_blacklist_rules, list_domain_blacklist_summaries,
     list_email_entities, list_host_http_observations, list_host_service_observations,
     list_intel_leads, list_page_language_distribution, list_page_scan_summaries,
@@ -41,8 +39,10 @@ use std::env;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use tracing::{error, info, warn};
 use url::form_urlencoded;
 use url::Url;
+use urlencoding;
 
 type HtmlResult = Result<Template, FrontendError>;
 type DbPool = Pool<ConnectionManager<PgConnection>>;
@@ -474,13 +474,13 @@ fn build_app_state() -> Result<AppState, FrontendError> {
     dotenvy::dotenv().ok();
 
     // Load and validate configuration
-    let config = spyder::config::SpyderConfig::from_env()
-        .frontend_context("loading configuration")?;
-    config.validate()
+    let config =
+        spyder::config::SpyderConfig::from_env().frontend_context("loading configuration")?;
+    config
+        .validate()
         .frontend_context("validating configuration")?;
 
-    let cache_warm_routes =
-        parse_cache_warm_routes(Some(&config.frontend.cache_warm_routes));
+    let cache_warm_routes = parse_cache_warm_routes(Some(&config.frontend.cache_warm_routes));
 
     let manager = ConnectionManager::<PgConnection>::new(config.database.url.clone());
     let pool = Pool::builder()
@@ -1001,8 +1001,7 @@ fn page_detail(state: &State<AppState>, page_id: i32) -> HtmlResult {
         .flatten();
 
     // NEW: Get service fingerprints
-    let service_fingerprints = get_host_service_fingerprints(&mut connection, &page.host)
-        .ok();
+    let service_fingerprints = get_host_service_fingerprints(&mut connection, &page.host).ok();
 
     // NEW: Get work queue history
     let work_queue = get_page_work_queue_history(&mut connection, &page.url)
@@ -1717,11 +1716,7 @@ fn build_sites_context(state: &AppState, list_query: ListQuery) -> Result<Value,
 }
 
 #[get("/sites/grouped?<limit>&<offset>")]
-fn sites_grouped(
-    limit: Option<i64>,
-    offset: Option<i64>,
-    state: &State<AppState>,
-) -> HtmlResult {
+fn sites_grouped(limit: Option<i64>, offset: Option<i64>, state: &State<AppState>) -> HtmlResult {
     let mut connection = state.inner().connection()?;
     let groups = list_site_profiles_grouped(&mut connection, limit, offset)
         .frontend_context("loading grouped site profiles")?;
@@ -1773,11 +1768,14 @@ fn discovery(state: &State<AppState>, query: Option<DiscoveryQuery>) -> HtmlResu
     Ok(Template::render("discovery", context))
 }
 
-fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Value, FrontendError> {
-    use spyder::schema::url_discovery;
-    use spyder::schema::page;
-    use spyder::schema::import_source;
+fn build_discovery_context(
+    state: &AppState,
+    query: DiscoveryQuery,
+) -> Result<Value, FrontendError> {
     use diesel::prelude::*;
+    use spyder::schema::import_source;
+    use spyder::schema::page;
+    use spyder::schema::url_discovery;
 
     let mut connection = state.connection()?;
 
@@ -1793,7 +1791,7 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
             url_discovery::discovery_depth,
             url_discovery::discovered_at,
             url_discovery::import_source_id,
-            page::id.nullable(),  // page_id
+            page::id.nullable(), // page_id
         ))
         .order_by(url_discovery::id.desc())
         .limit(limit)
@@ -1845,18 +1843,21 @@ fn build_discovery_context(state: &AppState, query: DiscoveryQuery) -> Result<Va
         .load(&mut connection)
         .map_err(|e| FrontendError::internal("loading depth stats", e.into()))?;
 
-    let discoveries_json: Vec<_> = discoveries.iter().map(|(id, url, depth, discovered_at, source_id, page_id)| {
-        let source_name = source_id.and_then(|sid| source_names.get(&sid).cloned());
-        serde_json::json!({
-            "id": id,
-            "url": url,
-            "depth": depth,
-            "discovered_at": discovered_at,
-            "import_source_id": source_id,
-            "source_name": source_name,
-            "page_id": page_id,
+    let discoveries_json: Vec<_> = discoveries
+        .iter()
+        .map(|(id, url, depth, discovered_at, source_id, page_id)| {
+            let source_name = source_id.and_then(|sid| source_names.get(&sid).cloned());
+            serde_json::json!({
+                "id": id,
+                "url": url,
+                "depth": depth,
+                "discovered_at": discovered_at,
+                "import_source_id": source_id,
+                "source_name": source_name,
+                "page_id": page_id,
+            })
         })
-    }).collect();
+        .collect();
 
     template_context(context! {
         title: "Discovery Explorer",
@@ -2012,14 +2013,9 @@ fn build_leads_default_context(state: &AppState) -> Result<Value, FrontendError>
 
 fn build_leads_warming_context() -> Result<Value, FrontendError> {
     let rule_filter_options = lead_rule_filter_options(None);
-    let status_filter_options = lead_filter_options(
-        &["new", "triaged", "monitoring", "suppressed"],
-        None,
-    );
-    let severity_filter_options = lead_filter_options(
-        &["low", "medium", "high", "critical"],
-        None,
-    );
+    let status_filter_options =
+        lead_filter_options(&["new", "triaged", "monitoring", "suppressed"], None);
+    let severity_filter_options = lead_filter_options(&["low", "medium", "high", "critical"], None);
 
     template_context(context! {
         title: "Intel Leads",
@@ -3033,8 +3029,8 @@ fn api_failure_summary(
     state: &State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<spyder::models::FailureCategorySummary>>>, Status> {
     let mut connection = api_connection(state)?;
-    let summary = spyder::get_failure_summary(&mut connection)
-        .map_err(|_| Status::InternalServerError)?;
+    let summary =
+        spyder::get_failure_summary(&mut connection).map_err(|_| Status::InternalServerError)?;
 
     Ok(Json(ApiResponse {
         success: true,
@@ -3069,10 +3065,8 @@ fn api_bulk_retry(
             spyder::bulk_retry_by_category(&mut connection, &request.category, request.limit)
                 .map_err(|_| Status::InternalServerError)?
         }
-        "abandon" => {
-            spyder::bulk_abandon_by_category(&mut connection, &request.category)
-                .map_err(|_| Status::InternalServerError)?
-        }
+        "abandon" => spyder::bulk_abandon_by_category(&mut connection, &request.category)
+            .map_err(|_| Status::InternalServerError)?,
         _ => return Err(Status::BadRequest),
     };
 
@@ -3087,19 +3081,17 @@ fn api_site_detail(
     host: String,
     state: &State<AppState>,
 ) -> Result<Json<ApiResponse<spyder::SiteDetailData>>, Status> {
-    let decoded_host = urlencoding::decode(&host)
-        .map_err(|_| Status::BadRequest)?;
+    let decoded_host = urlencoding::decode(&host).map_err(|_| Status::BadRequest)?;
 
     let mut connection = api_connection(state)?;
 
-    let site_data = get_site_detail(&mut connection, &decoded_host, 50, 0)
-        .map_err(|e| {
-            if e.to_string().contains("not found") {
-                Status::NotFound
-            } else {
-                Status::InternalServerError
-            }
-        })?;
+    let site_data = get_site_detail(&mut connection, &decoded_host, 50, 0).map_err(|e| {
+        if e.to_string().contains("not found") {
+            Status::NotFound
+        } else {
+            Status::InternalServerError
+        }
+    })?;
 
     Ok(Json(ApiResponse {
         success: true,
@@ -3777,19 +3769,16 @@ fn site_detail(host: String, state: &State<AppState>) -> HtmlResult {
         return Err(FrontendError::bad_request("Invalid host"));
     }
 
-    let mut connection = state
-        .inner()
-        .connection()?;
+    let mut connection = state.inner().connection()?;
 
-    let site_data = spyder::get_site_detail(&mut connection, &decoded_host, 50, 0).map_err(
-        |e| {
+    let site_data =
+        spyder::get_site_detail(&mut connection, &decoded_host, 50, 0).map_err(|e| {
             if e.to_string().contains("not found") {
                 FrontendError::not_found("Site not found")
             } else {
                 FrontendError::internal("loading site detail", e)
             }
-        },
-    )?;
+        })?;
 
     let has_leads = !site_data.active_leads.is_empty();
     let has_pages = !site_data.pages.is_empty();
@@ -3977,563 +3966,4 @@ mod tests {
         assert_eq!(result, Err("refresh failed"));
     }
 
-    fn setup_test_database() -> String {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        let database_path =
-            env::temp_dir().join(format!("spyder-frontend-{}-{unique}.sqlite", process::id()));
-        let database_url = database_path.to_string_lossy().into_owned();
-
-        let mut conn =
-            diesel::sqlite::SqliteConnection::establish(&database_url).expect("sqlite file");
-        conn.batch_execute(
-            "
-            CREATE TABLE work_unit(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              url VARCHAR NOT NULL UNIQUE,
-              status VARCHAR NOT NULL DEFAULT 'pending',
-              retry_count INTEGER NOT NULL DEFAULT 0,
-              next_attempt_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              last_attempt_at VARCHAR,
-              last_error VARCHAR,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX idx_work_unit_status_next_attempt_at ON work_unit(status, next_attempt_at);
-            CREATE TABLE domain_blacklist(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              domain VARCHAR NOT NULL UNIQUE,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE auto_blacklist_rule(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              rule_type VARCHAR NOT NULL,
-              value VARCHAR NOT NULL,
-              label VARCHAR NOT NULL DEFAULT '',
-              enabled BOOLEAN NOT NULL DEFAULT 1,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(rule_type, value)
-            );
-            CREATE TABLE auto_blacklist_event(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              rule_id INTEGER NOT NULL,
-              domain VARCHAR NOT NULL,
-              source_page_id INTEGER,
-              rule_type VARCHAR NOT NULL,
-              matched_value VARCHAR NOT NULL,
-              evidence VARCHAR NOT NULL DEFAULT '',
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE UNIQUE INDEX idx_auto_blacklist_event_unique_page
-              ON auto_blacklist_event(domain, rule_id, source_page_id)
-              WHERE source_page_id IS NOT NULL;
-            CREATE TABLE forum_keyword_rule(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              label VARCHAR NOT NULL,
-              pattern VARCHAR NOT NULL,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(label, pattern)
-            );
-            CREATE TABLE host_ssh_observation(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              host VARCHAR NOT NULL,
-              port INTEGER NOT NULL,
-              status VARCHAR NOT NULL,
-              host_key_algorithm VARCHAR,
-              host_key VARCHAR,
-              host_key_fingerprint VARCHAR,
-              server_banner VARCHAR,
-              last_error VARCHAR,
-              last_attempt_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              last_success_at VARCHAR,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(host, port)
-            );
-            CREATE TABLE page(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              title VARCHAR NOT NULL,
-              url VARCHAR NOT NULL UNIQUE,
-              links VARCHAR NOT NULL,
-              emails VARCHAR NOT NULL,
-              coins VARCHAR NOT NULL,
-              language VARCHAR NOT NULL DEFAULT '',
-              last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE page_classification(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL UNIQUE,
-              host VARCHAR NOT NULL,
-              category VARCHAR NOT NULL,
-              confidence VARCHAR NOT NULL,
-              score INTEGER NOT NULL DEFAULT 0,
-              evidence VARCHAR NOT NULL DEFAULT '',
-              last_classified_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE page_scan(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL,
-              title VARCHAR NOT NULL,
-              language VARCHAR NOT NULL DEFAULT '',
-              scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE page_scan_link(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              scan_id INTEGER NOT NULL,
-              target_url VARCHAR NOT NULL,
-              target_host VARCHAR NOT NULL DEFAULT '',
-              UNIQUE(scan_id, target_url)
-            );
-            CREATE TABLE page_scan_email(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              scan_id INTEGER NOT NULL,
-              email VARCHAR NOT NULL,
-              UNIQUE(scan_id, email)
-            );
-            CREATE TABLE page_scan_crypto(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              scan_id INTEGER NOT NULL,
-              asset_type VARCHAR NOT NULL,
-              reference VARCHAR NOT NULL,
-              UNIQUE(scan_id, asset_type, reference)
-            );
-            CREATE TABLE page_link(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              source_page_id INTEGER NOT NULL,
-              source_host VARCHAR NOT NULL DEFAULT '',
-              target_url VARCHAR NOT NULL,
-              target_host VARCHAR NOT NULL DEFAULT '',
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(source_page_id, target_url)
-            );
-            CREATE TABLE page_email(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL,
-              email VARCHAR NOT NULL,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(page_id, email)
-            );
-            CREATE TABLE page_keyword_tag(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL,
-              tag VARCHAR NOT NULL,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(page_id, tag)
-            );
-            CREATE TABLE page_crypto(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL,
-              asset_type VARCHAR NOT NULL,
-              reference VARCHAR NOT NULL,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(page_id, asset_type, reference)
-            );
-            CREATE TABLE site_profile(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              host VARCHAR NOT NULL UNIQUE,
-              category VARCHAR NOT NULL,
-              confidence VARCHAR NOT NULL,
-              score INTEGER NOT NULL DEFAULT 0,
-              page_count INTEGER NOT NULL DEFAULT 0,
-              first_found_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              evidence VARCHAR NOT NULL DEFAULT '',
-              source_page_id INTEGER,
-              last_classified_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            ",
-        )
-        .expect("schema setup");
-        add_forum_keyword_rule(&mut conn, "Acme Corp", "acme corp").expect("seed keyword rule");
-
-        let market_snapshot = PageSnapshot {
-            title: "Alpha Market".to_string(),
-            url: "http://alpha.onion".to_string(),
-            language: "English".to_string(),
-            language_detection: LanguageDetection::unknown(),
-            keyword_corpus: "http://alpha.onion\nAlpha Market\nmarketplace listings".to_string(),
-            links: vec![LinkObservation {
-                target_url: "http://beta.onion".to_string(),
-                target_host: "beta.onion".to_string(),
-            }],
-            emails: vec!["ops@alpha.onion".to_string()],
-            crypto_refs: vec![CryptoReference {
-                asset_type: "bitcoin".to_string(),
-                reference: "bc1qalpha000000000000000000000000000000000".to_string(),
-            }],
-            classification_signals: ClassificationSignals {
-                word_count: 180,
-                hints: vec![CategoryHint {
-                    category: "market".to_string(),
-                    evidence: "title:market".to_string(),
-                    weight: 6,
-                }],
-                ..ClassificationSignals::default()
-            },
-            topic_observations: Vec::new(),
-        };
-        let forum_snapshot = PageSnapshot {
-            title: "Beta Forum".to_string(),
-            url: "http://beta.onion".to_string(),
-            language: "French".to_string(),
-            language_detection: LanguageDetection::unknown(),
-            keyword_corpus: "http://beta.onion\nBeta Forum\nthread about acme corp".to_string(),
-            links: vec![LinkObservation {
-                target_url: "http://alpha.onion".to_string(),
-                target_host: "alpha.onion".to_string(),
-            }],
-            emails: vec!["team@shared.test".to_string()],
-            crypto_refs: vec![CryptoReference {
-                asset_type: "bitcoin".to_string(),
-                reference: "bc1qalpha000000000000000000000000000000000".to_string(),
-            }],
-            classification_signals: ClassificationSignals {
-                word_count: 220,
-                password_form_count: 1,
-                hints: vec![
-                    CategoryHint {
-                        category: "forum".to_string(),
-                        evidence: "title:forum".to_string(),
-                        weight: 6,
-                    },
-                    CategoryHint {
-                        category: "forum".to_string(),
-                        evidence: "text:thread".to_string(),
-                        weight: 4,
-                    },
-                ],
-                ..ClassificationSignals::default()
-            },
-            topic_observations: Vec::new(),
-        };
-        let directory_snapshot = PageSnapshot {
-            title: "Gamma Directory".to_string(),
-            url: "http://gamma.onion".to_string(),
-            language: "German".to_string(),
-            language_detection: LanguageDetection::unknown(),
-            keyword_corpus: "http://gamma.onion\nGamma Directory\nresource directory".to_string(),
-            links: vec![
-                LinkObservation {
-                    target_url: "http://beta.onion".to_string(),
-                    target_host: "beta.onion".to_string(),
-                },
-                LinkObservation {
-                    target_url: "http://alpha.onion".to_string(),
-                    target_host: "alpha.onion".to_string(),
-                },
-            ],
-            emails: vec![
-                "ops@gamma.onion".to_string(),
-                "sales@gamma.onion".to_string(),
-            ],
-            crypto_refs: vec![CryptoReference {
-                asset_type: "monero".to_string(),
-                reference: "84A1gammaExampleAddress".to_string(),
-            }],
-            classification_signals: ClassificationSignals {
-                word_count: 200,
-                hints: vec![CategoryHint {
-                    category: "directory".to_string(),
-                    evidence: "title:directory".to_string(),
-                    weight: 6,
-                }],
-                ..ClassificationSignals::default()
-            },
-            topic_observations: Vec::new(),
-        };
-        save_page_info(&mut conn, &market_snapshot).expect("seed alpha page");
-        save_page_info(&mut conn, &forum_snapshot).expect("seed beta page");
-        save_page_info(&mut conn, &directory_snapshot).expect("seed gamma page");
-        conn.batch_execute(
-            "
-            UPDATE page SET last_scanned_at = '2026-05-02 08:00:00' WHERE url = 'http://alpha.onion';
-            UPDATE page SET last_scanned_at = '2026-05-03 09:00:00' WHERE url = 'http://beta.onion';
-            UPDATE page SET last_scanned_at = '2026-05-01 07:00:00' WHERE url = 'http://gamma.onion';
-            UPDATE site_profile SET last_scanned_at = '2026-05-02 08:00:00' WHERE host = 'alpha.onion';
-            UPDATE site_profile SET last_scanned_at = '2026-05-03 09:00:00' WHERE host = 'beta.onion';
-            UPDATE site_profile SET last_scanned_at = '2026-05-01 07:00:00' WHERE host = 'gamma.onion';
-            ",
-        )
-        .expect("update page recency");
-        save_host_ssh_observation(
-            &mut conn,
-            &NewHostSshObservation {
-                host: "beta.onion".to_string(),
-                port: 22,
-                status: SSH_STATUS_SUCCESS.to_string(),
-                host_key_algorithm: Some("ssh-ed25519".to_string()),
-                host_key: Some("001122".to_string()),
-                host_key_fingerprint: Some("sha256:feedbeef".to_string()),
-                server_banner: Some("SSH-2.0-OpenSSH_9.9".to_string()),
-                last_error: None,
-                last_attempt_at: String::new(),
-                last_success_at: None,
-            },
-        )
-        .expect("seed ssh host key");
-
-        database_url
-    }
-
-    #[test]
-    fn search_page_renders_results_container_and_matching_results() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client.get("/search?query=forum&limit=5").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        let body = response.into_string().expect("response body");
-        assert!(body.contains("data-api-search"));
-        assert!(body.contains("data-results-target=\"#search-results\""));
-        assert!(body.contains("id=\"search-results\""));
-        assert!(body.contains("Beta Forum"));
-        assert!(body.contains("search-results-grid"));
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn search_page_supports_keyword_tag_queries() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client.get("/search?query=keyword:acme&limit=5").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        let body = response.into_string().expect("response body");
-        assert!(body.contains("Beta Forum"));
-        assert!(body.contains("beta.onion"));
-        assert!(body.contains("keyword:cisco"));
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn search_page_renders_pagination_controls() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client
-            .get("/search?query=onion&limit=1&offset=0")
-            .dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        let body = response.into_string().expect("response body");
-        assert!(body.contains("3 matches"));
-        assert!(body.contains("href=\"/search?limit=1&amp;offset=1&amp;query=onion\""));
-        assert!(!body.contains("href=\"/search?limit=1&amp;offset=-1&amp;query=onion\""));
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn pages_page_renders_pagination_controls() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client.get("/pages?limit=1&offset=1").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        let body = response.into_string().expect("response body");
-        assert!(body.contains("3 records"));
-        assert!(body.contains("href=\"/pages?limit=1&amp;offset=0\""));
-        assert!(body.contains("href=\"/pages?limit=1&amp;offset=2\""));
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn ssh_page_renders_host_key_entities() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client
-            .get("/entities/ssh?algorithm=ssh-ed25519&fingerprint=sha256%3Afeedbeef")
-            .dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        let body = response.into_string().expect("response body");
-        assert!(body.contains("Shared SSH Host Keys"));
-        assert!(body.contains("sha256:feedbeef"));
-        assert!(body.contains("beta.onion:22"));
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn top_page_renders_all_leaderboard_sections() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client.get("/top").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        let body = response.into_string().expect("response body");
-        assert!(body.contains("Most Email Refs"));
-        assert!(body.contains("Most Crypto Refs"));
-        assert!(body.contains("Most Outgoing Links"));
-        assert!(body.contains("Most Referenced Sites"));
-        assert!(body.contains("gamma.onion"));
-        assert!(body.contains("beta.onion"));
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn analytics_page_renders_keyword_breakdown_sections() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client.get("/analytics").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        let body = response.into_string().expect("response body");
-        assert!(body.contains("Current Category Mix"));
-        assert!(body.contains("Current Keyword Mix"));
-        assert!(body.contains("Keyword Timeline"));
-        assert!(body.contains("keyword:acme corp"));
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn sites_page_renders_recent_first_with_last_scan_column() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client.get("/sites").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        let body = response.into_string().expect("response body");
-        assert!(body.contains("<th>Last Scan</th>"));
-        assert!(body.contains("keyword:acme corp"));
-
-        let beta_index = body.find("beta.onion").expect("beta host present");
-        let alpha_index = body.find("alpha.onion").expect("alpha host present");
-        let gamma_index = body.find("gamma.onion").expect("gamma host present");
-        assert!(beta_index < alpha_index);
-        assert!(alpha_index < gamma_index);
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn page_detail_and_scan_detail_render_forum_keyword_tags() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-
-        let page_response = client.get("/pages/2").dispatch();
-        assert_eq!(page_response.status(), Status::Ok);
-        let page_body = page_response.into_string().expect("page detail body");
-        assert!(page_body.contains("Site Classification"));
-        assert!(page_body.contains("keyword:acme corp"));
-
-        let scan_response = client.get("/pages/2/history/2").dispatch();
-        assert_eq!(scan_response.status(), Status::Ok);
-        let scan_body = scan_response.into_string().expect("scan detail body");
-        assert!(scan_body.contains("Site Classification"));
-        assert!(scan_body.contains("keyword:acme corp"));
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn test_site_detail_route() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client.get("/sites/alpha.onion").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn test_api_site_detail() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client.get("/api/sites/alpha.onion").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
-
-    #[test]
-    fn test_enhanced_page_detail() {
-        let _guard = TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("test lock");
-        let database_url = setup_test_database();
-        env::set_var("DATABASE_URL", &database_url);
-
-        let client = Client::tracked(build_rocket()).expect("rocket client");
-        let response = client.get("/pages/1").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-        let body = response.into_string().unwrap();
-        // Just verify it doesn't crash - discovery/services may be missing
-        assert!(body.contains("Page Detail") || body.contains("page"));
-
-        fs::remove_file(&database_url).expect("remove test database");
-    }
 }

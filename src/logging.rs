@@ -7,8 +7,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 /// - RUST_LOG=debug (debug level for all crates)
 /// - RUST_LOG=spyder=info (default if not set)
 pub fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("spyder=info"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("spyder=info"));
 
     tracing_subscriber::registry()
         .with(filter)

@@ -1,8 +1,8 @@
+use crate::file_server;
 use crate::models::{
     CategoryHint, ClassificationSignals, CryptoReference, LanguageDetection, LinkObservation,
     PageSnapshot, TopicObservation,
 };
-use crate::file_server;
 use anyhow::{Context, Result};
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
@@ -27,7 +27,8 @@ pub fn extract_page_snapshot(url: &str, body: &str) -> Result<PageSnapshot> {
 
     // Check for file server detection
     let mut all_topic_observations = topic_observations;
-    if let Some(file_server_metrics) = detect_file_server_if_enabled(&normalized_url, body, &title) {
+    if let Some(file_server_metrics) = detect_file_server_if_enabled(&normalized_url, body, &title)
+    {
         all_topic_observations.push(file_server_metrics);
     }
 
@@ -1418,7 +1419,8 @@ fn detect_file_server_if_enabled(url: &str, body: &str, title: &str) -> Option<T
 
         if !metrics.skipped_paths.is_empty() {
             // Include first few error paths
-            let sample_paths: Vec<_> = metrics.skipped_paths
+            let sample_paths: Vec<_> = metrics
+                .skipped_paths
                 .iter()
                 .take(3)
                 .map(|p| {
@@ -1435,7 +1437,7 @@ fn detect_file_server_if_enabled(url: &str, body: &str, title: &str) -> Option<T
 
     Some(TopicObservation {
         topic: "file-server".to_string(),
-        score: metrics.total_files as i32,  // Convert u32 to i32 for database
+        score: metrics.total_files as i32, // Convert u32 to i32 for database
         confidence: "high".to_string(),
         evidence: vec![evidence_parts.join(", ")],
     })
@@ -1479,14 +1481,16 @@ mod tests {
             .any(|topic| topic.topic == "search" && topic.score >= 9));
         assert_eq!(snapshot.emails, vec!["team@example.com".to_string()]);
         assert_eq!(snapshot.links.len(), 2);
+        // Link /about is absolute path from domain root
         assert!(snapshot
             .links
             .iter()
-            .any(|link| link.target_url == "https://example.com"));
+            .any(|link| link.target_url == "https://example.com/about"));
+        // Link to https://alpha.onion/ normalizes with trailing slash
         assert!(snapshot
             .links
             .iter()
-            .any(|link| link.target_url == "https://alpha.onion"));
+            .any(|link| link.target_url == "https://alpha.onion/"));
         assert!(snapshot.crypto_refs.iter().any(|item| {
             item.asset_type == "bitcoin"
                 && item.reference == "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
@@ -1622,11 +1626,17 @@ mod tests {
         )
         .expect("snapshot");
 
-        assert_eq!(snapshot.url, "https://example.com");
-        assert_eq!(snapshot.links.len(), 1);
+        // URL normalization: fragments stripped, paths preserved
+        assert_eq!(snapshot.url, "https://example.com/docs/page");
+        // Links: /docs/page#returns -> /docs/page (same as base, but included), /docs/next#intro -> /docs/next
+        assert_eq!(snapshot.links.len(), 2);
         assert!(snapshot
             .links
             .iter()
-            .any(|link| link.target_url == "https://example.com"));
+            .any(|link| link.target_url == "https://example.com/docs/page"));
+        assert!(snapshot
+            .links
+            .iter()
+            .any(|link| link.target_url == "https://example.com/docs/next"));
     }
 }

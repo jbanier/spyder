@@ -1,11 +1,10 @@
 use anyhow::{Context, Result};
 use diesel::connection::SimpleConnection;
-use lazy_static::lazy_static;
-use tracing::{error, info, warn};
 use diesel::deserialize::QueryableByName;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
+use lazy_static::lazy_static;
 use native_tls::TlsConnector;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, CONTENT_TYPE, RANGE};
@@ -26,15 +25,14 @@ use spyder::{
     list_auto_blacklist_rules, list_domain_blacklist_rules, list_forum_keyword_rules,
     list_recent_responding_hosts, list_watchlist_items, mark_work_unit_as_done,
     normalize_crawl_url, page_link_batch_upper_bound, queue_known_pages_for_rescan,
-    recompute_intel_leads_with_reporter, record_work_unit_failure,
-    refresh_relationship_overview, remove_auto_blacklist_rule, remove_domain_blacklist_entry,
-    remove_forum_keyword_rule, remove_watchlist_item, save_host_http_observation,
-    save_host_service_observation, save_host_ssh_observation, save_host_tls_observation,
-    save_page_info, set_auto_blacklist_rule_enabled, suppress_intel_lead,
-    url_matches_blacklist, AppConnection, IntelLeadRecomputeOptions, PageSaveOutcome,
-    SqlDialect, WorkQueueOutcome, AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
-    AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY, DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE,
-    SSH_STATUS_SUCCESS,
+    recompute_intel_leads_with_reporter, record_work_unit_failure, refresh_relationship_overview,
+    remove_auto_blacklist_rule, remove_domain_blacklist_entry, remove_forum_keyword_rule,
+    remove_watchlist_item, save_host_http_observation, save_host_service_observation,
+    save_host_ssh_observation, save_host_tls_observation, save_page_info,
+    set_auto_blacklist_rule_enabled, suppress_intel_lead, url_matches_blacklist, AppConnection,
+    IntelLeadRecomputeOptions, PageSaveOutcome, SqlDialect, WorkQueueOutcome,
+    AUTO_BLACKLIST_RULE_TYPE_KEYWORD, AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
+    DEFAULT_BLACKLIST_LEAD_LINK_BATCH_SIZE, SSH_STATUS_SUCCESS,
 };
 use ssh2::{HashType, HostKeyType, Session};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -46,6 +44,7 @@ use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use tracing::{error, info, warn};
 use url::Url;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -941,11 +940,13 @@ fn work_queue(options: WorkOptions) -> Result<()> {
         let skipped_count = pending_count - work_units.len();
         info!(
             work_unit_count = work_units.len(),
-            skipped_count,
-            "Working with pending .onion work units"
+            skipped_count, "Working with pending .onion work units"
         );
     } else {
-        info!(work_unit_count = work_units.len(), "Working with pending work units");
+        info!(
+            work_unit_count = work_units.len(),
+            "Working with pending work units"
+        );
     }
     let mut processed_urls = HashSet::new();
     let mut jobs = Vec::new();
@@ -981,8 +982,7 @@ fn work_queue(options: WorkOptions) -> Result<()> {
     if attempted == 0 {
         info!(
             duplicate_count,
-            blacklisted_count,
-            "No unique pending work units to process"
+            blacklisted_count, "No unique pending work units to process"
         );
         return Ok(());
     }
@@ -1039,7 +1039,14 @@ fn work_queue(options: WorkOptions) -> Result<()> {
                     }),
                 };
 
-                if result_tx.send(WorkFetchResult { job, capture, network }).is_err() {
+                if result_tx
+                    .send(WorkFetchResult {
+                        job,
+                        capture,
+                        network,
+                    })
+                    .is_err()
+                {
                     break;
                 }
             });
@@ -1062,7 +1069,8 @@ fn work_queue(options: WorkOptions) -> Result<()> {
                         attempted,
                         format!("Extracted {}", summarize_page_snapshot(&capture.snapshot)),
                     );
-                    let save_outcome = save_page_info(&mut connection, &capture.snapshot, network_str)?;
+                    let save_outcome =
+                        save_page_info(&mut connection, &capture.snapshot, network_str)?;
                     let discovery_outcome = match save_outcome {
                         PageSaveOutcome::Stored(page_id) => {
                             save_host_http_observation(&mut connection, &capture.http_observation)?;
@@ -1155,12 +1163,10 @@ fn rescan_known_pages(options: RescanKnownOptions) -> Result<()> {
         return Ok(());
     }
 
-    work_queue(
-        WorkOptions {
-            onion_only: options.onion_only,
-            concurrency: options.concurrency,
-        },
-    )
+    work_queue(WorkOptions {
+        onion_only: options.onion_only,
+        concurrency: options.concurrency,
+    })
 }
 
 fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
@@ -1283,7 +1289,9 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
 
     let attempted = jobs.len();
     if attempted == 0 {
-        info!("No stale service endpoints to scan across {} hosts ({} skipped)", total_hosts, skipped
+        info!(
+            "No stale service endpoints to scan across {} hosts ({} skipped)",
+            total_hosts, skipped
         );
         return Ok(());
     }
@@ -1383,7 +1391,9 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                     Err(error) => {
                         let status = classify_ssh_probe_error(&error);
                         failures += 1;
-                        info!("[{current}/{attempted}] SSH scan failed for {}:{} ({status})", result.job.host, result.job.port
+                        info!(
+                            "[{current}/{attempted}] SSH scan failed for {}:{} ({status})",
+                            result.job.host, result.job.port
                         );
                         error!("{error:?}");
                     }
@@ -1416,7 +1426,9 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
                     Err(error) => {
                         let status = classify_service_probe_error(&error);
                         failures += 1;
-                        info!("[{current}/{attempted}] HTTP probe failed for {}:{} ({status})", result.job.host, result.job.port
+                        info!(
+                            "[{current}/{attempted}] HTTP probe failed for {}:{} ({status})",
+                            result.job.host, result.job.port
                         );
                         error!("{error:?}");
                     }
@@ -1493,7 +1505,9 @@ fn ssh_scan_hosts(options: SshScanOptions) -> Result<()> {
         Ok::<(), anyhow::Error>(())
     })?;
 
-    info!("Attempted {} service endpoints across {} hosts ({} successes, {} failures, {} skipped)", attempted, total_hosts, successes, failures, skipped
+    info!(
+        "Attempted {} service endpoints across {} hosts ({} successes, {} failures, {} skipped)",
+        attempted, total_hosts, successes, failures, skipped
     );
     Ok(())
 }
@@ -2513,7 +2527,8 @@ fn enqueue_discovered_links(
         .collect::<Vec<_>>();
     enqueue_discovered_links_with(snapshot, &blacklist_domains, |url, blacklist_domains| {
         // Create discovery record linking this URL to the discovering page
-        let discovery_id = spyder::create_url_discovery_for_link(connection, url, discovering_page_id)?;
+        let discovery_id =
+            spyder::create_url_discovery_for_link(connection, url, discovering_page_id)?;
 
         // Only create work unit if discovery was actually created (not duplicate)
         if discovery_id.is_some() {
@@ -2588,7 +2603,9 @@ fn list_auto_blacklist() -> Result<()> {
     }
 
     for rule in rules {
-        info!("#{} [{}] {} = {} ({})", rule.id,
+        info!(
+            "#{} [{}] {} = {} ({})",
+            rule.id,
             if rule.enabled { "enabled" } else { "disabled" },
             rule.rule_type,
             rule.value,
@@ -2606,7 +2623,9 @@ fn add_auto_blacklist_category(category: &str, label: Option<&str>) -> Result<()
         category,
         label,
     )?;
-    info!("Auto blacklist rule #{}: site_category = {} ({})", rule.id, rule.value, rule.label
+    info!(
+        "Auto blacklist rule #{}: site_category = {} ({})",
+        rule.id, rule.value, rule.label
     );
     Ok(())
 }
@@ -2619,7 +2638,9 @@ fn add_auto_blacklist_keyword(keyword: &str, label: Option<&str>) -> Result<()> 
         keyword,
         label,
     )?;
-    info!("Auto blacklist rule #{}: keyword = {} ({})", rule.id, rule.value, rule.label
+    info!(
+        "Auto blacklist rule #{}: keyword = {} ({})",
+        rule.id, rule.value, rule.label
     );
     Ok(())
 }
@@ -2656,7 +2677,9 @@ fn remove_auto_blacklist(rule_id: i32) -> Result<()> {
 fn apply_existing_auto_blacklist(dry_run: bool, limit: Option<i64>) -> Result<()> {
     let mut connection = establish_connection()?;
     let result = apply_auto_blacklist_rules_to_existing(&mut connection, dry_run, limit)?;
-    info!("{} scanned {} rows, matched {}, blacklisted {}, recorded {} events", if result.dry_run {
+    info!(
+        "{} scanned {} rows, matched {}, blacklisted {}, recorded {} events",
+        if result.dry_run {
             "Dry run"
         } else {
             "Auto blacklist backfill"
@@ -2667,7 +2690,9 @@ fn apply_existing_auto_blacklist(dry_run: bool, limit: Option<i64>) -> Result<()
         result.event_count
     );
     for matched in result.matches.iter().take(25) {
-        info!("- {} via #{} [{}:{}] {}", matched.domain,
+        info!(
+            "- {} via #{} [{}:{}] {}",
+            matched.domain,
             matched.rule_id,
             matched.rule_type,
             matched.matched_value,
@@ -2706,7 +2731,9 @@ fn remove_forum_keyword(label: &str, pattern: &str) -> Result<()> {
     let mut connection = establish_connection()?;
     let removed = remove_forum_keyword_rule(&mut connection, label, pattern)?;
     match removed {
-        Some((label, pattern)) => info!(label = %label, pattern = %pattern, "Removed forum keyword rule"),
+        Some((label, pattern)) => {
+            info!(label = %label, pattern = %pattern, "Removed forum keyword rule")
+        }
         None => info!("No matching forum keyword rule found"),
     }
     Ok(())
@@ -2740,7 +2767,9 @@ fn add_watchlist(item_type: &str, value: &str, label: Option<&str>) -> Result<()
 fn remove_watchlist(item_id: i32) -> Result<()> {
     let mut connection = establish_connection()?;
     match remove_watchlist_item(&mut connection, item_id)? {
-        Some(item) => info!(id = item.id, item_type = %item.item_type, value = %item.value, "Removed watchlist item"),
+        Some(item) => {
+            info!(id = item.id, item_type = %item.item_type, value = %item.value, "Removed watchlist item")
+        }
         None => info!("No matching watchlist item found"),
     }
     Ok(())
@@ -3450,14 +3479,18 @@ fn recompute_leads(options: LeadsRecomputeCliOptions) -> Result<()> {
         |message| print_status(message),
     )?;
     for rule in &summary.rule_summaries {
-        info!("Lead rule {}: {} candidates, {} created, {} updated, {} evidence rows touched", rule.rule_id,
+        info!(
+            "Lead rule {}: {} candidates, {} created, {} updated, {} evidence rows touched",
+            rule.rule_id,
             rule.candidate_count,
             rule.created_count,
             rule.updated_count,
             rule.evidence_count
         );
     }
-    info!("Recomputed intel leads: {} candidates, {} created, {} updated, {} evidence rows touched", summary.candidate_count,
+    info!(
+        "Recomputed intel leads: {} candidates, {} created, {} updated, {} evidence rows touched",
+        summary.candidate_count,
         summary.created_count,
         summary.updated_count,
         summary.evidence_count
@@ -3469,7 +3502,10 @@ fn recompute_leads(options: LeadsRecomputeCliOptions) -> Result<()> {
                 blacklist_link_batch_size,
                 "Next blacklist batch available - run with --blacklist-after-link-id"
             ),
-            None => info!(after_link_id = blacklist_after_link_id, "No page_link rows remain"),
+            None => info!(
+                after_link_id = blacklist_after_link_id,
+                "No page_link rows remain"
+            ),
         }
     }
     Ok(())
@@ -3479,7 +3515,9 @@ fn suppress_lead(lead_id: i32) -> Result<()> {
     let mut connection = establish_connection()?;
     match suppress_intel_lead(&mut connection, lead_id)? {
         Some(lead) => {
-            info!("Suppressed lead #{} [{}] {}", lead.id, lead.severity, lead.title
+            info!(
+                "Suppressed lead #{} [{}] {}",
+                lead.id, lead.severity, lead.title
             );
             Ok(())
         }
@@ -3493,7 +3531,10 @@ fn refresh_relationships() -> Result<()> {
     let mut connection = establish_connection()?;
     refresh_relationship_overview(&mut connection)?;
     let elapsed = start.elapsed();
-    info!(duration_secs = elapsed.as_secs_f64(), "Relationship overview refreshed successfully");
+    info!(
+        duration_secs = elapsed.as_secs_f64(),
+        "Relationship overview refreshed successfully"
+    );
     Ok(())
 }
 
@@ -3548,17 +3589,13 @@ fn print_error(error: &anyhow::Error) {
 
 fn get_proxy_for_network(network: spyder::NetworkType) -> Option<String> {
     match network {
-        spyder::NetworkType::I2p => {
-            env::var("I2P_PROXY")
-                .ok()
-                .or_else(|| Some("http://127.0.0.1:4444".to_string()))
-        }
-        spyder::NetworkType::Tor => {
-            env::var("TOR_PROXY")
-                .ok()
-                .or_else(|| env::var("ALL_PROXY").ok())
-                .or_else(|| Some("socks5h://127.0.0.1:9050".to_string()))
-        }
+        spyder::NetworkType::I2p => env::var("I2P_PROXY")
+            .ok()
+            .or_else(|| Some("http://127.0.0.1:4444".to_string())),
+        spyder::NetworkType::Tor => env::var("TOR_PROXY")
+            .ok()
+            .or_else(|| env::var("ALL_PROXY").ok())
+            .or_else(|| Some("socks5h://127.0.0.1:9050".to_string())),
         spyder::NetworkType::Clearnet => None,
     }
 }
@@ -3570,16 +3607,13 @@ fn build_http_client_for_network(network: spyder::NetworkType) -> Result<Client>
 
     if let Some(proxy_url) = get_proxy_for_network(network) {
         builder = builder.proxy(
-            Proxy::all(&proxy_url)
-                .with_context(|| format!("invalid proxy url: {proxy_url}"))?,
+            Proxy::all(&proxy_url).with_context(|| format!("invalid proxy url: {proxy_url}"))?,
         );
     } else {
         builder = builder.no_proxy();
     }
 
-    builder
-        .build()
-        .context("http client should build")
+    builder.build().context("http client should build")
 }
 
 // Keep the old function as a compatibility wrapper for now
@@ -3823,10 +3857,7 @@ fn is_retriable_status(status: StatusCode) -> bool {
         || status.is_server_error()
 }
 
-fn run_import(
-    connection: &mut PgConnection,
-    options: &ImportOptions,
-) -> Result<ImportResult> {
+fn run_import(connection: &mut PgConnection, options: &ImportOptions) -> Result<ImportResult> {
     use spyder::{create_url_discovery_for_import, create_work_unit, normalize_crawl_url};
 
     let path = Path::new(&options.file_path);
@@ -3957,22 +3988,14 @@ lazy_static! {
 
 fn get_timeout_for_network(network: spyder::NetworkType) -> Duration {
     match network {
-        spyder::NetworkType::I2p => {
-            I2P_TIMEOUT_TRACKER
-                .lock()
-                .unwrap()
-                .get_timeout()
-        }
+        spyder::NetworkType::I2p => I2P_TIMEOUT_TRACKER.lock().unwrap().get_timeout(),
         spyder::NetworkType::Tor => Duration::from_secs(15),
         spyder::NetworkType::Clearnet => Duration::from_secs(15),
     }
 }
 
 fn record_i2p_outcome(success: bool) {
-    I2P_TIMEOUT_TRACKER
-        .lock()
-        .unwrap()
-        .record(success);
+    I2P_TIMEOUT_TRACKER.lock().unwrap().record(success);
 }
 
 fn main() {
@@ -3983,11 +4006,9 @@ fn main() {
     let program = args.next().unwrap_or_else(|| "spyder".to_string());
     let result = match args.next().as_deref() {
         Some("add") => match args.next() {
-            Some(url) => {
-                enqueue_seed_and_links(&url).map(|count| {
-                    info!("Enqueued {count} URLs");
-                })
-            }
+            Some(url) => enqueue_seed_and_links(&url).map(|count| {
+                info!("Enqueued {count} URLs");
+            }),
             None => {
                 usage(&program);
                 Err(anyhow::anyhow!("no url is provided"))
@@ -4211,9 +4232,7 @@ fn main() {
             }
         },
         Some("rescan-known") => match parse_rescan_known_options(args) {
-            Ok(options) => {
-                rescan_known_pages(options)
-            }
+            Ok(options) => rescan_known_pages(options),
             Err(error) => {
                 usage(&program);
                 Err(error)
@@ -4517,7 +4536,8 @@ mod tests {
         assert_eq!(outcome.queued_count, 1);
         assert_eq!(outcome.skipped_blacklisted_count, 1);
         assert_eq!(queued.len(), 1);
-        assert!(queued.contains("http://allowed.onion"));
+        // URL normalization adds trailing slash for root URLs
+        assert!(queued.contains("http://allowed.onion/"));
     }
 
     #[test]

@@ -60,8 +60,7 @@ pub const DEFAULT_RELATIONSHIP_GRAPH_DEPTH: i64 = 2;
 impl SpyderConfig {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self> {
-        let database_url = env::var("DATABASE_URL")
-            .context("DATABASE_URL must be set")?;
+        let database_url = env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
 
         // Validate database URL
         if !database_url.starts_with("postgres://") && !database_url.starts_with("postgresql://") {

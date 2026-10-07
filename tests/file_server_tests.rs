@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use spyder::file_server::{parse_size, parse_directory_listing, FileEntry};
+    use spyder::file_server::{parse_directory_listing, parse_size, FileEntry};
 
     #[test]
     fn test_parse_plain_bytes() {
@@ -73,14 +73,20 @@ mod tests {
 
         assert_eq!(listing.directories, vec!["subdir/"]);
         assert_eq!(listing.files.len(), 2);
-        assert_eq!(listing.files[0], FileEntry {
-            name: "file1.txt".to_string(),
-            size: 1234,
-        });
-        assert_eq!(listing.files[1], FileEntry {
-            name: "file2.dat".to_string(),
-            size: 5632,
-        });
+        assert_eq!(
+            listing.files[0],
+            FileEntry {
+                name: "file1.txt".to_string(),
+                size: 1234,
+            }
+        );
+        assert_eq!(
+            listing.files[1],
+            FileEntry {
+                name: "file2.dat".to_string(),
+                size: 5632,
+            }
+        );
     }
 
     #[test]
@@ -109,9 +115,9 @@ mod tests {
     fn test_scan_recursive_depth_limit() {
         // This test will use actual HTTP client, so we'll keep it simple
         // Real testing should use mock server
-        use std::collections::HashSet;
-        use spyder::file_server::scan_recursive;
         use reqwest::blocking::Client;
+        use spyder::file_server::scan_recursive;
+        use std::collections::HashSet;
 
         let client = Client::new();
         let mut visited = HashSet::new();

@@ -9,9 +9,8 @@ use url::Url;
 /// Parse human-readable size string to bytes (1024-based units)
 pub fn parse_size(size_str: &str) -> Option<u64> {
     static SIZE_REGEX: OnceLock<Regex> = OnceLock::new();
-    let regex = SIZE_REGEX.get_or_init(|| {
-        Regex::new(r"^(\d+(?:\.\d+)?)\s*([KMGT]?B?)$").expect("valid regex")
-    });
+    let regex = SIZE_REGEX
+        .get_or_init(|| Regex::new(r"^(\d+(?:\.\d+)?)\s*([KMGT]?B?)$").expect("valid regex"));
 
     let trimmed = size_str.trim();
 
@@ -230,7 +229,9 @@ pub fn scan_recursive(
         let base_url = match Url::parse(url) {
             Ok(u) => u,
             Err(e) => {
-                result.errors.push(format!("invalid base URL {}: {}", url, e));
+                result
+                    .errors
+                    .push(format!("invalid base URL {}: {}", url, e));
                 return result;
             }
         };
@@ -239,18 +240,15 @@ pub fn scan_recursive(
             let subdir_url = match base_url.join(dir) {
                 Ok(u) => u.to_string(),
                 Err(e) => {
-                    result.errors.push(format!("invalid subdir URL {}: {}", dir, e));
+                    result
+                        .errors
+                        .push(format!("invalid subdir URL {}: {}", dir, e));
                     continue;
                 }
             };
 
-            let sub_result = scan_recursive(
-                &subdir_url,
-                current_depth + 1,
-                max_depth,
-                visited,
-                client,
-            );
+            let sub_result =
+                scan_recursive(&subdir_url, current_depth + 1, max_depth, visited, client);
 
             result.file_count += sub_result.file_count;
             result.total_size += sub_result.total_size;
@@ -337,18 +335,14 @@ pub fn detect_file_server(
             let subdir_url = match base_url.join(dir) {
                 Ok(u) => u.to_string(),
                 Err(e) => {
-                    result.errors.push(format!("invalid subdir URL {}: {}", dir, e));
+                    result
+                        .errors
+                        .push(format!("invalid subdir URL {}: {}", dir, e));
                     continue;
                 }
             };
 
-            let sub_result = scan_recursive(
-                &subdir_url,
-                1,
-                max_depth,
-                &mut visited,
-                client,
-            );
+            let sub_result = scan_recursive(&subdir_url, 1, max_depth, &mut visited, client);
 
             result.file_count += sub_result.file_count;
             result.total_size += sub_result.total_size;

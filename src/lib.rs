@@ -34,9 +34,9 @@ pub const MAX_RETRY_ATTEMPTS: i32 = 5;
 const SQLITE_BUSY_TIMEOUT_MS: i32 = 5_000;
 // Use config module constants for default values
 use config::{
-    DEFAULT_TOP_SITE_LIMIT, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT,
-    DEFAULT_RELATIONSHIP_GRAPH_LIMIT, MIN_RELATIONSHIP_GRAPH_LIMIT,
-    MAX_RELATIONSHIP_GRAPH_DEPTH, DEFAULT_RELATIONSHIP_GRAPH_DEPTH,
+    DEFAULT_PAGE_LIMIT, DEFAULT_RELATIONSHIP_GRAPH_DEPTH, DEFAULT_RELATIONSHIP_GRAPH_LIMIT,
+    DEFAULT_TOP_SITE_LIMIT, MAX_PAGE_LIMIT, MAX_RELATIONSHIP_GRAPH_DEPTH,
+    MIN_RELATIONSHIP_GRAPH_LIMIT,
 };
 const CATEGORY_SEARCH_ENGINE: &str = "search-engine";
 const CATEGORY_FORUM: &str = "forum";
@@ -1518,8 +1518,8 @@ pub fn list_site_profiles_grouped(
 
     let mut results = Vec::new();
     for row in rows {
-        let hosts: Vec<SiteProfileGroupHost> = serde_json::from_str(&row.hosts_json)
-            .context("error parsing hosts JSON")?;
+        let hosts: Vec<SiteProfileGroupHost> =
+            serde_json::from_str(&row.hosts_json).context("error parsing hosts JSON")?;
 
         results.push(SiteProfileGroupSummary {
             title: row.title,
@@ -1601,7 +1601,7 @@ pub fn create_work_unit_unless_blacklisted(
 }
 
 pub fn requeue_work_unit(conn: &mut PgConnection, url: &str) -> Result<()> {
-    use crate::schema::{work_unit::dsl as work_unit_dsl, url_discovery};
+    use crate::schema::{url_discovery, work_unit::dsl as work_unit_dsl};
 
     let normalized_url = normalize_crawl_url(url);
 
@@ -1886,7 +1886,11 @@ fn compute_page_keyword_tags(snapshot: &PageSnapshot, rules: &[ForumKeywordRule]
     tags
 }
 
-pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot, network: &str) -> Result<PageSaveOutcome> {
+pub fn save_page_info(
+    conn: &mut PgConnection,
+    snapshot: &PageSnapshot,
+    network: &str,
+) -> Result<PageSaveOutcome> {
     use crate::schema::page::dsl::{
         coins as page_coins, emails as page_emails, language as page_language,
         last_scanned_at as page_last_scanned_at, links as page_links, title as page_title,
@@ -2132,7 +2136,11 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot, network:
         if !crypto_rows.is_empty() {
             diesel::insert_into(page_crypto::table)
                 .values(&crypto_rows)
-                .on_conflict((page_crypto::page_id, page_crypto::asset_type, page_crypto::reference))
+                .on_conflict((
+                    page_crypto::page_id,
+                    page_crypto::asset_type,
+                    page_crypto::reference,
+                ))
                 .do_nothing()
                 .execute(conn)
                 .context("error saving page crypto references")?;
@@ -2220,19 +2228,23 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot, network:
 
                 if let Some(profile) = existing_profile {
                     // Update existing profile: increment page_count, update classification
-                    diesel::update(site_profile::table.filter(site_profile::host.eq(&classification.host)))
-                        .set((
-                            site_profile::category.eq(&classification.category),
-                            site_profile::confidence.eq(&classification.confidence.to_string()),
-                            site_profile::score.eq(classification.score),
-                            site_profile::page_count.eq(profile.page_count + 1),
-                            site_profile::last_scanned_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
-                            site_profile::evidence.eq(serialize_evidence(&classification.evidence)),
-                            site_profile::source_page_id.eq(Some(stored_page_id)),
-                            site_profile::last_classified_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
-                        ))
-                        .execute(conn)
-                        .context("error updating site profile")?;
+                    diesel::update(
+                        site_profile::table.filter(site_profile::host.eq(&classification.host)),
+                    )
+                    .set((
+                        site_profile::category.eq(&classification.category),
+                        site_profile::confidence.eq(&classification.confidence.to_string()),
+                        site_profile::score.eq(classification.score),
+                        site_profile::page_count.eq(profile.page_count + 1),
+                        site_profile::last_scanned_at
+                            .eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+                        site_profile::evidence.eq(serialize_evidence(&classification.evidence)),
+                        site_profile::source_page_id.eq(Some(stored_page_id)),
+                        site_profile::last_classified_at
+                            .eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+                    ))
+                    .execute(conn)
+                    .context("error updating site profile")?;
                 } else {
                     // Insert new profile with page_count = 1
                     diesel::insert_into(site_profile::table)
@@ -2241,31 +2253,34 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot, network:
                             category: classification.category.clone(),
                             confidence: classification.confidence.to_string(),
                             score: classification.score,
-                            page_count: 1,  // First page
+                            page_count: 1, // First page
                             first_found_at: current_timestamp_text(conn)?,
                             last_scanned_at: current_timestamp_text(conn)?,
                             evidence: serialize_evidence(&classification.evidence),
                             source_page_id: Some(stored_page_id),
-                            title: None,  // Will be set in Task 6
+                            title: None, // Will be set in Task 6
                         })
                         .execute(conn)
                         .context("error inserting site profile")?;
                 }
             } else {
                 // For rescans: update classification but don't change page_count
-                diesel::update(site_profile::table.filter(site_profile::host.eq(&classification.host)))
-                    .set((
-                        site_profile::category.eq(&classification.category),
-                        site_profile::confidence.eq(&classification.confidence.to_string()),
-                        site_profile::score.eq(classification.score),
-                        // page_count stays the same - no increment for rescans
-                        site_profile::last_scanned_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
-                        site_profile::evidence.eq(serialize_evidence(&classification.evidence)),
-                        site_profile::source_page_id.eq(Some(stored_page_id)),
-                        site_profile::last_classified_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
-                    ))
-                    .execute(conn)
-                    .context("error updating site profile for rescan")?;
+                diesel::update(
+                    site_profile::table.filter(site_profile::host.eq(&classification.host)),
+                )
+                .set((
+                    site_profile::category.eq(&classification.category),
+                    site_profile::confidence.eq(&classification.confidence.to_string()),
+                    site_profile::score.eq(classification.score),
+                    // page_count stays the same - no increment for rescans
+                    site_profile::last_scanned_at.eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+                    site_profile::evidence.eq(serialize_evidence(&classification.evidence)),
+                    site_profile::source_page_id.eq(Some(stored_page_id)),
+                    site_profile::last_classified_at
+                        .eq(sql::<Text>(sql_current_timestamp_expr(conn))),
+                ))
+                .execute(conn)
+                .context("error updating site profile for rescan")?;
             }
 
             // Set title from first page
@@ -2280,10 +2295,12 @@ pub fn save_page_info(conn: &mut PgConnection, snapshot: &PageSnapshot, network:
                 if let Some(profile) = current_profile {
                     // If this is the first page (page_count == 1), set title
                     if profile.page_count == 1 && profile.title.is_none() {
-                        diesel::update(site_profile::table.filter(site_profile::host.eq(&classification.host)))
-                            .set(site_profile::title.eq(&snapshot.title))
-                            .execute(conn)
-                            .context("error setting site title")?;
+                        diesel::update(
+                            site_profile::table.filter(site_profile::host.eq(&classification.host)),
+                        )
+                        .set(site_profile::title.eq(&snapshot.title))
+                        .execute(conn)
+                        .context("error setting site title")?;
                     }
                 }
             }
@@ -5866,10 +5883,17 @@ pub fn search_pages(
         // Text search part
         if let Some(text) = &advanced_query.text {
             let escaped_text = escape_like(text).replace("'", "''");
-            let title_match = sql_case_insensitive_match_expr("p.title", &format!("'%{}%'", escaped_text), conn);
-            let url_match = sql_case_insensitive_match_expr("p.url", &format!("'%{}%'", escaped_text), conn);
-            let email_match = sql_case_insensitive_match_expr("pe.email", &format!("'%{}%'", escaped_text), conn);
-            let crypto_match = sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", &format!("'%{}%'", escaped_text), conn);
+            let title_match =
+                sql_case_insensitive_match_expr("p.title", &format!("'%{}%'", escaped_text), conn);
+            let url_match =
+                sql_case_insensitive_match_expr("p.url", &format!("'%{}%'", escaped_text), conn);
+            let email_match =
+                sql_case_insensitive_match_expr("pe.email", &format!("'%{}%'", escaped_text), conn);
+            let crypto_match = sql_case_insensitive_match_expr(
+                "(pc.asset_type || ':' || pc.reference)",
+                &format!("'%{}%'", escaped_text),
+                conn,
+            );
 
             where_parts.push(format!(
                 "({title_match} OR {url_match} OR EXISTS (SELECT 1 FROM page_email pe WHERE pe.page_id = p.id AND {email_match}) OR EXISTS (SELECT 1 FROM page_crypto pc WHERE pc.page_id = p.id AND {crypto_match}))"
@@ -5878,7 +5902,8 @@ pub fn search_pages(
 
         // Language filter
         if !advanced_query.language.is_empty() {
-            let lang_patterns: Vec<String> = advanced_query.language
+            let lang_patterns: Vec<String> = advanced_query
+                .language
                 .iter()
                 .map(|lang| format!("'{}'", escape_like(lang).replace("'", "''")))
                 .collect();
@@ -5932,9 +5957,7 @@ pub fn search_pages(
         let where_clause = where_parts.join(" AND ");
 
         // Build and execute count query
-        let count_sql = format!(
-            "SELECT COUNT(*) AS count FROM page p WHERE {where_clause}"
-        );
+        let count_sql = format!("SELECT COUNT(*) AS count FROM page p WHERE {where_clause}");
 
         // All search terms are now embedded as literals, so no binding needed for the where clause
         let total_count = sql_query(count_sql)
@@ -5995,9 +6018,12 @@ pub fn search_pages(
     let url_match = sql_case_insensitive_match_expr("p.url", "$2", conn);
     let language_match = sql_case_insensitive_match_expr("p.language", "$3", conn);
     let email_match = sql_case_insensitive_match_expr("pe.email", "$4", conn);
-    let crypto_match = sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", "$5", conn);
-    let detected_language_name_match = sql_case_insensitive_match_expr("pld.language_name", "$6", conn);
-    let detected_language_code_match = sql_case_insensitive_match_expr("pld.language_code", "$7", conn);
+    let crypto_match =
+        sql_case_insensitive_match_expr("(pc.asset_type || ':' || pc.reference)", "$5", conn);
+    let detected_language_name_match =
+        sql_case_insensitive_match_expr("pld.language_name", "$6", conn);
+    let detected_language_code_match =
+        sql_case_insensitive_match_expr("pld.language_code", "$7", conn);
     let topic_match = sql_case_insensitive_match_expr("pt.topic", "$8", conn);
 
     let count_sql = format!(
@@ -8245,7 +8271,8 @@ pub fn refresh_relationship_overview(conn: &mut PgConnection) -> Result<()> {
     //
     // Use CONCURRENTLY to allow reads during refresh (requires unique index).
     // If CONCURRENTLY fails (first time, or after schema changes), fall back to blocking refresh.
-    let result = conn.batch_execute("REFRESH MATERIALIZED VIEW CONCURRENTLY site_relationship_overview");
+    let result =
+        conn.batch_execute("REFRESH MATERIALIZED VIEW CONCURRENTLY site_relationship_overview");
 
     if result.is_err() {
         // Fall back to non-concurrent refresh if concurrent refresh fails
@@ -9679,7 +9706,7 @@ pub fn create_url_discovery_for_link(
     url: &str,
     discovering_page_id: i32,
 ) -> Result<Option<i32>> {
-    use crate::schema::{url_discovery, page};
+    use crate::schema::{page, url_discovery};
 
     // Check if URL already discovered (first discovery wins)
     let existing = url_discovery::table
@@ -9791,10 +9818,7 @@ pub fn bulk_retry_by_category(
     Ok(updated as i64)
 }
 
-pub fn bulk_whitelist_and_retry(
-    conn: &mut PgConnection,
-    urls: Vec<String>,
-) -> Result<(i64, i64)> {
+pub fn bulk_whitelist_and_retry(conn: &mut PgConnection, urls: Vec<String>) -> Result<(i64, i64)> {
     use crate::schema::{domain_blacklist, work_unit};
 
     // Extract unique domains from URLs
@@ -9828,10 +9852,7 @@ pub fn bulk_whitelist_and_retry(
     Ok((blacklist_removed as i64, work_units_retried as i64))
 }
 
-pub fn bulk_abandon_by_category(
-    conn: &mut PgConnection,
-    category: &str,
-) -> Result<i64> {
+pub fn bulk_abandon_by_category(conn: &mut PgConnection, category: &str) -> Result<i64> {
     use crate::schema::work_unit;
 
     let updated = diesel::update(work_unit::table)
@@ -9933,21 +9954,15 @@ pub struct WorkQueueHistory {
     pub next_attempt_at: Option<String>,
 }
 
-pub fn get_site_intel_summary(
-    conn: &mut PgConnection,
-    host: &str,
-) -> Result<IntelSummary> {
+pub fn get_site_intel_summary(conn: &mut PgConnection, host: &str) -> Result<IntelSummary> {
     use crate::schema::{intel_lead, intel_lead_evidence, page};
 
     let results = intel_lead::table
+        .inner_join(intel_lead_evidence::table.on(intel_lead_evidence::lead_id.eq(intel_lead::id)))
         .inner_join(
-            intel_lead_evidence::table.on(intel_lead_evidence::lead_id.eq(intel_lead::id))
-        )
-        .inner_join(
-            page::table.on(
-                page::id.eq(intel_lead_evidence::source_id)
-                    .and(intel_lead_evidence::source_type.eq("page"))
-            )
+            page::table.on(page::id
+                .eq(intel_lead_evidence::source_id)
+                .and(intel_lead_evidence::source_type.eq("page"))),
         )
         .filter(page::url.like(format!("%{}%", host)))
         .select((intel_lead::id, intel_lead::severity))
@@ -9986,14 +10001,11 @@ pub fn get_site_active_leads(
     use crate::schema::{intel_lead, intel_lead_evidence, page};
 
     let records = intel_lead::table
+        .inner_join(intel_lead_evidence::table.on(intel_lead_evidence::lead_id.eq(intel_lead::id)))
         .inner_join(
-            intel_lead_evidence::table.on(intel_lead_evidence::lead_id.eq(intel_lead::id))
-        )
-        .inner_join(
-            page::table.on(
-                page::id.eq(intel_lead_evidence::source_id)
-                    .and(intel_lead_evidence::source_type.eq("page"))
-            )
+            page::table.on(page::id
+                .eq(intel_lead_evidence::source_id)
+                .and(intel_lead_evidence::source_type.eq("page"))),
         )
         .filter(page::url.like(format!("%{}%", host)))
         .filter(intel_lead::status.ne("resolved"))
@@ -10004,7 +10016,7 @@ pub fn get_site_active_leads(
                  WHEN 'high' THEN 2
                  WHEN 'medium' THEN 3
                  WHEN 'low' THEN 4
-                 ELSE 5 END"
+                 ELSE 5 END",
             ),
             intel_lead::created_at.desc(),
         ))
@@ -10052,11 +10064,18 @@ pub fn get_site_pages(
     // We use LIKE with protocol prefix to be more precise than just matching host anywhere
     let pages_with_urls = page::table
         .filter(
-            page::url.like(format!("%{}%", url_patterns[0]))
-                .or(page::url.like(format!("%{}", url_patterns[1])))
+            page::url
+                .like(format!("%{}%", url_patterns[0]))
+                .or(page::url.like(format!("%{}", url_patterns[1]))),
         )
         .order_by(page::last_scanned_at.desc())
-        .select((page::id, page::title, page::url, page::language, page::last_scanned_at))
+        .select((
+            page::id,
+            page::title,
+            page::url,
+            page::language,
+            page::last_scanned_at,
+        ))
         .load::<(i32, String, String, String, String)>(conn)
         .context("error loading site pages")?;
 
@@ -10098,7 +10117,10 @@ pub fn get_site_pages(
     let crypto_counts: HashMap<i32, i64> = page_crypto::table
         .filter(page_crypto::page_id.eq_any(&page_ids))
         .group_by(page_crypto::page_id)
-        .select((page_crypto::page_id, diesel::dsl::count(page_crypto::page_id)))
+        .select((
+            page_crypto::page_id,
+            diesel::dsl::count(page_crypto::page_id),
+        ))
         .load::<(i32, i64)>(conn)
         .context("error loading crypto counts")?
         .into_iter()
@@ -10108,7 +10130,10 @@ pub fn get_site_pages(
     let link_counts: HashMap<i32, i64> = page_link::table
         .filter(page_link::source_page_id.eq_any(&page_ids))
         .group_by(page_link::source_page_id)
-        .select((page_link::source_page_id, diesel::dsl::count(page_link::source_page_id)))
+        .select((
+            page_link::source_page_id,
+            diesel::dsl::count(page_link::source_page_id),
+        ))
         .load::<(i32, i64)>(conn)
         .context("error loading link counts")?
         .into_iter()
@@ -10127,23 +10152,25 @@ pub fn get_site_pages(
     // Build summaries using batch-loaded data
     let summaries = pages
         .into_iter()
-        .map(|(id, title, url, page_host, language, last_scanned_at)| PageSummary {
-            id,
-            title,
-            url,
-            host: page_host.clone(),
-            // Handle potential empty language values defensively
-            language: if language.is_empty() {
-                "unknown".to_string()
-            } else {
-                language
+        .map(
+            |(id, title, url, page_host, language, last_scanned_at)| PageSummary {
+                id,
+                title,
+                url,
+                host: page_host.clone(),
+                // Handle potential empty language values defensively
+                language: if language.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    language
+                },
+                last_scanned_at,
+                outbound_link_count: *link_counts.get(&id).unwrap_or(&0).max(&0) as usize,
+                email_count: *email_counts.get(&id).unwrap_or(&0).max(&0) as usize,
+                crypto_count: *crypto_counts.get(&id).unwrap_or(&0).max(&0) as usize,
+                site_category: site_profiles.get(&page_host).cloned(),
             },
-            last_scanned_at,
-            outbound_link_count: *link_counts.get(&id).unwrap_or(&0).max(&0) as usize,
-            email_count: *email_counts.get(&id).unwrap_or(&0).max(&0) as usize,
-            crypto_count: *crypto_counts.get(&id).unwrap_or(&0).max(&0) as usize,
-            site_category: site_profiles.get(&page_host).cloned(),
-        })
+        )
         .collect();
 
     Ok(summaries)
@@ -10153,7 +10180,7 @@ pub fn get_host_service_fingerprints(
     conn: &mut PgConnection,
     host: &str,
 ) -> Result<ServiceFingerprints> {
-    use crate::schema::{host_http_observation, host_tls_observation, host_ssh_observation};
+    use crate::schema::{host_http_observation, host_ssh_observation, host_tls_observation};
 
     let http = host_http_observation::table
         .filter(host_http_observation::host.eq(host))
@@ -10182,10 +10209,7 @@ pub fn get_host_service_fingerprints(
     Ok(ServiceFingerprints { http, tls, ssh })
 }
 
-pub fn get_site_relationships(
-    conn: &mut PgConnection,
-    host: &str,
-) -> Result<RelationshipData> {
+pub fn get_site_relationships(conn: &mut PgConnection, host: &str) -> Result<RelationshipData> {
     use crate::schema::page_link;
 
     // Inbound: other domains linking to this host
@@ -10218,10 +10242,7 @@ pub fn get_site_relationships(
     })
 }
 
-pub fn get_site_discovery_stats(
-    conn: &mut PgConnection,
-    host: &str,
-) -> Result<DiscoveryStats> {
+pub fn get_site_discovery_stats(conn: &mut PgConnection, host: &str) -> Result<DiscoveryStats> {
     use crate::schema::{page, url_discovery};
 
     // Normalize the input host for comparison
@@ -10236,8 +10257,9 @@ pub fn get_site_discovery_stats(
     // Load pages with URL matching
     let pages_with_urls: Vec<(i32, String)> = page::table
         .filter(
-            page::url.like(format!("%{}%", url_patterns[0]))
-                .or(page::url.like(format!("%{}", url_patterns[1])))
+            page::url
+                .like(format!("%{}%", url_patterns[0]))
+                .or(page::url.like(format!("%{}", url_patterns[1]))),
         )
         .select((page::id, page::url))
         .load::<(i32, String)>(conn)
@@ -10268,10 +10290,7 @@ pub fn get_site_discovery_stats(
     })
 }
 
-pub fn get_site_queue_stats(
-    conn: &mut PgConnection,
-    host: &str,
-) -> Result<QueueStats> {
+pub fn get_site_queue_stats(conn: &mut PgConnection, host: &str) -> Result<QueueStats> {
     use crate::schema::work_unit;
 
     // Get total count for this host
@@ -10321,9 +10340,7 @@ pub fn get_site_queue_stats(
             }
         }
 
-        breakdown
-            .into_iter()
-            .collect()
+        breakdown.into_iter().collect()
     };
 
     // Calculate average retry count from all work units for this host
@@ -10479,1887 +10496,6 @@ pub fn get_page_work_queue_history(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use diesel::connection::SimpleConnection;
-    use std::env;
-    use std::fs;
-    use std::process;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[derive(QueryableByName)]
-    struct JournalModeRow {
-        #[diesel(sql_type = Text)]
-        journal_mode: String,
-    }
-
-    fn setup_connection() -> SqliteConnection {
-        let mut conn = SqliteConnection::establish(":memory:").expect("in-memory sqlite");
-        conn.batch_execute(
-            "
-            CREATE TABLE work_unit(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              url VARCHAR NOT NULL UNIQUE,
-              status VARCHAR NOT NULL DEFAULT 'pending',
-              retry_count INTEGER NOT NULL DEFAULT 0,
-              next_attempt_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              last_attempt_at VARCHAR,
-              last_error VARCHAR,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX idx_work_unit_status_next_attempt_at ON work_unit(status, next_attempt_at);
-            CREATE TABLE domain_blacklist(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              domain VARCHAR NOT NULL UNIQUE,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE auto_blacklist_rule(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              rule_type VARCHAR NOT NULL,
-              value VARCHAR NOT NULL,
-              label VARCHAR NOT NULL DEFAULT '',
-              enabled BOOLEAN NOT NULL DEFAULT 1,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(rule_type, value)
-            );
-            CREATE TABLE auto_blacklist_event(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              rule_id INTEGER NOT NULL,
-              domain VARCHAR NOT NULL,
-              source_page_id INTEGER,
-              rule_type VARCHAR NOT NULL,
-              matched_value VARCHAR NOT NULL,
-              evidence VARCHAR NOT NULL DEFAULT '',
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE UNIQUE INDEX idx_auto_blacklist_event_unique_page
-              ON auto_blacklist_event(domain, rule_id, source_page_id)
-              WHERE source_page_id IS NOT NULL;
-            CREATE TABLE forum_keyword_rule(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              label VARCHAR NOT NULL,
-              pattern VARCHAR NOT NULL,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(label, pattern)
-            );
-            CREATE TABLE host_ssh_observation(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              host VARCHAR NOT NULL,
-              port INTEGER NOT NULL,
-              status VARCHAR NOT NULL,
-              host_key_algorithm VARCHAR,
-              host_key VARCHAR,
-              host_key_fingerprint VARCHAR,
-              server_banner VARCHAR,
-              last_error VARCHAR,
-              last_attempt_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              last_success_at VARCHAR,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(host, port)
-            );
-            CREATE TABLE page(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              title VARCHAR NOT NULL,
-              url VARCHAR NOT NULL UNIQUE,
-              links VARCHAR NOT NULL,
-              emails VARCHAR NOT NULL,
-              coins VARCHAR NOT NULL,
-              language VARCHAR NOT NULL DEFAULT '',
-              last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE page_classification(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL UNIQUE,
-              host VARCHAR NOT NULL,
-              category VARCHAR NOT NULL,
-              confidence VARCHAR NOT NULL,
-              score INTEGER NOT NULL DEFAULT 0,
-              evidence VARCHAR NOT NULL DEFAULT '',
-              last_classified_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE page_scan(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL,
-              title VARCHAR NOT NULL,
-              language VARCHAR NOT NULL DEFAULT '',
-              scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE page_scan_link(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              scan_id INTEGER NOT NULL,
-              target_url VARCHAR NOT NULL,
-              target_host VARCHAR NOT NULL DEFAULT '',
-              UNIQUE(scan_id, target_url)
-            );
-            CREATE TABLE page_scan_email(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              scan_id INTEGER NOT NULL,
-              email VARCHAR NOT NULL,
-              UNIQUE(scan_id, email)
-            );
-            CREATE TABLE page_scan_crypto(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              scan_id INTEGER NOT NULL,
-              asset_type VARCHAR NOT NULL,
-              reference VARCHAR NOT NULL,
-              UNIQUE(scan_id, asset_type, reference)
-            );
-            CREATE TABLE page_link(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              source_page_id INTEGER NOT NULL,
-              source_host VARCHAR NOT NULL DEFAULT '',
-              target_url VARCHAR NOT NULL,
-              target_host VARCHAR NOT NULL DEFAULT '',
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(source_page_id, target_url)
-            );
-            CREATE TABLE page_email(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL,
-              email VARCHAR NOT NULL,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(page_id, email)
-            );
-            CREATE TABLE page_keyword_tag(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL,
-              tag VARCHAR NOT NULL,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(page_id, tag)
-            );
-            CREATE TABLE page_crypto(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL,
-              asset_type VARCHAR NOT NULL,
-              reference VARCHAR NOT NULL,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(page_id, asset_type, reference)
-            );
-            CREATE TABLE site_profile(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              host VARCHAR NOT NULL UNIQUE,
-              category VARCHAR NOT NULL,
-              confidence VARCHAR NOT NULL,
-              score INTEGER NOT NULL DEFAULT 0,
-              page_count INTEGER NOT NULL DEFAULT 0,
-              first_found_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              evidence VARCHAR NOT NULL DEFAULT '',
-              source_page_id INTEGER,
-              last_classified_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            ",
-        )
-        .expect("schema setup");
-        conn
-    }
-
-    fn alpha_snapshot() -> PageSnapshot {
-        PageSnapshot {
-            title: "Alpha Market".to_string(),
-            url: "http://alpha.onion".to_string(),
-            language: "English".to_string(),
-            language_detection: LanguageDetection::unknown(),
-            keyword_corpus: "http://alpha.onion\nAlpha Market\nmarketplace listings".to_string(),
-            links: vec![LinkObservation {
-                target_url: "http://beta.onion".to_string(),
-                target_host: "beta.onion".to_string(),
-            }],
-            emails: vec!["team@shared.test".to_string()],
-            crypto_refs: vec![CryptoReference {
-                asset_type: "bitcoin".to_string(),
-                reference: "bc1qalpha000000000000000000000000000000000".to_string(),
-            }],
-            classification_signals: ClassificationSignals {
-                word_count: 180,
-                hints: vec![
-                    CategoryHint {
-                        category: CATEGORY_MARKET.to_string(),
-                        evidence: "title:market".to_string(),
-                        weight: 6,
-                    },
-                    CategoryHint {
-                        category: CATEGORY_SHOP.to_string(),
-                        evidence: "text:add-to-cart".to_string(),
-                        weight: 4,
-                    },
-                ],
-                ..ClassificationSignals::default()
-            },
-            topic_observations: Vec::new(),
-        }
-    }
-
-    fn beta_snapshot() -> PageSnapshot {
-        PageSnapshot {
-            title: "Beta Forum".to_string(),
-            url: "http://beta.onion".to_string(),
-            language: "French".to_string(),
-            language_detection: LanguageDetection::unknown(),
-            keyword_corpus: "http://beta.onion\nBeta Forum\nthread reply topic discussion"
-                .to_string(),
-            links: vec![LinkObservation {
-                target_url: "http://alpha.onion".to_string(),
-                target_host: "alpha.onion".to_string(),
-            }],
-            emails: vec!["team@shared.test".to_string()],
-            crypto_refs: vec![
-                CryptoReference {
-                    asset_type: "bitcoin".to_string(),
-                    reference: "bc1qalpha000000000000000000000000000000000".to_string(),
-                },
-                CryptoReference {
-                    asset_type: "ethereum".to_string(),
-                    reference: "0x2222222222222222222222222222222222222222".to_string(),
-                },
-            ],
-            classification_signals: ClassificationSignals {
-                word_count: 220,
-                password_form_count: 1,
-                hints: vec![
-                    CategoryHint {
-                        category: CATEGORY_FORUM.to_string(),
-                        evidence: "title:forum".to_string(),
-                        weight: 6,
-                    },
-                    CategoryHint {
-                        category: CATEGORY_FORUM.to_string(),
-                        evidence: "text:thread".to_string(),
-                        weight: 4,
-                    },
-                ],
-                ..ClassificationSignals::default()
-            },
-            topic_observations: Vec::new(),
-        }
-    }
-
-    fn gamma_snapshot() -> PageSnapshot {
-        PageSnapshot {
-            title: "Gamma Directory".to_string(),
-            url: "http://gamma.onion".to_string(),
-            language: "German".to_string(),
-            language_detection: LanguageDetection::unknown(),
-            keyword_corpus: "http://gamma.onion\nGamma Directory\nresource directory".to_string(),
-            links: vec![
-                LinkObservation {
-                    target_url: "http://beta.onion".to_string(),
-                    target_host: "beta.onion".to_string(),
-                },
-                LinkObservation {
-                    target_url: "http://alpha.onion".to_string(),
-                    target_host: "alpha.onion".to_string(),
-                },
-            ],
-            emails: vec![
-                "ops@gamma.onion".to_string(),
-                "sales@gamma.onion".to_string(),
-            ],
-            crypto_refs: vec![CryptoReference {
-                asset_type: "monero".to_string(),
-                reference: "84A1gammaExampleAddress".to_string(),
-            }],
-            classification_signals: ClassificationSignals {
-                word_count: 200,
-                hints: vec![CategoryHint {
-                    category: CATEGORY_DIRECTORY.to_string(),
-                    evidence: "title:directory".to_string(),
-                    weight: 6,
-                }],
-                ..ClassificationSignals::default()
-            },
-            topic_observations: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn work_units_are_inserted_idempotently() {
-        let mut conn = setup_connection();
-
-        create_work_unit(&mut conn, "https://example.com").expect("first insert");
-        create_work_unit(&mut conn, "https://example.com").expect("duplicate insert");
-
-        let work_units = list_work_units(&mut conn, None, None).expect("load work units");
-        assert_eq!(work_units.items.len(), 1);
-        assert_eq!(work_units.items[0].status, STATUS_PENDING);
-    }
-
-    #[test]
-    fn work_units_ignore_url_fragments() {
-        let mut conn = setup_connection();
-
-        create_work_unit(&mut conn, "https://example.com/page#faq").expect("fragment insert");
-        create_work_unit(&mut conn, "https://example.com/page").expect("canonical insert");
-
-        let work_units = list_work_units(&mut conn, None, None).expect("load work units");
-        assert_eq!(work_units.items.len(), 1);
-        assert_eq!(work_units.items[0].url, "https://example.com");
-    }
-
-    #[test]
-    fn transient_failures_are_rescheduled_then_exhausted() {
-        let mut conn = setup_connection();
-
-        create_work_unit(&mut conn, "https://broken.example").expect("insert work unit");
-        let work_unit = list_work_units(&mut conn, None, None)
-            .expect("load work units")
-            .items
-            .remove(0);
-        record_work_unit_failure(&mut conn, work_unit.id, "network timeout", true, None)
-            .expect("retryable failure");
-
-        let updated = list_work_units(&mut conn, None, None)
-            .expect("reload work units")
-            .items
-            .remove(0);
-        assert_eq!(updated.status, STATUS_PENDING);
-        assert_eq!(updated.retry_count, 1);
-        assert_eq!(updated.last_error.as_deref(), Some("network timeout"));
-        assert!(get_pending_work_units(&mut conn)
-            .expect("due work units")
-            .is_empty());
-
-        for _ in 0..(MAX_RETRY_ATTEMPTS - 1) {
-            record_work_unit_failure(&mut conn, work_unit.id, "network timeout", true, None)
-                .expect("subsequent retryable failure");
-        }
-
-        let exhausted = list_work_units(&mut conn, None, None)
-            .expect("reload exhausted work unit")
-            .items
-            .remove(0);
-        assert_eq!(exhausted.status, STATUS_FAILED);
-        assert_eq!(exhausted.retry_count, MAX_RETRY_ATTEMPTS);
-    }
-
-    #[test]
-    fn permanent_failures_are_terminal() {
-        let mut conn = setup_connection();
-
-        create_work_unit(&mut conn, "notaurl").expect("insert work unit");
-        let work_unit = list_work_units(&mut conn, None, None)
-            .expect("load work units")
-            .items
-            .remove(0);
-        record_work_unit_failure(&mut conn, work_unit.id, "invalid url", false, None)
-            .expect("terminal failure");
-
-        let updated = list_work_units(&mut conn, None, None)
-            .expect("reload work units")
-            .items
-            .remove(0);
-        assert_eq!(updated.status, STATUS_FAILED);
-        assert_eq!(updated.retry_count, 1);
-    }
-
-    #[test]
-    fn blacklist_domains_are_normalized_and_match_subdomains() {
-        assert_eq!(
-            normalize_blacklist_domain(" Example.COM ").expect("normalized domain"),
-            "example.com".to_string()
-        );
-        assert_eq!(
-            find_matching_blacklist_domain(
-                "www.example.com",
-                &["example.com".to_string(), "www.example.com".to_string()]
-            ),
-            Some("www.example.com".to_string())
-        );
-        assert_eq!(
-            find_matching_blacklist_domain("badexample.com", &["example.com".to_string()]),
-            None
-        );
-        assert!(normalize_blacklist_domain("https://example.com").is_err());
-        assert!(normalize_blacklist_domain("example.com/path").is_err());
-    }
-
-    #[test]
-    fn file_backed_connections_enable_wal_mode() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        let database_path =
-            env::temp_dir().join(format!("spyder-lib-{}-{unique}.sqlite", process::id()));
-        let database_url = database_path.to_string_lossy().into_owned();
-
-        let mut conn = SqliteConnection::establish(&database_url).expect("sqlite file");
-        configure_sqlite_connection(&mut conn, &database_url).expect("configure sqlite");
-
-        let journal_mode = sql_query("PRAGMA journal_mode")
-            .get_result::<JournalModeRow>(&mut conn)
-            .expect("journal mode")
-            .journal_mode;
-        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
-
-        drop(conn);
-        let _ = fs::remove_file(&database_url);
-        let _ = fs::remove_file(format!("{database_url}-wal"));
-        let _ = fs::remove_file(format!("{database_url}-shm"));
-    }
-
-    #[test]
-    fn blacklist_entries_are_idempotent_and_removable() {
-        let mut conn = setup_connection();
-
-        add_domain_blacklist_entry(&mut conn, "Example.com").expect("first add");
-        add_domain_blacklist_entry(&mut conn, "example.com").expect("second add");
-        let rules = list_domain_blacklist_rules(&mut conn).expect("list rules");
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].domain, "example.com");
-
-        remove_domain_blacklist_entry(&mut conn, "example.com").expect("remove entry");
-        remove_domain_blacklist_entry(&mut conn, "example.com").expect("remove absent entry");
-        assert!(list_domain_blacklist_rules(&mut conn)
-            .expect("list after remove")
-            .is_empty());
-    }
-
-    #[test]
-    fn forum_keyword_rules_are_normalized_idempotent_and_removable() {
-        let mut conn = setup_connection();
-
-        add_forum_keyword_rule(&mut conn, "  Acme   Corp  ", "  ACME Corp ").expect("first add");
-        add_forum_keyword_rule(&mut conn, "acme corp", "acme corp").expect("duplicate add");
-
-        let rules = list_forum_keyword_rules(&mut conn).expect("list rules");
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].label, "acme corp");
-        assert_eq!(rules[0].pattern, "acme corp");
-
-        assert_eq!(
-            remove_forum_keyword_rule(&mut conn, " Acme Corp ", "ACME Corp").expect("remove rule"),
-            Some(("acme corp".to_string(), "acme corp".to_string()))
-        );
-        assert!(
-            remove_forum_keyword_rule(&mut conn, "acme corp", "acme corp")
-                .expect("remove absent rule")
-                .is_none()
-        );
-        assert!(list_forum_keyword_rules(&mut conn)
-            .expect("list after remove")
-            .is_empty());
-    }
-
-    #[test]
-    fn forum_keyword_tags_surface_only_for_forum_sites() {
-        let mut conn = setup_connection();
-        add_forum_keyword_rule(&mut conn, "Acme Corp", "acme corp").expect("add keyword rule");
-
-        let mut alpha = alpha_snapshot();
-        alpha.keyword_corpus = "http://alpha.onion\nAlpha Market\nseller acme corp".to_string();
-        let mut beta = beta_snapshot();
-        beta.keyword_corpus =
-            "http://beta.onion\nBeta Forum\nthread about acme corp and mirrors".to_string();
-
-        save_page_info(&mut conn, &alpha).expect("save alpha");
-        save_page_info(&mut conn, &beta).expect("save beta");
-
-        let sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
-        let alpha_site = sites
-            .items
-            .iter()
-            .find(|site| site.host == "alpha.onion")
-            .expect("alpha site");
-        let beta_site = sites
-            .items
-            .iter()
-            .find(|site| site.host == "beta.onion")
-            .expect("beta site");
-
-        assert!(alpha_site.keyword_tags.is_empty());
-        assert_eq!(
-            beta_site.keyword_tags,
-            vec!["keyword:acme corp".to_string()]
-        );
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_keyword_tag")
-                .expect("keyword tag count"),
-            2
-        );
-    }
-
-    #[test]
-    fn rescanning_a_forum_page_replaces_keyword_tags() {
-        let mut conn = setup_connection();
-        add_forum_keyword_rule(&mut conn, "Acme Corp", "acme corp").expect("add acme rule");
-        add_forum_keyword_rule(&mut conn, "LockBit", "lockbit").expect("add lockbit rule");
-
-        let mut snapshot = beta_snapshot();
-        snapshot.keyword_corpus =
-            "http://beta.onion\nBeta Forum\nthread about acme corp and lockbit".to_string();
-        save_page_info(&mut conn, &snapshot).expect("save forum page");
-
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_keyword_tag")
-                .expect("initial keyword tag count"),
-            2
-        );
-        let initial_sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
-        let initial_beta = initial_sites
-            .items
-            .iter()
-            .find(|site| site.host == "beta.onion")
-            .expect("beta site");
-        assert_eq!(
-            initial_beta.keyword_tags,
-            vec![
-                "keyword:acme corp".to_string(),
-                "keyword:lockbit".to_string()
-            ]
-        );
-
-        snapshot.keyword_corpus =
-            "http://beta.onion\nBeta Forum\nthread about acme corp".to_string();
-        save_page_info(&mut conn, &snapshot).expect("resave forum page");
-
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_keyword_tag")
-                .expect("updated keyword tag count"),
-            1
-        );
-        let updated_sites = list_site_profiles(&mut conn, None, None).expect("updated sites");
-        let updated_beta = updated_sites
-            .items
-            .iter()
-            .find(|site| site.host == "beta.onion")
-            .expect("beta site");
-        assert_eq!(
-            updated_beta.keyword_tags,
-            vec!["keyword:acme corp".to_string()]
-        );
-    }
-
-    #[test]
-    fn keyword_analytics_are_host_level_and_timed_by_first_tag_observation() {
-        let mut conn = setup_connection();
-        add_forum_keyword_rule(&mut conn, "Acme Corp", "acme corp").expect("add acme rule");
-        add_forum_keyword_rule(&mut conn, "LockBit", "lockbit").expect("add lockbit rule");
-
-        let mut alpha = alpha_snapshot();
-        alpha.keyword_corpus = "http://alpha.onion\nAlpha Market\nseller acme corp".to_string();
-
-        let mut beta = beta_snapshot();
-        beta.keyword_corpus =
-            "http://beta.onion\nBeta Forum\nthread about acme corp and mirrors".to_string();
-
-        let mut gamma = beta_snapshot();
-        gamma.url = "http://gamma.onion".to_string();
-        gamma.title = "Gamma Forum".to_string();
-        gamma.keyword_corpus =
-            "http://gamma.onion\nGamma Forum\nthread about acme corp and lockbit".to_string();
-        gamma.links = vec![LinkObservation {
-            target_url: "http://beta.onion".to_string(),
-            target_host: "beta.onion".to_string(),
-        }];
-
-        save_page_info(&mut conn, &alpha).expect("save alpha");
-        save_page_info(&mut conn, &beta).expect("save beta");
-        save_page_info(&mut conn, &gamma).expect("save gamma");
-        conn.batch_execute(
-            "
-            UPDATE page_keyword_tag
-            SET created_at = '2026-05-01 08:00:00'
-            WHERE page_id = (SELECT id FROM page WHERE url = 'http://beta.onion')
-              AND tag = 'keyword:acme corp';
-            UPDATE page_keyword_tag
-            SET created_at = '2026-05-02 09:00:00'
-            WHERE page_id = (SELECT id FROM page WHERE url = 'http://gamma.onion')
-              AND tag = 'keyword:acme corp';
-            UPDATE page_keyword_tag
-            SET created_at = '2026-05-03 10:00:00'
-            WHERE page_id = (SELECT id FROM page WHERE url = 'http://gamma.onion')
-              AND tag = 'keyword:lockbit';
-            ",
-        )
-        .expect("seed keyword timestamps");
-
-        save_page_info(&mut conn, &beta).expect("resave beta");
-
-        let distribution = list_site_keyword_distribution(&mut conn).expect("keyword distribution");
-        assert_eq!(distribution.len(), 2);
-        assert_eq!(distribution[0].category, "keyword:acme corp");
-        assert_eq!(distribution[0].label, "acme corp");
-        assert_eq!(distribution[0].host_count, 2);
-        assert_eq!(distribution[1].category, "keyword:lockbit");
-        assert_eq!(distribution[1].host_count, 1);
-
-        let timeline = list_site_keyword_timeline(&mut conn).expect("keyword timeline");
-        assert_eq!(timeline.len(), 3);
-        assert_eq!(timeline[0].day, "2026-05-01");
-        assert_eq!(timeline[0].category, "keyword:acme corp");
-        assert_eq!(timeline[0].host_count, 1);
-        assert_eq!(timeline[1].day, "2026-05-02");
-        assert_eq!(timeline[1].category, "keyword:acme corp");
-        assert_eq!(timeline[1].host_count, 1);
-        assert_eq!(timeline[2].day, "2026-05-03");
-        assert_eq!(timeline[2].category, "keyword:lockbit");
-        assert_eq!(timeline[2].host_count, 1);
-    }
-
-    #[test]
-    fn page_relations_entities_search_and_pagination_are_available() {
-        let mut conn = setup_connection();
-
-        save_page_info(&mut conn, &alpha_snapshot()).expect("save alpha");
-        save_page_info(&mut conn, &beta_snapshot()).expect("save beta");
-        create_work_unit(&mut conn, "http://pending.onion").expect("insert work unit");
-
-        let summaries = list_page_summaries(&mut conn, Some(1), Some(1)).expect("page summaries");
-        assert_eq!(summaries.total_count, 2);
-        assert_eq!(summaries.items.len(), 1);
-
-        let all_summaries = list_page_summaries(&mut conn, None, None).expect("full summaries");
-        let alpha = all_summaries
-            .items
-            .iter()
-            .find(|item| item.url == "http://alpha.onion")
-            .expect("alpha summary");
-        assert_eq!(alpha.outbound_link_count, 1);
-        assert_eq!(alpha.email_count, 1);
-        assert_eq!(alpha.crypto_count, 1);
-        assert_eq!(
-            alpha
-                .site_category
-                .as_ref()
-                .map(|badge| badge.category.as_str()),
-            Some(CATEGORY_MARKET)
-        );
-
-        let detail = get_page_detail(&mut conn, alpha.id)
-            .expect("page detail")
-            .expect("alpha detail");
-        assert_eq!(detail.outgoing_links.len(), 1);
-        assert_eq!(detail.incoming_links.len(), 1);
-        assert_eq!(detail.emails[0].value, "team@shared.test");
-        assert_eq!(detail.crypto_refs.len(), 1);
-        assert_eq!(
-            detail
-                .site_profile
-                .as_ref()
-                .map(|profile| profile.category.as_str()),
-            Some(CATEGORY_MARKET)
-        );
-
-        let email_entities = list_email_entities(&mut conn, None, None).expect("email entities");
-        assert_eq!(email_entities.items[0].page_count, 2);
-
-        let email_detail = get_email_entity_detail(&mut conn, "team@shared.test")
-            .expect("email detail")
-            .expect("email detail exists");
-        assert_eq!(email_detail.pages.len(), 2);
-
-        let crypto_detail = get_crypto_entity_detail(
-            &mut conn,
-            "bitcoin",
-            "bc1qalpha000000000000000000000000000000000",
-        )
-        .expect("crypto detail")
-        .expect("crypto detail exists");
-        assert_eq!(crypto_detail.pages.len(), 2);
-
-        let relationships = list_site_relationships(&mut conn, None, None).expect("relationships");
-        assert_eq!(relationships.items.len(), 2);
-
-        let stats = collect_stats(&mut conn).expect("collect stats");
-        assert_eq!(stats.total_pages, 2);
-        assert_eq!(stats.total_domains, 2);
-        assert_eq!(stats.pending_work_units, 1);
-        assert_eq!(stats.failed_work_units, 0);
-        assert_ne!(stats.last_scrape, "Never");
-
-        let search_results = search_pages(
-            &mut conn,
-            "0x2222222222222222222222222222222222222222",
-            Some(5),
-            Some(0),
-        )
-        .expect("search pages");
-        assert_eq!(search_results.total_count, 1);
-        assert_eq!(search_results.items.len(), 1);
-        assert_eq!(search_results.items[0].title, "Beta Forum");
-        assert_eq!(
-            search_results.items[0]
-                .site_category
-                .as_ref()
-                .map(|badge| badge.category.as_str()),
-            Some(CATEGORY_FORUM)
-        );
-
-        let keyword_search_results = search_pages(&mut conn, "keyword:acme", Some(5), Some(0))
-            .expect("keyword search pages");
-        assert_eq!(keyword_search_results.total_count, 1);
-        assert_eq!(keyword_search_results.items.len(), 1);
-        assert_eq!(keyword_search_results.items[0].host, "beta.onion");
-        assert_eq!(keyword_search_results.items[0].title, "Beta Forum");
-        assert_eq!(
-            keyword_search_results.items[0]
-                .site_category
-                .as_ref()
-                .map(|badge| badge.category.as_str()),
-            Some(CATEGORY_FORUM)
-        );
-
-        let paginated_search_results =
-            search_pages(&mut conn, "shared.test", Some(1), Some(1)).expect("paginated search");
-        assert_eq!(paginated_search_results.total_count, 2);
-        assert_eq!(paginated_search_results.limit, 1);
-        assert_eq!(paginated_search_results.offset, 1);
-        assert_eq!(paginated_search_results.items.len(), 1);
-    }
-
-    #[test]
-    fn top_site_rankings_are_host_level_and_tie_break_by_recency() {
-        let mut conn = setup_connection();
-
-        save_page_info(&mut conn, &alpha_snapshot()).expect("save alpha");
-        save_page_info(&mut conn, &beta_snapshot()).expect("save beta");
-        save_page_info(&mut conn, &gamma_snapshot()).expect("save gamma");
-        conn.batch_execute(
-            "
-            UPDATE page SET last_scanned_at = '2026-05-02 08:00:00' WHERE url = 'http://alpha.onion';
-            UPDATE page SET last_scanned_at = '2026-05-03 09:00:00' WHERE url = 'http://beta.onion';
-            UPDATE page SET last_scanned_at = '2026-05-01 07:00:00' WHERE url = 'http://gamma.onion';
-            UPDATE site_profile SET last_scanned_at = '2026-05-02 08:00:00' WHERE host = 'alpha.onion';
-            UPDATE site_profile SET last_scanned_at = '2026-05-03 09:00:00' WHERE host = 'beta.onion';
-            UPDATE site_profile SET last_scanned_at = '2026-05-01 07:00:00' WHERE host = 'gamma.onion';
-            ",
-        )
-        .expect("update page recency");
-
-        let email_leaders =
-            list_top_sites_by_email_refs(&mut conn, Some(10)).expect("email leaders");
-        assert_eq!(email_leaders[0].host, "gamma.onion");
-        assert_eq!(email_leaders[0].count, 2);
-        assert_eq!(email_leaders[1].host, "beta.onion");
-        assert_eq!(email_leaders[2].host, "alpha.onion");
-
-        let crypto_leaders =
-            list_top_sites_by_crypto_refs(&mut conn, Some(10)).expect("crypto leaders");
-        assert_eq!(crypto_leaders[0].host, "beta.onion");
-        assert_eq!(crypto_leaders[0].count, 2);
-        assert_eq!(crypto_leaders[1].host, "alpha.onion");
-        assert_eq!(crypto_leaders[2].host, "gamma.onion");
-
-        let outgoing_leaders =
-            list_top_sites_by_outgoing_links(&mut conn, Some(10)).expect("outgoing leaders");
-        assert_eq!(outgoing_leaders[0].host, "gamma.onion");
-        assert_eq!(outgoing_leaders[0].count, 2);
-        assert_eq!(outgoing_leaders[1].host, "beta.onion");
-        assert_eq!(outgoing_leaders[2].host, "alpha.onion");
-
-        let referenced_leaders =
-            list_top_referenced_sites(&mut conn, Some(10)).expect("referenced leaders");
-        assert_eq!(referenced_leaders[0].host, "beta.onion");
-        assert_eq!(referenced_leaders[0].count, 2);
-        assert_eq!(referenced_leaders[1].host, "alpha.onion");
-        assert_eq!(referenced_leaders[1].count, 2);
-        assert_eq!(
-            referenced_leaders[0].last_scanned_at.as_deref(),
-            Some("2026-05-03 09:00:00")
-        );
-    }
-
-    #[test]
-    fn site_profiles_are_sorted_by_most_recent_scan() {
-        let mut conn = setup_connection();
-
-        save_page_info(&mut conn, &alpha_snapshot()).expect("save alpha");
-        save_page_info(&mut conn, &beta_snapshot()).expect("save beta");
-        save_page_info(&mut conn, &gamma_snapshot()).expect("save gamma");
-        conn.batch_execute(
-            "
-            UPDATE page SET last_scanned_at = '2026-05-02 08:00:00' WHERE url = 'http://alpha.onion';
-            UPDATE page SET last_scanned_at = '2026-05-03 09:00:00' WHERE url = 'http://beta.onion';
-            UPDATE page SET last_scanned_at = '2026-05-01 07:00:00' WHERE url = 'http://gamma.onion';
-            UPDATE site_profile SET last_scanned_at = '2026-05-02 08:00:00' WHERE host = 'alpha.onion';
-            UPDATE site_profile SET last_scanned_at = '2026-05-03 09:00:00' WHERE host = 'beta.onion';
-            UPDATE site_profile SET last_scanned_at = '2026-05-01 07:00:00' WHERE host = 'gamma.onion';
-            ",
-        )
-        .expect("update page recency");
-
-        let sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
-        assert_eq!(sites.items[0].host, "beta.onion");
-        assert_eq!(sites.items[1].host, "alpha.onion");
-        assert_eq!(sites.items[2].host, "gamma.onion");
-        assert_eq!(sites.items[0].last_scanned_at, "2026-05-03 09:00:00");
-    }
-
-    #[test]
-    fn host_ssh_observations_are_grouped_by_shared_key() {
-        let mut conn = setup_connection();
-
-        save_page_info(&mut conn, &alpha_snapshot()).expect("save alpha");
-        save_page_info(&mut conn, &beta_snapshot()).expect("save beta");
-        save_host_ssh_observation(
-            &mut conn,
-            &NewHostSshObservation {
-                host: "alpha.onion".to_string(),
-                port: 22,
-                status: SSH_STATUS_SUCCESS.to_string(),
-                host_key_algorithm: Some("ssh-ed25519".to_string()),
-                host_key: Some("001122".to_string()),
-                host_key_fingerprint: Some("sha256:feedbeef".to_string()),
-                server_banner: Some("SSH-2.0-OpenSSH_9.9".to_string()),
-                last_error: None,
-                last_attempt_at: String::new(),
-                last_success_at: None,
-            },
-        )
-        .expect("save alpha ssh observation");
-        save_host_ssh_observation(
-            &mut conn,
-            &NewHostSshObservation {
-                host: "beta.onion".to_string(),
-                port: 2222,
-                status: SSH_STATUS_SUCCESS.to_string(),
-                host_key_algorithm: Some("ssh-ed25519".to_string()),
-                host_key: Some("001122".to_string()),
-                host_key_fingerprint: Some("sha256:feedbeef".to_string()),
-                server_banner: Some("SSH-2.0-OpenSSH_9.9".to_string()),
-                last_error: None,
-                last_attempt_at: String::new(),
-                last_success_at: None,
-            },
-        )
-        .expect("save beta ssh observation");
-
-        let recent_hosts =
-            list_recent_responding_hosts(&mut conn, 24, Some(10)).expect("recent hosts");
-        assert_eq!(recent_hosts.len(), 2);
-
-        let summaries = list_ssh_host_keys(&mut conn, None, None).expect("ssh summaries");
-        assert_eq!(summaries.total_count, 1);
-        assert_eq!(summaries.items[0].algorithm, "ssh-ed25519");
-        assert_eq!(summaries.items[0].host_count, 2);
-        assert_eq!(summaries.items[0].endpoint_count, 2);
-
-        let detail = get_ssh_host_key_detail(&mut conn, "ssh-ed25519", "sha256:feedbeef")
-            .expect("ssh detail")
-            .expect("ssh detail exists");
-        assert_eq!(detail.host_count, 2);
-        assert_eq!(detail.endpoint_count, 2);
-        assert_eq!(detail.endpoints[0].host, "alpha.onion");
-        assert_eq!(detail.endpoints[1].host, "beta.onion");
-        assert!(detail.endpoints[0].site_category.is_some());
-    }
-
-    #[test]
-    fn failed_ssh_observations_preserve_last_successful_key() {
-        let mut conn = setup_connection();
-
-        save_host_ssh_observation(
-            &mut conn,
-            &NewHostSshObservation {
-                host: "alpha.onion".to_string(),
-                port: 22,
-                status: SSH_STATUS_SUCCESS.to_string(),
-                host_key_algorithm: Some("ssh-ed25519".to_string()),
-                host_key: Some("001122".to_string()),
-                host_key_fingerprint: Some("sha256:feedbeef".to_string()),
-                server_banner: Some("SSH-2.0-OpenSSH_9.9".to_string()),
-                last_error: None,
-                last_attempt_at: String::new(),
-                last_success_at: None,
-            },
-        )
-        .expect("save ssh success");
-        save_host_ssh_observation(
-            &mut conn,
-            &NewHostSshObservation {
-                host: "alpha.onion".to_string(),
-                port: 22,
-                status: "timeout".to_string(),
-                host_key_algorithm: None,
-                host_key: None,
-                host_key_fingerprint: None,
-                server_banner: None,
-                last_error: Some("timed out".to_string()),
-                last_attempt_at: String::new(),
-                last_success_at: None,
-            },
-        )
-        .expect("save ssh failure");
-
-        let observation = get_host_ssh_observation(&mut conn, "alpha.onion", 22)
-            .expect("load ssh observation")
-            .expect("ssh observation exists");
-        assert_eq!(observation.status, "timeout");
-        assert_eq!(
-            observation.host_key_fingerprint.as_deref(),
-            Some("sha256:feedbeef")
-        );
-        assert!(observation.last_success_at.is_some());
-
-        let summaries = list_ssh_host_keys(&mut conn, None, None).expect("ssh summaries");
-        assert_eq!(summaries.total_count, 1);
-    }
-
-    #[test]
-    fn site_profiles_are_aggregated_and_listed() {
-        let mut conn = setup_connection();
-
-        let mut search_page = alpha_snapshot();
-        search_page.url = "http://gamma.onion/search".to_string();
-        search_page.title = "Gamma Search".to_string();
-        search_page.links = vec![
-            LinkObservation {
-                target_url: "http://alpha.onion/forum/thread-1".to_string(),
-                target_host: "alpha.onion".to_string(),
-            },
-            LinkObservation {
-                target_url: "http://beta.onion/forum/thread-2".to_string(),
-                target_host: "beta.onion".to_string(),
-            },
-        ];
-        search_page.classification_signals = ClassificationSignals {
-            word_count: 240,
-            search_form_count: 1,
-            hints: vec![
-                CategoryHint {
-                    category: CATEGORY_SEARCH_ENGINE.to_string(),
-                    evidence: "form:search".to_string(),
-                    weight: 7,
-                },
-                CategoryHint {
-                    category: CATEGORY_INDEXER.to_string(),
-                    evidence: "links:many-outbound".to_string(),
-                    weight: 3,
-                },
-            ],
-            ..ClassificationSignals::default()
-        };
-
-        let mut docs_page = alpha_snapshot();
-        docs_page.url = "http://gamma.onion/docs/start".to_string();
-        docs_page.title = "Gamma Docs".to_string();
-        docs_page.classification_signals = ClassificationSignals {
-            word_count: 260,
-            hints: vec![
-                CategoryHint {
-                    category: CATEGORY_DOCS.to_string(),
-                    evidence: "title:docs".to_string(),
-                    weight: 6,
-                },
-                CategoryHint {
-                    category: CATEGORY_SEARCH_ENGINE.to_string(),
-                    evidence: "text:search-results".to_string(),
-                    weight: 4,
-                },
-            ],
-            ..ClassificationSignals::default()
-        };
-
-        save_page_info(&mut conn, &search_page).expect("save search page");
-        save_page_info(&mut conn, &docs_page).expect("save docs page");
-
-        let sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
-        let gamma = sites
-            .items
-            .into_iter()
-            .find(|site| site.host == "gamma.onion")
-            .expect("gamma site profile");
-        assert_eq!(gamma.category, CATEGORY_DOCS);
-        assert_eq!(gamma.page_count, 1);
-        assert_eq!(gamma.source_page_url.as_deref(), Some("http://gamma.onion"));
-        assert!(gamma.evidence.iter().any(|item| item == "pages:1"));
-    }
-
-    #[test]
-    fn blacklisted_links_are_preserved_and_explicit_in_views() {
-        let mut conn = setup_connection();
-
-        add_domain_blacklist_entry(&mut conn, "beta.onion").expect("add blacklist");
-        save_page_info(&mut conn, &alpha_snapshot()).expect("save alpha");
-        save_page_info(&mut conn, &beta_snapshot()).expect("save beta");
-
-        let alpha = list_page_summaries(&mut conn, None, None)
-            .expect("summaries")
-            .items
-            .into_iter()
-            .find(|item| item.url == "http://alpha.onion")
-            .expect("alpha summary");
-        let detail = get_page_detail(&mut conn, alpha.id)
-            .expect("detail")
-            .expect("detail exists");
-        assert_eq!(detail.outgoing_links.len(), 1);
-        assert!(detail.outgoing_links[0].is_blacklisted);
-        assert_eq!(
-            detail.outgoing_links[0].blacklist_match_domain.as_deref(),
-            Some("beta.onion")
-        );
-
-        let relationships = list_site_relationships(&mut conn, None, None).expect("relationships");
-        let blacklisted_relationship = relationships
-            .items
-            .into_iter()
-            .find(|item| item.target_host == "beta.onion")
-            .expect("blacklisted relationship");
-        assert!(blacklisted_relationship.is_blacklisted);
-        assert_eq!(
-            blacklisted_relationship.blacklist_match_domain.as_deref(),
-            Some("beta.onion")
-        );
-
-        let summaries = list_domain_blacklist_summaries(&mut conn).expect("blacklist summaries");
-        assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].page_link_count, 1);
-        assert_eq!(summaries[0].page_scan_link_count, 1);
-    }
-
-    #[test]
-    fn page_detail_links_are_url_encoded() {
-        let mut conn = setup_connection();
-
-        let mut snapshot = alpha_snapshot();
-        snapshot.emails = vec!["ops+intel@alpha.onion".to_string()];
-        save_page_info(&mut conn, &snapshot).expect("save alpha");
-
-        let summary = list_page_summaries(&mut conn, None, None)
-            .expect("summaries")
-            .items
-            .remove(0);
-        let detail = get_page_detail(&mut conn, summary.id)
-            .expect("detail")
-            .expect("detail exists");
-
-        assert_eq!(
-            detail.emails[0].detail_url,
-            "/entities/emails?value=ops%2Bintel%40alpha.onion"
-        );
-    }
-
-    #[test]
-    fn saving_a_page_creates_initial_scan_history() {
-        let mut conn = setup_connection();
-
-        save_page_info(&mut conn, &alpha_snapshot()).expect("save alpha");
-
-        let page = list_page_summaries(&mut conn, None, None)
-            .expect("page summaries")
-            .items
-            .remove(0);
-        let history = list_page_scan_summaries(&mut conn, page.id).expect("page history");
-
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_scan").expect("scan count"),
-            1
-        );
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_scan_link")
-                .expect("scan link count"),
-            1
-        );
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_scan_email")
-                .expect("scan email count"),
-            1
-        );
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_scan_crypto")
-                .expect("scan crypto count"),
-            1
-        );
-        assert_eq!(history.len(), 1);
-        assert!(history[0].change_summary.is_none());
-        assert_eq!(
-            history[0].detail_url,
-            format!("/pages/{}/history/{}", page.id, history[0].id)
-        );
-
-        let detail = get_page_scan_detail(&mut conn, page.id, history[0].id)
-            .expect("scan detail")
-            .expect("scan detail exists");
-        assert!(!detail.diff.has_previous_scan);
-        assert_eq!(detail.outgoing_links.len(), 1);
-        assert_eq!(detail.emails[0].value, "team@shared.test");
-    }
-
-    #[test]
-    fn rescanning_a_page_replaces_child_observations() {
-        let mut conn = setup_connection();
-
-        save_page_info(&mut conn, &alpha_snapshot()).expect("save alpha");
-
-        let mut rescanned = alpha_snapshot();
-        rescanned.title = "Alpha Mirror".to_string();
-        rescanned.language = "Spanish".to_string();
-        rescanned.emails = vec!["ops@alpha.onion".to_string()];
-        rescanned.crypto_refs = vec![CryptoReference {
-            asset_type: "ethereum".to_string(),
-            reference: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-        }];
-        rescanned.links = vec![LinkObservation {
-            target_url: "http://gamma.onion".to_string(),
-            target_host: "gamma.onion".to_string(),
-        }];
-        save_page_info(&mut conn, &rescanned).expect("resave alpha");
-
-        let summary = list_page_summaries(&mut conn, None, None)
-            .expect("summaries")
-            .items
-            .remove(0);
-        let detail = get_page_detail(&mut conn, summary.id)
-            .expect("detail")
-            .expect("detail exists");
-
-        assert_eq!(detail.emails[0].value, "ops@alpha.onion");
-        assert_eq!(detail.crypto_refs.len(), 1);
-        assert_eq!(detail.crypto_refs[0].asset_type, "ethereum");
-        assert_eq!(detail.outgoing_links.len(), 1);
-
-        assert!(get_email_entity_detail(&mut conn, "team@shared.test")
-            .expect("old email detail")
-            .is_none());
-        assert!(get_crypto_entity_detail(
-            &mut conn,
-            "bitcoin",
-            "bc1qalpha000000000000000000000000000000000",
-        )
-        .expect("old crypto detail")
-        .is_none());
-
-        let history = list_page_scan_summaries(&mut conn, summary.id).expect("page history");
-        assert_eq!(history.len(), 2);
-        let latest_change_summary = history[0]
-            .change_summary
-            .as_ref()
-            .expect("latest change summary");
-        assert_eq!(latest_change_summary.added_links, 1);
-        assert_eq!(latest_change_summary.removed_links, 1);
-        assert_eq!(latest_change_summary.added_emails, 1);
-        assert_eq!(latest_change_summary.removed_emails, 1);
-        assert_eq!(latest_change_summary.added_crypto_refs, 1);
-        assert_eq!(latest_change_summary.removed_crypto_refs, 1);
-        assert!(latest_change_summary.title_changed);
-        assert!(latest_change_summary.language_changed);
-
-        let scan_detail = get_page_scan_detail(&mut conn, summary.id, history[0].id)
-            .expect("scan detail")
-            .expect("scan detail exists");
-        assert!(scan_detail.diff.has_previous_scan);
-        assert_eq!(scan_detail.diff.previous_scan_id, Some(history[1].id));
-        assert_eq!(
-            scan_detail.diff.added_links[0].target_url,
-            "http://gamma.onion"
-        );
-        assert_eq!(
-            scan_detail.diff.removed_links[0].target_url,
-            "http://beta.onion"
-        );
-        assert_eq!(scan_detail.diff.added_emails[0].value, "ops@alpha.onion");
-        assert_eq!(scan_detail.diff.removed_emails[0].value, "team@shared.test");
-        assert_eq!(scan_detail.diff.added_crypto_refs[0].asset_type, "ethereum");
-        assert_eq!(
-            scan_detail.diff.removed_crypto_refs[0].asset_type,
-            "bitcoin"
-        );
-    }
-
-    #[test]
-    fn saving_pages_ignores_url_fragments() {
-        let mut conn = setup_connection();
-
-        let snapshot = PageSnapshot {
-            title: "Anchor Heavy Page".to_string(),
-            url: "https://example.com/docs/page#overview".to_string(),
-            language: "English".to_string(),
-            language_detection: LanguageDetection::unknown(),
-            keyword_corpus: "https://example.com/docs/page#overview\nAnchor Heavy Page\nhttps://example.com/docs/faq#shipping".to_string(),
-            links: vec![
-                LinkObservation {
-                    target_url: "https://example.com/docs/faq#shipping".to_string(),
-                    target_host: "EXAMPLE.com".to_string(),
-                },
-                LinkObservation {
-                    target_url: "https://example.com/docs/faq#returns".to_string(),
-                    target_host: "example.com".to_string(),
-                },
-            ],
-            emails: Vec::new(),
-            crypto_refs: Vec::new(),
-            classification_signals: ClassificationSignals::default(),
-            topic_observations: Vec::new(),
-        };
-        save_page_info(&mut conn, &snapshot).expect("save fragment page");
-
-        let mut rescanned = snapshot.clone();
-        rescanned.url = "https://example.com/docs/page".to_string();
-        rescanned.title = "Anchor Heavy Page Rescanned".to_string();
-        save_page_info(&mut conn, &rescanned).expect("save canonical page");
-
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page").expect("page count"),
-            1
-        );
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_link")
-                .expect("page link count"),
-            1
-        );
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_scan").expect("scan count"),
-            2
-        );
-        assert_eq!(
-            scalar_nullable_text(&mut conn, "SELECT url AS value FROM page LIMIT 1")
-                .expect("page url"),
-            Some("https://example.com".to_string())
-        );
-        assert_eq!(
-            scalar_nullable_text(
-                &mut conn,
-                "SELECT target_url AS value FROM page_link LIMIT 1"
-            )
-            .expect("stored target url"),
-            Some("https://example.com".to_string())
-        );
-    }
-
-    #[test]
-    fn page_scan_history_migration_adds_empty_history_tables() {
-        let mut conn = SqliteConnection::establish(":memory:").expect("in-memory sqlite");
-        conn.batch_execute(
-            "
-            CREATE TABLE page(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              title VARCHAR NOT NULL,
-              url VARCHAR NOT NULL UNIQUE,
-              links VARCHAR NOT NULL,
-              emails VARCHAR NOT NULL,
-              coins VARCHAR NOT NULL,
-              language VARCHAR NOT NULL DEFAULT '',
-              last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            INSERT INTO page(title, url, links, emails, coins, language)
-            VALUES ('Legacy Page', 'http://legacy.onion', '', '', '', '');
-            ",
-        )
-        .expect("legacy page schema setup");
-
-        conn.batch_execute(include_str!(
-            "../migrations/2026-04-20-140000_page_scan_history/up.sql"
-        ))
-        .expect("page scan history migration");
-
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_scan").expect("scan count"),
-            0
-        );
-
-        conn.batch_execute(
-            "
-            INSERT INTO page_scan(page_id, title, language)
-            VALUES (1, 'Legacy Page', 'English');
-            INSERT INTO page_scan_email(scan_id, email)
-            VALUES (1, 'legacy@onion.test');
-            ",
-        )
-        .expect("history inserts");
-
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_scan_email")
-                .expect("scan email count"),
-            1
-        );
-    }
-
-    #[test]
-    fn domain_blacklist_migration_adds_blacklist_table() {
-        let mut conn = SqliteConnection::establish(":memory:").expect("in-memory sqlite");
-        conn.batch_execute(
-            "
-            CREATE TABLE page(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              title VARCHAR NOT NULL,
-              url VARCHAR NOT NULL UNIQUE,
-              links VARCHAR NOT NULL,
-              emails VARCHAR NOT NULL,
-              coins VARCHAR NOT NULL,
-              language VARCHAR NOT NULL DEFAULT '',
-              last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            ",
-        )
-        .expect("legacy page schema setup");
-
-        conn.batch_execute(include_str!(
-            "../migrations/2026-04-20-150000_domain_blacklist/up.sql"
-        ))
-        .expect("domain blacklist migration");
-
-        add_domain_blacklist_entry(&mut conn, "blocked.onion").expect("insert blacklist entry");
-        let rules = list_domain_blacklist_rules(&mut conn).expect("load blacklist rules");
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].domain, "blocked.onion");
-    }
-
-    #[test]
-    fn host_ssh_observation_migration_adds_host_key_table() {
-        let mut conn = SqliteConnection::establish(":memory:").expect("in-memory sqlite");
-        conn.batch_execute(include_str!(
-            "../migrations/2026-05-02-110000_host_ssh_observations/up.sql"
-        ))
-        .expect("host ssh observation migration");
-
-        save_host_ssh_observation(
-            &mut conn,
-            &NewHostSshObservation {
-                host: "alpha.onion".to_string(),
-                port: 22,
-                status: SSH_STATUS_SUCCESS.to_string(),
-                host_key_algorithm: Some("ssh-ed25519".to_string()),
-                host_key: Some("001122".to_string()),
-                host_key_fingerprint: Some("sha256:feedbeef".to_string()),
-                server_banner: Some("SSH-2.0-OpenSSH_9.9".to_string()),
-                last_error: None,
-                last_attempt_at: String::new(),
-                last_success_at: None,
-            },
-        )
-        .expect("save migrated ssh observation");
-
-        let observation = get_host_ssh_observation(&mut conn, "alpha.onion", 22)
-            .expect("load ssh observation")
-            .expect("ssh observation exists");
-        assert_eq!(observation.status, SSH_STATUS_SUCCESS);
-        assert_eq!(
-            observation.host_key_algorithm.as_deref(),
-            Some("ssh-ed25519")
-        );
-    }
-
-    #[test]
-    fn retry_backfill_migration_populates_relationship_tables() {
-        let mut conn = SqliteConnection::establish(":memory:").expect("in-memory sqlite");
-        conn.batch_execute(
-            "
-            CREATE TABLE work_unit(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              url VARCHAR NOT NULL UNIQUE,
-              status VARCHAR NOT NULL DEFAULT 'pending',
-              retry_count INTEGER NOT NULL DEFAULT 0,
-              last_error VARCHAR,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE page(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              title VARCHAR NOT NULL,
-              url VARCHAR NOT NULL UNIQUE,
-              links VARCHAR NOT NULL,
-              emails VARCHAR NOT NULL,
-              coins VARCHAR NOT NULL,
-              language VARCHAR NOT NULL DEFAULT '',
-              last_scanned_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE page_link(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              source_page_id INTEGER NOT NULL,
-              source_host VARCHAR NOT NULL DEFAULT '',
-              target_url VARCHAR NOT NULL,
-              target_host VARCHAR NOT NULL DEFAULT '',
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(source_page_id, target_url)
-            );
-            CREATE TABLE page_email(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL,
-              email VARCHAR NOT NULL,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(page_id, email)
-            );
-            CREATE TABLE page_crypto(
-              id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-              page_id INTEGER NOT NULL,
-              asset_type VARCHAR NOT NULL,
-              reference VARCHAR NOT NULL,
-              created_at VARCHAR NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(page_id, asset_type, reference)
-            );
-            INSERT INTO work_unit(url, status) VALUES ('http://legacy.onion', 'pending');
-            INSERT INTO page(title, url, links, emails, coins, language, last_scanned_at, created_at)
-            VALUES (
-              'Legacy Page',
-              'http://legacy.onion',
-              'http://beta.onion/about,http://gamma.onion',
-              'intel+ops@legacy.onion,team@legacy.onion',
-              'bitcoin:bc1qlegacy00000000000000000000000000000000,ethereum:0x3333333333333333333333333333333333333333',
-              '',
-              CURRENT_TIMESTAMP,
-              CURRENT_TIMESTAMP
-            );
-            ",
-        )
-        .expect("legacy schema setup");
-
-        conn.batch_execute(include_str!(
-            "../migrations/2026-04-20-130000_retry_queue_and_backfill/up.sql"
-        ))
-        .expect("retry/backfill migration");
-
-        let link_count =
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_link").expect("link count");
-        let email_count = scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_email")
-            .expect("email count");
-        let crypto_count = scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_crypto")
-            .expect("crypto count");
-
-        assert_eq!(link_count, 2);
-        assert_eq!(email_count, 2);
-        assert_eq!(crypto_count, 2);
-
-        let migrated_work_unit = list_work_units(&mut conn, None, None)
-            .expect("work units")
-            .items
-            .remove(0);
-        assert_eq!(
-            migrated_work_unit.next_attempt_at,
-            migrated_work_unit.created_at
-        );
-        assert!(migrated_work_unit.last_attempt_at.is_none());
-    }
-
-    #[test]
-    fn host_level_cleanup_migration_collapses_existing_path_rows() {
-        let mut conn = setup_connection();
-        conn.batch_execute(
-            "
-            INSERT INTO work_unit(url, status, retry_count, next_attempt_at, last_attempt_at, last_error, created_at)
-            VALUES
-              ('http://alpha.onion/bob', 'done', 1, '2026-04-29 10:00:00', '2026-04-29 10:05:00', NULL, '2026-04-29 10:00:00'),
-              ('http://alpha.onion/alice', 'pending', 2, '2026-04-30 08:30:00', NULL, 'timeout', '2026-04-30 08:00:00');
-
-            INSERT INTO page(id, title, url, links, emails, coins, language, last_scanned_at, created_at)
-            VALUES
-              (1, 'Alpha Bob', 'http://alpha.onion/bob', '', '', '', 'English', '2026-04-29 10:05:00', '2026-04-29 10:00:00'),
-              (2, 'Alpha Alice', 'http://alpha.onion/alice', '', '', '', 'French', '2026-04-30 11:00:00', '2026-04-30 08:00:00');
-
-            INSERT INTO page_scan(id, page_id, title, language, scanned_at)
-            VALUES
-              (10, 1, 'Alpha Bob Scan', 'English', '2026-04-29 10:05:00'),
-              (11, 2, 'Alpha Alice Scan', 'French', '2026-04-30 11:00:00');
-
-            INSERT INTO page_scan_link(scan_id, target_url, target_host)
-            VALUES
-              (10, 'http://beta.onion/about', 'beta.onion'),
-              (10, 'http://beta.onion/contact', 'beta.onion'),
-              (11, 'http://gamma.onion/faq', 'gamma.onion');
-
-            INSERT INTO page_scan_email(scan_id, email)
-            VALUES
-              (10, 'team@alpha.onion'),
-              (11, 'ops@alpha.onion');
-
-            INSERT INTO page_scan_crypto(scan_id, asset_type, reference)
-            VALUES
-              (10, 'bitcoin', 'bc1qalpha000000000000000000000000000000000'),
-              (11, 'ethereum', '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
-
-            INSERT INTO page_link(source_page_id, source_host, target_url, target_host, created_at)
-            VALUES
-              (1, 'alpha.onion', 'http://beta.onion/about', 'beta.onion', '2026-04-29 10:05:00'),
-              (2, 'alpha.onion', 'http://beta.onion/contact', 'beta.onion', '2026-04-30 11:00:00'),
-              (2, 'alpha.onion', 'http://gamma.onion/faq', 'gamma.onion', '2026-04-30 11:00:00');
-
-            INSERT INTO page_email(page_id, email, created_at)
-            VALUES
-              (1, 'team@alpha.onion', '2026-04-29 10:05:00'),
-              (2, 'team@alpha.onion', '2026-04-30 11:00:00'),
-              (2, 'ops@alpha.onion', '2026-04-30 11:00:00');
-
-            INSERT INTO page_crypto(page_id, asset_type, reference, created_at)
-            VALUES
-              (1, 'bitcoin', 'bc1qalpha000000000000000000000000000000000', '2026-04-29 10:05:00'),
-              (2, 'bitcoin', 'bc1qalpha000000000000000000000000000000000', '2026-04-30 11:00:00'),
-              (2, 'ethereum', '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '2026-04-30 11:00:00');
-
-            INSERT INTO page_classification(page_id, host, category, confidence, score, evidence, last_classified_at)
-            VALUES
-              (1, 'alpha.onion', 'docs', 'medium', 6, 'title:docs', '2026-04-29 10:05:00'),
-              (2, 'alpha.onion', 'market', 'high', 9, 'title:market', '2026-04-30 11:00:00');
-
-            INSERT INTO site_profile(host, category, confidence, score, page_count, evidence, source_page_id, last_classified_at, created_at)
-            VALUES
-              ('alpha.onion', 'market', 'high', 9, 2, 'pages:2', 2, '2026-04-30 11:00:00', '2026-04-29 10:00:00');
-            ",
-        )
-        .expect("legacy path data");
-
-        conn.batch_execute(include_str!(
-            "../migrations/2026-04-30-170423_host_level_cleanup/up.sql"
-        ))
-        .expect("host cleanup migration");
-
-        let work_units = list_work_units(&mut conn, None, None).expect("work units");
-        assert_eq!(work_units.items.len(), 1);
-        assert_eq!(work_units.items[0].url, "http://alpha.onion");
-        assert_eq!(work_units.items[0].status, STATUS_DONE);
-
-        let pages = list_page_summaries(&mut conn, None, None).expect("page summaries");
-        assert_eq!(pages.items.len(), 1);
-        assert_eq!(pages.items[0].url, "http://alpha.onion");
-        assert_eq!(pages.items[0].title, "Alpha Alice");
-        assert_eq!(pages.items[0].language, "French");
-        assert_eq!(pages.items[0].outbound_link_count, 2);
-        assert_eq!(pages.items[0].email_count, 2);
-        assert_eq!(pages.items[0].crypto_count, 2);
-
-        let detail = get_page_detail(&mut conn, pages.items[0].id)
-            .expect("page detail")
-            .expect("page detail exists");
-        assert_eq!(detail.outgoing_links.len(), 2);
-        assert_eq!(detail.emails.len(), 2);
-        assert_eq!(detail.crypto_refs.len(), 2);
-
-        let history = list_page_scan_summaries(&mut conn, pages.items[0].id).expect("scan history");
-        assert_eq!(history.len(), 2);
-        assert_eq!(
-            scalar_count(
-                &mut conn,
-                "SELECT COUNT(*) AS count FROM page_scan WHERE page_id = 1"
-            )
-            .expect("scan count for canonical page"),
-            2
-        );
-        assert_eq!(
-            scalar_count(&mut conn, "SELECT COUNT(*) AS count FROM page_scan_link")
-                .expect("scan link count"),
-            2
-        );
-        assert_eq!(
-            scalar_nullable_text(
-                &mut conn,
-                "SELECT target_url AS value FROM page_scan_link WHERE scan_id = 10 LIMIT 1"
-            )
-            .expect("normalized scan link"),
-            Some("http://beta.onion".to_string())
-        );
-
-        assert_eq!(
-            scalar_nullable_text(&mut conn, "SELECT links AS value FROM page LIMIT 1")
-                .expect("page links summary"),
-            Some("http://beta.onion,http://gamma.onion".to_string())
-        );
-        assert_eq!(
-            scalar_nullable_text(&mut conn, "SELECT emails AS value FROM page LIMIT 1")
-                .expect("page emails summary"),
-            Some("ops@alpha.onion,team@alpha.onion".to_string())
-        );
-        assert_eq!(
-            scalar_nullable_text(&mut conn, "SELECT coins AS value FROM page LIMIT 1")
-                .expect("page coins summary"),
-            Some(
-                "bitcoin:bc1qalpha000000000000000000000000000000000,ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    .to_string()
-            )
-        );
-
-        assert_eq!(
-            scalar_count(
-                &mut conn,
-                "SELECT COUNT(*) AS count FROM page_classification"
-            )
-            .expect("classification count"),
-            1
-        );
-        assert_eq!(
-            scalar_nullable_text(
-                &mut conn,
-                "SELECT category AS value FROM page_classification LIMIT 1"
-            )
-            .expect("classification category"),
-            Some("market".to_string())
-        );
-
-        let sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
-        assert_eq!(sites.items.len(), 1);
-        assert_eq!(sites.items[0].host, "alpha.onion");
-        assert_eq!(sites.items[0].category, "market");
-        assert_eq!(sites.items[0].page_count, 1);
-        assert_eq!(
-            sites.items[0].source_page_url.as_deref(),
-            Some("http://alpha.onion")
-        );
-    }
-
-    #[test]
-    fn auto_blacklist_category_rules_normalize_slugs_and_labels() {
-        assert_eq!(
-            normalize_auto_blacklist_rule_value(
-                AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
-                "Vendor Page"
-            )
-            .expect("display label normalizes"),
-            CATEGORY_VENDOR_PAGE
-        );
-        assert_eq!(
-            normalize_auto_blacklist_rule_value(AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY, "indexer")
-                .expect("slug normalizes"),
-            CATEGORY_INDEXER
-        );
-        assert!(normalize_auto_blacklist_rule_value(
-            AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
-            "unknown"
-        )
-        .is_err());
-        assert_eq!(
-            normalize_auto_blacklist_rule_value(AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY, "SEO Spam")
-                .expect("seo spam label normalizes"),
-            CATEGORY_SEO_SPAM
-        );
-    }
-
-    #[test]
-    fn auto_blacklist_keyword_rules_normalize_literal_phrases() {
-        assert_eq!(
-            normalize_auto_blacklist_rule_value(
-                AUTO_BLACKLIST_RULE_TYPE_KEYWORD,
-                "  Escrow   Required  "
-            )
-            .expect("keyword normalizes"),
-            "escrow required"
-        );
-        assert!(
-            normalize_auto_blacklist_rule_value(AUTO_BLACKLIST_RULE_TYPE_KEYWORD, "  ").is_err()
-        );
-        assert!(auto_blacklist_keyword_matches(
-            "Forum post says ESCROW REQUIRED before delivery",
-            "escrow required"
-        ));
-    }
-
-    #[test]
-    fn test_categorize_failure_http_status() {
-        assert_eq!(categorize_failure("some error", Some(403)), "http_403_forbidden");
-        assert_eq!(categorize_failure("some error", Some(404)), "http_404_not_found");
-        assert_eq!(categorize_failure("some error", Some(500)), "http_5xx_server_error");
-        assert_eq!(categorize_failure("some error", Some(503)), "http_5xx_server_error");
-        assert_eq!(categorize_failure("some error", Some(429)), "http_429_rate_limit");
-    }
-
-    #[test]
-    fn test_categorize_failure_error_patterns() {
-        assert_eq!(categorize_failure("blacklist check failed", None), "blacklisted");
-        assert_eq!(categorize_failure("connection timeout", None), "timeout");
-        assert_eq!(categorize_failure("connection refused", None), "connection_refused");
-        assert_eq!(categorize_failure("dns lookup failed", None), "dns_failure");
-        assert_eq!(categorize_failure("certificate invalid", None), "tls_error");
-        assert_eq!(categorize_failure("tls handshake error", None), "tls_error");
-        assert_eq!(categorize_failure("unknown error", None), "other");
-    }
-
-    #[test]
-    fn seo_spam_site_category_can_be_auto_blacklisted() {
-        let mut conn = setup_connection();
-        add_auto_blacklist_rule(
-            &mut conn,
-            AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY,
-            "seo-spam",
-            None,
-        )
-        .expect("add seo spam auto blacklist rule");
-
-        let snapshot = PageSnapshot {
-            title: "Promo Gateway".to_string(),
-            url: "http://spam.onion".to_string(),
-            language: "English".to_string(),
-            language_detection: LanguageDetection::unknown(),
-            keyword_corpus: "http://spam.onion\nPromo Gateway\nkeyword stuffed doorway".to_string(),
-            links: vec![LinkObservation {
-                target_url: "https://money.example".to_string(),
-                target_host: "money.example".to_string(),
-            }],
-            emails: Vec::new(),
-            crypto_refs: Vec::new(),
-            classification_signals: ClassificationSignals {
-                word_count: 40,
-                hints: vec![
-                    CategoryHint {
-                        category: CATEGORY_SEO_SPAM.to_string(),
-                        evidence: "meta-keywords:many-languages:10".to_string(),
-                        weight: 8,
-                    },
-                    CategoryHint {
-                        category: CATEGORY_SEO_SPAM.to_string(),
-                        evidence: "links:single-external-visible-host:money.example".to_string(),
-                        weight: 6,
-                    },
-                ],
-                ..ClassificationSignals::default()
-            },
-            topic_observations: Vec::new(),
-        };
-        save_page_info(&mut conn, &snapshot).expect("save seo spam page");
-
-        let sites = list_site_profiles(&mut conn, None, None).expect("site profiles");
-        let site = sites
-            .items
-            .iter()
-            .find(|site| site.host == "spam.onion")
-            .expect("seo spam site profile");
-        assert_eq!(site.category, CATEGORY_SEO_SPAM);
-        assert_eq!(site.label, "SEO Spam");
-
-        let blacklist = list_domain_blacklist_rules(&mut conn).expect("blacklist rules");
-        assert!(blacklist.iter().any(|rule| rule.domain == "spam.onion"));
-        let events =
-            list_recent_auto_blacklist_events(&mut conn, None).expect("auto blacklist events");
-        assert!(events.iter().any(|event| {
-            event.domain == "spam.onion"
-                && event.rule_type == AUTO_BLACKLIST_RULE_TYPE_SITE_CATEGORY
-                && event.matched_value == CATEGORY_SEO_SPAM
-        }));
-    }
-
-    #[test]
-    fn test_intel_summary_creation() {
-        let summary = IntelSummary {
-            critical_count: 5,
-            high_count: 10,
-            medium_count: 3,
-            low_count: 2,
-        };
-        assert_eq!(summary.critical_count, 5);
-        assert_eq!(summary.high_count, 10);
-    }
-
-    #[test]
-    #[ignore] // Requires PgConnection and test data
-    fn test_get_site_intel_summary() {
-        // This test requires a PostgreSQL connection with test data
-        // Run with: cargo test test_get_site_intel_summary -- --ignored --nocapture
-        let mut conn = establish_connection().expect("test connection");
-
-        let result = get_site_intel_summary(&mut conn, "test.onion");
-        assert!(result.is_ok());
-        let summary = result.unwrap();
-        assert!(summary.critical_count >= 0);
-        assert!(summary.high_count >= 0);
-        assert!(summary.medium_count >= 0);
-        assert!(summary.low_count >= 0);
-    }
-
-    #[test]
-    #[ignore] // Requires PgConnection and test data
-    fn test_get_site_active_leads() {
-        // This test requires a PostgreSQL connection with test data
-        // Run with: cargo test test_get_site_active_leads -- --ignored --nocapture
-        let mut conn = establish_connection().expect("test connection");
-
-        let result = get_site_active_leads(&mut conn, "test.onion", 10);
-        assert!(result.is_ok());
-        let leads = result.unwrap();
-        assert!(leads.len() <= 10);
-    }
-
-    #[test]
-    #[ignore] // Requires PgConnection and test data
-    fn test_get_site_pages() {
-        // This test requires a PostgreSQL connection with test data
-        // Run with: cargo test test_get_site_pages -- --ignored --nocapture
-        let mut conn = establish_connection().expect("test connection");
-
-        let result = get_site_pages(&mut conn, "test.onion", 50, 0);
-        assert!(result.is_ok());
-        let pages = result.unwrap();
-        for page in &pages {
-            assert!(page.url.contains("test.onion"));
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn test_get_host_service_fingerprints() {
-        // This test requires a PostgreSQL connection with test data
-        // Run with: cargo test test_get_host_service_fingerprints -- --ignored --nocapture
-        let mut conn = establish_connection().expect("test connection");
-
-        let result = get_host_service_fingerprints(&mut conn, "test.onion");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    #[ignore]
-    fn test_get_site_relationships() {
-        // This test requires a PostgreSQL connection with test data
-        // Run with: cargo test test_get_site_relationships -- --ignored --nocapture
-        let mut conn = establish_connection().expect("test connection");
-
-        let result = get_site_relationships(&mut conn, "test.onion");
-        assert!(result.is_ok());
-        let rel = result.unwrap();
-        assert!(rel.inbound_count >= 0);
-        assert!(rel.outbound_count >= 0);
-    }
-
-    #[test]
-    #[ignore]
-    fn test_get_site_discovery_stats() {
-        // This test requires a PostgreSQL connection with test data
-        // Run with: cargo test test_get_site_discovery_stats -- --ignored --nocapture
-        let mut conn = establish_connection().expect("test connection");
-
-        let result = get_site_discovery_stats(&mut conn, "test.onion");
-        assert!(result.is_ok());
-        let stats = result.unwrap();
-        assert!(stats.urls_discovered_from_this_site >= 0);
-    }
-
-    #[test]
-    #[ignore]
-    fn test_get_site_queue_stats() {
-        // This test requires a PostgreSQL connection with test data
-        // Run with: cargo test test_get_site_queue_stats -- --ignored --nocapture
-        let mut conn = establish_connection().expect("test connection");
-
-        let result = get_site_queue_stats(&mut conn, "test.onion");
-        assert!(result.is_ok());
-        let stats = result.unwrap();
-        assert!(stats.success_rate >= 0.0 && stats.success_rate <= 100.0);
-    }
-
-    #[test]
-    #[ignore]
-    fn test_get_site_detail() {
-        // This test requires a PostgreSQL connection with test data
-        // Run with: cargo test test_get_site_detail -- --ignored --nocapture
-        let mut conn = establish_connection().expect("test connection");
-
-        let result = get_site_detail(&mut conn, "test.onion", 50, 0);
-        assert!(result.is_ok());
-        let detail = result.unwrap();
-        assert_eq!(detail.profile.host, "test.onion");
-    }
-
-    #[test]
-    #[ignore]
-    fn test_get_page_discovery_chain() {
-        // This test requires a PostgreSQL connection with test data
-        // Run with: cargo test test_get_page_discovery_chain -- --ignored --nocapture
-        let mut conn = establish_connection().expect("test connection");
-
-        let result = get_page_discovery_chain(&mut conn, "http://test.onion/page");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    #[ignore] // Requires PgConnection and test data
-    fn test_get_page_work_queue_history() {
-        // This test requires a PostgreSQL connection with test data
-        // Run with: cargo test test_get_page_work_queue_history -- --ignored --nocapture
-        let mut conn = establish_connection().expect("test connection");
-
-        let result = get_page_work_queue_history(&mut conn, "http://test.onion");
-        assert!(result.is_ok());
-    }
-}
-
 #[cfg(test)]
 mod network_type_tests {
     use super::*;
@@ -12367,23 +10503,47 @@ mod network_type_tests {
     #[test]
     fn test_detect_i2p_urls() {
         assert_eq!(detect_network_type("http://example.i2p"), NetworkType::I2p);
-        assert_eq!(detect_network_type("http://example.i2p/path"), NetworkType::I2p);
-        assert_eq!(detect_network_type("http://example.i2p:8080"), NetworkType::I2p);
+        assert_eq!(
+            detect_network_type("http://example.i2p/path"),
+            NetworkType::I2p
+        );
+        assert_eq!(
+            detect_network_type("http://example.i2p:8080"),
+            NetworkType::I2p
+        );
         assert_eq!(detect_network_type("https://example.i2p"), NetworkType::I2p);
     }
 
     #[test]
     fn test_detect_tor_urls() {
-        assert_eq!(detect_network_type("http://example.onion"), NetworkType::Tor);
-        assert_eq!(detect_network_type("http://example.onion/path"), NetworkType::Tor);
-        assert_eq!(detect_network_type("http://example.onion:8080"), NetworkType::Tor);
+        assert_eq!(
+            detect_network_type("http://example.onion"),
+            NetworkType::Tor
+        );
+        assert_eq!(
+            detect_network_type("http://example.onion/path"),
+            NetworkType::Tor
+        );
+        assert_eq!(
+            detect_network_type("http://example.onion:8080"),
+            NetworkType::Tor
+        );
     }
 
     #[test]
     fn test_detect_clearnet_urls() {
-        assert_eq!(detect_network_type("http://example.com"), NetworkType::Clearnet);
-        assert_eq!(detect_network_type("https://example.com/path"), NetworkType::Clearnet);
-        assert_eq!(detect_network_type("http://192.168.1.1"), NetworkType::Clearnet);
+        assert_eq!(
+            detect_network_type("http://example.com"),
+            NetworkType::Clearnet
+        );
+        assert_eq!(
+            detect_network_type("https://example.com/path"),
+            NetworkType::Clearnet
+        );
+        assert_eq!(
+            detect_network_type("http://192.168.1.1"),
+            NetworkType::Clearnet
+        );
     }
 
     #[test]

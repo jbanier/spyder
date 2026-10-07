@@ -87,7 +87,8 @@ impl Metrics {
     /// Record a database query execution with duration
     pub fn record_db_query(&self, duration_ms: u64) {
         self.db_queries_executed.fetch_add(1, Ordering::Relaxed);
-        self.db_query_time_ms.fetch_add(duration_ms, Ordering::Relaxed);
+        self.db_query_time_ms
+            .fetch_add(duration_ms, Ordering::Relaxed);
     }
 
     /// Increment work units processed counter
