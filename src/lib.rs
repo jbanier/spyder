@@ -6,6 +6,7 @@ pub mod metrics;
 pub mod models;
 pub mod query_timer;
 pub mod schema;
+pub mod screenshot;
 
 use anyhow::{Context, Result};
 use diesel::connection::SimpleConnection;

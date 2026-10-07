@@ -179,6 +179,17 @@ diesel::table! {
         created_at -> Text,
         #[max_length = 16]
         network -> Varchar,
+        status_code -> Nullable<Int4>,
+        response_time_ms -> Nullable<Int4>,
+        response_headers -> Nullable<Jsonb>,
+        request_headers -> Nullable<Jsonb>,
+        cookies -> Nullable<Jsonb>,
+        redirect_chain -> Nullable<Jsonb>,
+        server_software -> Nullable<Varchar>,
+        detected_technologies -> Nullable<Jsonb>,
+        screenshot_path -> Nullable<Varchar>,
+        screenshot_taken_at -> Nullable<Timestamp>,
+        screenshot_size_bytes -> Nullable<Int4>,
     }
 }
 

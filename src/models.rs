@@ -31,6 +31,12 @@ pub struct Page {
     pub server_software: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detected_technologies: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot_taken_at: Option<chrono::NaiveDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot_size_bytes: Option<i32>,
 }
 
 #[derive(Insertable)]
