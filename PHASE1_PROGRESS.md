@@ -2,11 +2,11 @@
 
 ## Completed Today
 
-### ✅ HTTP Response Logging (Task 4)
+### ✅ HTTP Response Logging (Task 4) - Schema Complete
 - [x] Database migration created and applied
 - [x] Schema regenerated with new fields
 - [x] Page model updated with HTTP metadata fields
-- [ ] Capture logic in crawler (next step)
+- [ ] Capture logic in crawler (deferred - see next steps)
 
 **Schema Added:**
 - `status_code` - HTTP response codes
@@ -24,21 +24,22 @@
 3. Implement technology detection logic
 4. Update save_page_full to store metadata
 
-### 🔄 Screenshot Capture (Task 5 - In Progress)
+### ✅ Screenshot Capture (Task 5) - Module Complete
 
-**Requirements:**
-- Headless browser integration (Playwright or Selenium)
-- Per-network timeout handling
-- Filesystem storage + database refs
-- Thumbnail generation
+**Completed:**
+- [x] headless_chrome 1.0 dependency added  
+- [x] ScreenshotCapture module created (src/screenshot.rs)
+- [x] Database migration: screenshot_path, screenshot_taken_at, screenshot_size_bytes
+- [x] Page model updated with screenshot fields (chrono support)
+- [x] Configurable timeouts per network type
+- [x] Tests for config and directory management
+- [ ] Crawler integration (next step)
 
-**Implementation Plan:**
-1. Add `headless_chrome` or `fantoccini` dependency
-2. Create screenshot module
-3. Add `screenshot_path` column to page table
-4. Integrate with crawler workflow
-
-**Estimated Effort:** 1-2 days
+**Implementation:**
+```rust
+// screenshots/{page_id}_{timestamp}.png
+let (path, size) = ScreenshotCapture::new(config)?.capture(url, page_id)?;
+```
 
 ### ⏳ Server Fingerprinting (Task 6 - Pending)
 
